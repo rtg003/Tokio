@@ -1,0 +1,67 @@
+# Tokio — one service per process. Gateway, runners and replicator live ONLY
+# on the internal network; nothing from the engine is published to the host.
+# Production adds `web` and `proxy` (Caddy) — see docker-compose.prod.yml.
+
+x-engine-base: &engine-base
+  build:
+    context: .
+    dockerfile: Dockerfile.engine
+  env_file: .env
+  restart: unless-stopped
+  networks: [internal]
+  volumes:
+    - engine-data:/app/data
+    - engine-logs:/app/logs
+
+services:
+  gateway:
+    <<: *engine-base
+    container_name: tokio-gateway
+    command: python -m engine.gateway.server
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 512M}
+
+  replicator:
+    <<: *engine-base
+    container_name: tokio-replicator
+    command: python -m engine.replicator_main
+    depends_on: [gateway]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 256M}
+
+  runner-dummy:
+    <<: *engine-base
+    container_name: tokio-runner-dummy
+    command: python -m engine.strategies.dummy.runner
+    depends_on: [gateway]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 256M}
+
+  runner-copytrade:
+    <<: *engine-base
+    container_name: tokio-runner-copytrade
+    command: python -m engine.strategies.copy_trade.executor
+    depends_on: [gateway]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 384M}
+
+  runner-tradingview:
+    <<: *engine-base
+    container_name: tokio-runner-tradingview
+    command: python -m engine.strategies.tradingview.webhook_server
+    depends_on: [gateway]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 384M}
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  engine-data:
+  engine-logs:

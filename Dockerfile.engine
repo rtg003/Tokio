@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY engine ./engine
+COPY config ./config
+COPY db ./db
+
+RUN pip install --no-cache-dir .
+
+# Data/logs are volumes; source of truth is local-first (ADR 0005).
+VOLUME ["/app/data", "/app/logs"]
+
+CMD ["python", "-m", "engine.gateway.server"]

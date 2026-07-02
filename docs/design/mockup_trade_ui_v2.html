@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>trade · Copy Trade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============ TOKENS · tema escuro (default) ============ */
+:root{
+  --ink:#0B0D0C; --surface:#121514; --surface-2:#181C1A; --line:#242A28;
+  --text:#E9EDEA; --muted:#8D9793; --faint:#5A6461;
+  --amber:#F5A83C; --amber-hi:#FFC069; --amber-soft:rgba(245,168,60,.10);
+  --pos:#4CC38A; --pos-soft:rgba(76,195,138,.10);
+  --neg:#E5484D; --neg-soft:rgba(229,72,77,.10);
+  --mono:'IBM Plex Mono',monospace; --sans:'Archivo',sans-serif;
+  --r-card:6px; --r-ctl:4px;
+}
+/* ============ TOKENS · tema claro ============ */
+html.light{
+  --ink:#F6F5F1; --surface:#FFFFFF; --surface-2:#EFEEE8; --line:#E2E1D9;
+  --text:#171B19; --muted:#5F6864; --faint:#99A19D;
+  --amber:#B9791B; --amber-hi:#9A6412; --amber-soft:rgba(185,121,27,.10);
+  --pos:#188A56; --pos-soft:rgba(24,138,86,.10);
+  --neg:#CD2B31; --neg-soft:rgba(205,43,49,.08);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{background:var(--ink);color:var(--text);font:400 14px/1.5 var(--sans);-webkit-font-smoothing:antialiased;transition:background .18s,color .18s}
+::selection{background:var(--amber);color:var(--ink)}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px;border-radius:2px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+
+/* ============ STATUSBAR ============ */
+.statusbar{position:fixed;top:0;left:0;right:0;height:34px;z-index:30;
+  display:flex;align-items:center;gap:22px;padding:0 18px;
+  background:var(--ink);border-bottom:1px solid var(--line);
+  font:500 11px/1 var(--mono);color:var(--muted);letter-spacing:.04em}
+.statusbar .seg{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%}
+.dot.on{background:var(--pos)}
+.badge-env{color:var(--amber);border:1px solid var(--amber);border-radius:3px;padding:2px 7px;font-weight:600;letter-spacing:.12em}
+.statusbar .spacer{flex:1}
+.statusbar strong{color:var(--text);font-weight:600}
+.hamb{display:none;font:600 15px var(--mono);color:var(--amber);padding:4px 8px;margin-left:-8px}
+
+/* ============ SIDEBAR ============ */
+.sidebar{position:fixed;top:34px;left:0;bottom:0;width:228px;z-index:35;
+  border-right:1px solid var(--line);padding:22px 14px 16px;display:flex;flex-direction:column;
+  background:var(--ink);transition:transform .18s ease}
+.logo{font:700 17px var(--sans);letter-spacing:.02em;padding:0 10px 20px}
+.logo .cursor{color:var(--amber)}
+.navlabel{font:600 10px var(--mono);letter-spacing:.18em;color:var(--faint);padding:14px 10px 7px;text-transform:uppercase}
+.nav a{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:var(--r-ctl);
+  color:var(--muted);text-decoration:none;font-weight:500;border-left:2px solid transparent;transition:background .12s,color .12s}
+.nav a:hover{background:var(--surface);color:var(--text)}
+.nav a.active{background:var(--amber-soft);color:var(--amber);border-left-color:var(--amber)}
+.nav a .ico{width:16px;text-align:center;font:500 13px var(--mono)}
+.nav a.ghost{color:var(--faint);border:1px dashed var(--line);justify-content:center;margin-top:6px}
+.nav a.ghost:hover{color:var(--amber);border-color:var(--amber)}
+.sidefoot{margin-top:auto;border:1px solid var(--line);border-radius:var(--r-card);padding:11px 12px;font:400 11px var(--mono);color:var(--muted)}
+.sidefoot .row{display:flex;justify-content:space-between;padding:2px 0}
+.sidefoot .row b{color:var(--text);font-weight:500}
+/* toggle de tema — parte inferior da sidebar */
+.themetoggle{display:flex;border:1px solid var(--line);border-radius:var(--r-ctl);overflow:hidden;margin-top:10px}
+.themetoggle button{flex:1;padding:8px 0;font:600 10px var(--mono);letter-spacing:.14em;color:var(--faint)}
+.themetoggle button.on{background:var(--amber-soft);color:var(--amber)}
+.userline{display:flex;justify-content:space-between;align-items:center;font:400 10.5px var(--mono);color:var(--faint);padding:10px 4px 0}
+.userline a{color:var(--muted);text-decoration:none}
+.userline a:hover{color:var(--amber)}
+.scrim{display:none;position:fixed;inset:34px 0 0 0;background:rgba(0,0,0,.5);z-index:34}
+
+/* ============ MAIN ============ */
+.main{margin:34px 0 0 228px;padding:26px 30px 60px;max-width:1460px}
+.screen{display:none}.screen.active{display:block}
+.pagehead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px}
+h1{font:600 22px/1.2 var(--sans)}
+.eyebrow{font:600 10px var(--mono);letter-spacing:.18em;color:var(--amber);text-transform:uppercase;margin-bottom:6px}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+.select,.dateinput{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-ctl);
+  color:var(--text);padding:8px 12px;font:500 12.5px var(--mono);appearance:none}
+.select{padding-right:30px;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+  background-position:calc(100% - 16px) 55%,calc(100% - 11px) 55%;background-size:5px 5px;background-repeat:no-repeat}
+.segmented{display:flex;border:1px solid var(--line);border-radius:var(--r-ctl);overflow:hidden}
+.segmented button{padding:8px 13px;font:500 12px var(--mono);color:var(--muted);border-right:1px solid var(--line)}
+.segmented button:last-child{border-right:none}
+.segmented button.on{background:var(--amber-soft);color:var(--amber)}
+.datewrap{display:none;gap:6px;align-items:center;font:500 12px var(--mono);color:var(--faint)}
+.datewrap.show{display:flex}
+.dateinput{width:106px;text-align:center}
+
+/* ============ KPIs ============ */
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:22px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-card);padding:15px 16px 13px}
+.kpi .lab{font:600 10px var(--mono);letter-spacing:.14em;color:var(--faint);text-transform:uppercase}
+.kpi .val{font:600 26px/1.15 var(--mono);margin-top:8px;font-feature-settings:'tnum'}
+.kpi .sub{font:400 11px var(--mono);color:var(--muted);margin-top:5px}
+.kpi .val.pos{color:var(--pos)}.kpi .val.neg{color:var(--neg)}
+.kpi .delta{font-size:11px;margin-left:6px;font-weight:500}
+.delta.pos{color:var(--pos)}.delta.neg{color:var(--neg)}
+
+/* ============ CARDS + TABELAS ============ */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-card);margin-bottom:18px}
+.cardhead{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.cardhead h2{font:600 14px var(--sans);display:flex;align-items:center;gap:9px}
+.cardhead h2::before{content:"";width:8px;height:2px;background:var(--amber)}
+.cardnote{font:400 11px var(--mono);color:var(--faint)}
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font:400 12.5px var(--mono);font-feature-settings:'tnum'}
+th{font:600 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint);text-align:left;
+  padding:10px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:11px 14px;border-bottom:1px solid var(--line);color:var(--text);white-space:nowrap;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:var(--surface-2)}
+td .sub{display:block;font-size:10.5px;color:var(--faint);margin-top:2px}
+.num{text-align:right}th.num{text-align:right}
+.pos{color:var(--pos)}.neg{color:var(--neg)}
+.addr{color:var(--muted)}
+.side{font-weight:600;font-size:11px;letter-spacing:.08em}
+.side.long{color:var(--pos)}.side.short{color:var(--neg)}
+
+.chip{display:inline-block;padding:3px 8px;border-radius:3px;font:600 10px var(--mono);letter-spacing:.08em}
+.chip.filled{background:var(--pos-soft);color:var(--pos)}
+.chip.ack{background:var(--amber-soft);color:var(--amber)}
+.chip.rej{background:var(--neg-soft);color:var(--neg)}
+.chip.dry{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+.chip.live{background:var(--pos-soft);color:var(--pos)}
+.chip.sug{background:var(--amber-soft);color:var(--amber)}
+.btn{padding:7px 14px;border-radius:var(--r-ctl);font:600 12px var(--sans);transition:background .12s,color .12s}
+.btn-amber{background:var(--amber);color:var(--ink)}
+.btn-amber:hover{background:var(--amber-hi)}
+.btn-ghost{border:1px solid var(--line);color:var(--muted)}
+.btn-ghost:hover{border-color:var(--amber);color:var(--amber)}
+.btn-sm{padding:5px 11px;font-size:11px}
+.score{display:inline-flex;align-items:center;gap:7px}
+.scorebar{width:52px;height:4px;background:var(--surface-2);border-radius:2px;overflow:hidden}
+.scorebar i{display:block;height:100%;background:var(--amber)}
+
+/* ============ CONFIGURAÇÕES ============ */
+.settings-grid{display:grid;grid-template-columns:1fr;gap:18px;max-width:1060px}
+.exhead{display:flex;align-items:center;gap:12px}
+.exlogo{width:34px;height:34px;border:1px solid var(--line);border-radius:var(--r-ctl);display:flex;align-items:center;justify-content:center;font:600 12px var(--mono);color:var(--amber)}
+.formrow{display:grid;grid-template-columns:180px 1fr;gap:10px;align-items:center;padding:12px 18px;border-bottom:1px solid var(--line)}
+.formrow:last-child{border-bottom:none}
+.formrow label{font:500 12px var(--sans);color:var(--muted)}
+.input{background:var(--ink);border:1px solid var(--line);border-radius:var(--r-ctl);color:var(--text);
+  padding:9px 12px;font:400 12.5px var(--mono);width:100%;max-width:480px}
+.input::placeholder{color:var(--faint)}
+.input:focus{outline:none;border-color:var(--amber)}
+.hint{font:400 11px var(--mono);color:var(--faint);margin-top:5px}
+.hint b{color:var(--amber);font-weight:500}
+.envtoggle{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-ctl);overflow:hidden}
+.envtoggle button{padding:6px 12px;font:600 10.5px var(--mono);letter-spacing:.1em;color:var(--faint)}
+.envtoggle button.on-test{background:var(--amber-soft);color:var(--amber)}
+.envtoggle button.on-main{background:var(--neg-soft);color:var(--neg)}
+.walletbar{display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap}
+.walletbar .t{font:600 12px var(--sans);color:var(--muted)}
+
+/* ============ LOGS ============ */
+.logfilters{display:flex;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.loglvl{font:600 10px var(--mono);letter-spacing:.1em}
+.loglvl.info{color:var(--muted)}.loglvl.warn{color:var(--amber)}.loglvl.err{color:var(--neg)}
+.logtable td{font-size:12px;padding:9px 14px}
+
+/* ============ LOGIN ============ */
+.loginwrap{position:fixed;inset:0;z-index:50;background:var(--ink);display:flex;align-items:center;justify-content:center;padding:20px}
+.loginwrap.hidden{display:none}
+.logincard{width:100%;max-width:380px;border:1px solid var(--line);border-radius:var(--r-card);background:var(--surface);padding:30px 28px}
+.logincard .logo{padding:0 0 6px;font-size:22px}
+.logincard .tag{font:500 10px var(--mono);letter-spacing:.18em;color:var(--faint);text-transform:uppercase;margin-bottom:26px}
+.logincard label{display:block;font:500 11px var(--sans);color:var(--muted);margin:14px 0 6px}
+.logincard .input{max-width:none;background:var(--ink)}
+.logincard .btn{width:100%;margin-top:22px;padding:11px}
+.logincard .hint{margin-top:16px;text-align:center}
+.loginstatus{position:absolute;top:0;left:0;right:0;height:34px;display:flex;align-items:center;gap:18px;padding:0 18px;
+  border-bottom:1px solid var(--line);font:500 11px var(--mono);color:var(--muted)}
+
+/* ============ MOBILE ============ */
+@media(max-width:1180px){.kpis{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:880px){
+  .hamb{display:block}
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:translateX(0)}
+  .scrim.show{display:block}
+  .main{margin-left:0;padding:20px 14px 60px}
+  .pagehead{align-items:flex-start;flex-direction:column}
+  .statusbar{gap:12px;overflow:hidden}
+  .hide-m{display:none!important}
+  .formrow{grid-template-columns:1fr;gap:6px}
+  h1{font-size:19px}
+  .kpi .val{font-size:22px}
+}
+@media(max-width:480px){.kpis{grid-template-columns:1fr 1fr;gap:8px}.controls{width:100%}}
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div class="loginwrap" id="login">
+  <div class="loginstatus">
+    <span class="seg"><span class="dot on"></span> ENGINE ONLINE</span>
+    <span class="badge-env">TESTNET</span>
+  </div>
+  <div class="logincard">
+    <div class="logo">trade<span class="cursor">_</span></div>
+    <div class="tag">Acesso restrito · operação</div>
+    <label for="lemail">E-mail</label>
+    <input class="input" id="lemail" type="email" value="rtg003@gmail.com" autocomplete="username">
+    <label for="lpass">Senha</label>
+    <input class="input" id="lpass" type="password" placeholder="••••••••••••" autocomplete="current-password">
+    <button class="btn btn-amber" id="loginbtn">Entrar</button>
+    <div class="hint">cadastro desabilitado — usuário provisionado diretamente no banco</div>
+  </div>
+</div>
+
+<!-- STATUSBAR -->
+<div class="statusbar">
+  <button class="hamb" id="hamb" aria-label="Abrir menu">≡</button>
+  <span class="seg"><span class="dot on"></span> ENGINE <strong>ONLINE</strong></span>
+  <span class="seg badge-env">TESTNET</span>
+  <span class="seg hide-m">GATEWAY <strong>hyperliquid</strong></span>
+  <span class="seg hide-m">LATÊNCIA <strong>212ms</strong></span>
+  <span class="seg hide-m">RUNNERS <strong>1/1</strong></span>
+  <span class="spacer"></span>
+  <span class="seg">SP <strong id="clock">14:32:07</strong></span>
+  <span class="seg hide-m">02/07/26</span>
+</div>
+<div class="scrim" id="scrim"></div>
+
+<!-- SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+  <div class="logo">trade<span class="cursor">_</span></div>
+  <div class="navlabel">Estratégias</div>
+  <nav class="nav">
+    <a href="#" class="active" data-screen="dash"><span class="ico">CT</span> Copy Trade</a>
+    <a href="#" class="ghost">+ nova estratégia</a>
+  </nav>
+  <div class="navlabel">Sistema</div>
+  <nav class="nav">
+    <a href="#" data-screen="config"><span class="ico">⚙</span> Configurações</a>
+    <a href="#" data-screen="logs"><span class="ico">≡</span> Logs</a>
+  </nav>
+  <div class="sidefoot">
+    <div class="row"><span>uptime</span><b>6d 11h</b></div>
+    <div class="row"><span>fila supabase</span><b>0</b></div>
+    <div class="row"><span>kill switch</span><b style="color:var(--pos)">armado</b></div>
+  </div>
+  <div class="themetoggle" id="themetoggle" role="group" aria-label="Tema">
+    <button class="on" data-mode="dark">● ESCURO</button>
+    <button data-mode="light">○ CLARO</button>
+  </div>
+  <div class="userline"><span>rtg003@gmail.com</span><a href="#" id="logout">sair</a></div>
+</aside>
+
+<main class="main">
+
+<!-- ================= DASHBOARD COPY TRADE ================= -->
+<section class="screen active" id="dash">
+  <div class="pagehead">
+    <div>
+      <div class="eyebrow">Estratégia · ct_default</div>
+      <h1>Copy Trade</h1>
+    </div>
+    <div class="controls">
+      <select class="select" aria-label="Corretora e conta">
+        <option>Hyperliquid · master (testnet)</option>
+        <option>Hyperliquid · master (mainnet)</option>
+        <option>Hyperliquid · wallet-2 isolada</option>
+      </select>
+      <div class="segmented" id="periodo">
+        <button class="on">Hoje</button><button>7D</button><button>30D</button><button data-custom>Personalizado</button>
+      </div>
+      <div class="datewrap" id="datewrap">
+        <input class="dateinput" value="02/07/26" aria-label="Data inicial"> →
+        <input class="dateinput" value="02/07/26" aria-label="Data final">
+      </div>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lab">PnL líquido</div><div class="val pos">+842,17<span class="delta pos">▲ 3,1%</span></div><div class="sub">USDC · após fees + slippage</div></div>
+    <div class="kpi"><div class="lab">Trades</div><div class="val">47</div><div class="sub">no período · 3 abertos</div></div>
+    <div class="kpi"><div class="lab">Win rate</div><div class="val">61,7%</div><div class="sub">29W / 18L</div></div>
+    <div class="kpi"><div class="lab">Drawdown</div><div class="val neg">−4,8%</div><div class="sub">máx. no período · limite 12%</div></div>
+    <div class="kpi"><div class="lab">Profit factor</div><div class="val pos">1,74</div><div class="sub">threshold ≥ 1,20</div></div>
+  </div>
+
+  <!-- TRADERS -->
+  <div class="card">
+    <div class="cardhead">
+      <h2>Traders</h2>
+      <span class="cardnote">varredura diária 05:00 (America/Sao_Paulo) · lógica v1: top PnL 30d, DD &lt; 25%, ≥ 20 trades, sem scalpers · evolutível pelo Hermes via PR</span>
+      <button class="btn btn-ghost btn-sm">Rodar varredura agora</button>
+    </div>
+    <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th>Trader</th><th class="num">PnL 30d</th><th class="num">Win rate</th><th class="num">Max DD</th>
+        <th class="num">Trades 30d</th><th class="num">Equity</th><th>Estilo</th><th>Score</th><th>Status</th><th>Sizing</th><th></th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td>whale_01<span class="sub addr">0x3fA8…c21B</span></td>
+          <td class="num pos">+128.440</td><td class="num">64%</td><td class="num">−11,2%</td>
+          <td class="num">86</td><td class="num">2,41M</td><td>swing</td>
+          <td><span class="score">87<span class="scorebar"><i style="width:87%"></i></span></span></td>
+          <td><span class="chip live">COPIANDO</span></td>
+          <td>2,5% prop.</td>
+          <td><button class="btn btn-ghost btn-sm">Pausar</button></td>
+        </tr>
+        <tr>
+          <td>hl_quant_7<span class="sub addr">0x91Dd…08eF</span></td>
+          <td class="num pos">+64.905</td><td class="num">58%</td><td class="num">−9,7%</td>
+          <td class="num">54</td><td class="num">880K</td><td>posição</td>
+          <td><span class="score">81<span class="scorebar"><i style="width:81%"></i></span></span></td>
+          <td><span class="chip dry">DRY-RUN</span></td>
+          <td>150 USDC fixo</td>
+          <td><button class="btn btn-ghost btn-sm">Ativar</button></td>
+        </tr>
+        <tr>
+          <td>0xberg<span class="sub addr">0xA204…77d3</span></td>
+          <td class="num pos">+41.278</td><td class="num">67%</td><td class="num">−14,0%</td>
+          <td class="num">39</td><td class="num">312K</td><td>swing</td>
+          <td><span class="score">74<span class="scorebar"><i style="width:74%"></i></span></span></td>
+          <td><span class="chip sug">SUGERIDO</span></td>
+          <td>—</td>
+          <td><button class="btn btn-amber btn-sm">Copiar</button></td>
+        </tr>
+        <tr>
+          <td>fund_theta<span class="sub addr">0x6b2C…9A10</span></td>
+          <td class="num pos">+22.130</td><td class="num">55%</td><td class="num">−18,9%</td>
+          <td class="num">112</td><td class="num">1,02M</td><td>swing</td>
+          <td><span class="score">62<span class="scorebar"><i style="width:62%"></i></span></span></td>
+          <td><span class="chip sug">SUGERIDO</span></td>
+          <td>—</td>
+          <td><button class="btn btn-amber btn-sm">Copiar</button></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <!-- ORDENS -->
+  <div class="card">
+    <div class="cardhead">
+      <h2>Ordens</h2>
+      <span class="cardnote">ciclo completo · atribuição por cloid · fonte: tabela orders</span>
+    </div>
+    <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th>Hora</th><th>Trader copiado</th><th>Par</th><th>Lado</th><th>Tipo</th>
+        <th class="num">Qtd</th><th class="num">Preço</th><th class="num">Notional</th>
+        <th>Status</th><th class="num">Latência</th><th>cloid</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td>14:28:11</td><td>whale_01<span class="sub addr">0x3fA8…c21B</span></td><td>BTC-PERP</td>
+          <td class="side long">LONG</td><td>MARKET</td>
+          <td class="num">0,0210</td><td class="num">67.412,5</td><td class="num">1.415,66</td>
+          <td><span class="chip filled">FILLED</span></td><td class="num">241ms</td><td class="addr">ct-whale01-4821</td>
+        </tr>
+        <tr>
+          <td>13:57:40</td><td>whale_01<span class="sub addr">0x3fA8…c21B</span></td><td>ETH-PERP</td>
+          <td class="side short">SHORT</td><td>MARKET</td>
+          <td class="num">0,380</td><td class="num">3.512,10</td><td class="num">1.334,60</td>
+          <td><span class="chip filled">FILLED</span></td><td class="num">198ms</td><td class="addr">ct-whale01-4820</td>
+        </tr>
+        <tr>
+          <td>13:41:02</td><td>hl_quant_7<span class="sub addr">0x91Dd…08eF</span></td><td>SOL-PERP</td>
+          <td class="side long">LONG</td><td>MARKET</td>
+          <td class="num">9,4</td><td class="num">148,22</td><td class="num">1.393,27</td>
+          <td><span class="chip dry">DRY-RUN</span></td><td class="num">176ms</td><td class="addr">ct-quant7-1104</td>
+        </tr>
+        <tr>
+          <td>12:03:55</td><td>whale_01<span class="sub addr">0x3fA8…c21B</span></td><td>BTC-PERP</td>
+          <td class="side long">LONG</td><td>MARKET</td>
+          <td class="num">0,0080</td><td class="num">67.020,0</td><td class="num">536,16</td>
+          <td><span class="chip rej">SKIPPED</span><span class="sub">abaixo do cap por ordem</span></td><td class="num">—</td><td class="addr">ct-whale01-4819</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <!-- TRADES -->
+  <div class="card">
+    <div class="cardhead">
+      <h2>Trades</h2>
+      <span class="cardnote">fills executados · PnL realizado líquido de fees · fonte: tabela fills</span>
+    </div>
+    <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th>Hora</th><th>Trader copiado</th><th>Par</th><th>Lado</th>
+        <th class="num">Qtd</th><th class="num">Preço entrada</th><th class="num">Preço saída</th>
+        <th class="num">Fee</th><th class="num">PnL líquido</th><th class="num">Duração</th><th class="num">Latência</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td>14:02:36</td><td>whale_01<span class="sub addr">0x3fA8…c21B</span></td><td>ETH-PERP</td>
+          <td class="side short">SHORT</td>
+          <td class="num">0,380</td><td class="num">3.512,10</td><td class="num">3.478,55</td>
+          <td class="num">1,20</td><td class="num pos">+11,55</td><td class="num">1h 12m</td><td class="num">198ms</td>
+        </tr>
+        <tr>
+          <td>11:47:19</td><td>whale_01<span class="sub addr">0x3fA8…c21B</span></td><td>BTC-PERP</td>
+          <td class="side long">LONG</td>
+          <td class="num">0,0155</td><td class="num">66.780,0</td><td class="num">67.390,2</td>
+          <td class="num">0,94</td><td class="num pos">+8,52</td><td class="num">2h 40m</td><td class="num">210ms</td>
+        </tr>
+        <tr>
+          <td>09:15:44</td><td>hl_quant_7<span class="sub addr">0x91Dd…08eF</span></td><td>SOL-PERP</td>
+          <td class="side long">LONG</td>
+          <td class="num">8,1</td><td class="num">151,40</td><td class="num">149,05</td>
+          <td class="num">0,55</td><td class="num neg">−19,58</td><td class="num">4h 05m</td><td class="num">176ms</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+
+<!-- ================= CONFIGURAÇÕES ================= -->
+<section class="screen" id="config">
+  <div class="pagehead">
+    <div>
+      <div class="eyebrow">Sistema</div>
+      <h1>Configurações · Corretoras</h1>
+    </div>
+  </div>
+
+  <div class="settings-grid">
+    <div class="card">
+      <div class="cardhead">
+        <div class="exhead"><span class="exlogo">HL</span><h2 style="margin:0">Hyperliquid</h2></div>
+        <span class="cardnote">gateway ativo · SDK oficial · rede default: testnet</span>
+      </div>
+
+      <div class="walletbar">
+        <span class="t">Wallets / Contas — cada conta pode isolar o acompanhamento de uma estratégia</span>
+        <button class="btn btn-amber btn-sm">+ Adicionar wallet</button>
+      </div>
+      <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th>Label</th><th>Endereço</th><th>Tipo</th><th>Ambiente</th><th>Agent wallets</th><th>Estratégias vinculadas</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td>master</td><td class="addr">0x7C41…e9A2</td><td>Master</td>
+            <td><span class="envtoggle"><button class="on-test">TESTNET</button><button>MAINNET</button></span></td>
+            <td><span class="chip ack">engine_gateway</span> <span class="chip ack">hermes_ops · exp 30d</span></td>
+            <td>ct_default</td>
+            <td><span class="chip live">ATIVA</span></td>
+            <td><button class="btn btn-ghost btn-sm">Editar</button></td>
+          </tr>
+          <tr>
+            <td>wallet-2 isolada</td><td class="addr">0xB88F…41c7</td><td>Master</td>
+            <td><span class="envtoggle"><button class="on-test">TESTNET</button><button>MAINNET</button></span></td>
+            <td><span class="chip dry">nenhuma</span></td>
+            <td>—</td>
+            <td><span class="chip dry">INATIVA</span></td>
+            <td><button class="btn btn-ghost btn-sm">Editar</button></td>
+          </tr>
+          <tr>
+            <td>sub_risco_alto <span class="sub">disponível após US$ 100k de volume</span></td><td class="addr">—</td><td>Subaccount</td>
+            <td><span class="envtoggle"><button>TESTNET</button><button>MAINNET</button></span></td>
+            <td class="addr">—</td><td class="addr">—</td>
+            <td><span class="chip dry">BLOQUEADA</span></td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+
+      <div class="formrow" style="border-top:1px solid var(--line)">
+        <label>Label da conta</label>
+        <div><input class="input" placeholder="ex.: master, wallet-2 isolada"></div>
+      </div>
+      <div class="formrow">
+        <label>Endereço da conta</label>
+        <div><input class="input" placeholder="0x…"><div class="hint">endereço público da master account (usado para consultas e atribuição)</div></div>
+      </div>
+      <div class="formrow">
+        <label>Agent wallet · chave privada</label>
+        <div><input class="input" type="password" placeholder="••••••••••••••••••••••••••••••••">
+          <div class="hint"><b>armazenada apenas no .env do servidor</b> — nunca no banco, nunca no navegador · agent sem permissão de saque</div></div>
+      </div>
+      <div class="formrow">
+        <label>Ambiente</label>
+        <div><span class="envtoggle"><button class="on-test">TESTNET</button><button>MAINNET</button></span>
+          <div class="hint">mainnet exige confirmação humana + checklist de segurança (gate permanente — não ativável pela web)</div></div>
+      </div>
+      <div class="formrow">
+        <label></label>
+        <div><button class="btn btn-amber">Salvar conta</button> <button class="btn btn-ghost">Cancelar</button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= LOGS ================= -->
+<section class="screen" id="logs">
+  <div class="pagehead">
+    <div>
+      <div class="eyebrow">Sistema</div>
+      <h1>Logs</h1>
+    </div>
+  </div>
+  <div class="card">
+    <div class="logfilters">
+      <select class="select"><option>Todas as estratégias</option><option>ct_default</option><option>gateway</option></select>
+      <select class="select"><option>Todos os níveis</option><option>INFO</option><option>WARN</option><option>ERROR</option></select>
+      <select class="select"><option>Todos os eventos</option><option>order_lifecycle</option><option>decision</option><option>ws_reconnect</option><option>health</option></select>
+      <input class="input" style="max-width:260px" placeholder="buscar payload, cloid, endereço…">
+    </div>
+    <div class="tablewrap">
+    <table class="logtable">
+      <thead><tr><th>Timestamp (UTC)</th><th>Origem</th><th>Nível</th><th>Evento</th><th>Payload</th></tr></thead>
+      <tbody>
+        <tr><td>2026-07-02T17:28:11.402Z</td><td>ct_default</td><td><span class="loglvl info">INFO</span></td><td>order_filled</td><td class="addr">cloid=ct-whale01-4821 fill=67412.5 lat=241ms</td></tr>
+        <tr><td>2026-07-02T17:28:11.161Z</td><td>gateway</td><td><span class="loglvl info">INFO</span></td><td>intent_accepted</td><td class="addr">strat=ct_default risk_check=pass caps=ok</td></tr>
+        <tr><td>2026-07-02T15:03:55.019Z</td><td>ct_default</td><td><span class="loglvl warn">WARN</span></td><td>order_skipped</td><td class="addr">motivo=below_per_order_cap notional=536.16</td></tr>
+        <tr><td>2026-07-02T13:11:37.844Z</td><td>gateway</td><td><span class="loglvl warn">WARN</span></td><td>ws_reconnect</td><td class="addr">feed=userFills target=0x3fA8…c21B tentativa=1 ok=2.1s</td></tr>
+        <tr><td>2026-07-02T08:00:04.210Z</td><td>discovery</td><td><span class="loglvl info">INFO</span></td><td>scan_completed</td><td class="addr">candidatos=412 aprovados=4 duração=41s regra=v1_trivial</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+// login (mock)
+document.getElementById('loginbtn').addEventListener('click',()=>{
+  document.getElementById('login').classList.add('hidden');
+});
+document.getElementById('logout').addEventListener('click',e=>{
+  e.preventDefault();
+  document.getElementById('login').classList.remove('hidden');
+});
+// navegação entre telas
+document.querySelectorAll('.nav a[data-screen]').forEach(a=>{
+  a.addEventListener('click',e=>{
+    e.preventDefault();
+    document.querySelectorAll('.nav a').forEach(x=>x.classList.remove('active'));
+    a.classList.add('active');
+    document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+    document.getElementById(a.dataset.screen).classList.add('active');
+    closeDrawer();
+  });
+});
+// tema light/dark
+document.querySelectorAll('#themetoggle button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#themetoggle button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    document.documentElement.classList.toggle('light', b.dataset.mode==='light');
+  });
+});
+// drawer mobile
+const sb=document.getElementById('sidebar'), scrim=document.getElementById('scrim');
+function closeDrawer(){sb.classList.remove('open');scrim.classList.remove('show')}
+document.getElementById('hamb').addEventListener('click',()=>{
+  sb.classList.toggle('open');scrim.classList.toggle('show');
+});
+scrim.addEventListener('click',closeDrawer);
+// período: presets + personalizado (dd/mm/aa)
+const seg=document.getElementById('periodo'), dw=document.getElementById('datewrap');
+seg.querySelectorAll('button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    seg.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    dw.classList.toggle('show','custom' in b.dataset);
+  });
+});
+// relógio SP
+setInterval(()=>{
+  document.getElementById('clock').textContent=new Date().toLocaleTimeString('pt-BR',{timeZone:'America/Sao_Paulo'});
+},1000);
+</script>
+</body>
+</html>

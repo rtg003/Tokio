@@ -1,0 +1,41 @@
+# Secrets — NEVER commit real credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Runtime state
+logs/
+*.log
+*.jsonl
+data/
+*.db
+*.sqlite
+*.sqlite3
+KILL
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node / Next.js
+node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

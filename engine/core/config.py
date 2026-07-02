@@ -1,0 +1,131 @@
+"""Typed configuration: config/settings.yaml (non-secret) + environment (.env secrets).
+
+Secrets are NEVER read from YAML and NEVER logged. Only their PRESENCE may be
+validated (see `validate_secrets_presence`).
+"""
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+from pathlib import Path
+
+import yaml
+from pydantic import BaseModel, Field
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SETTINGS_PATH = REPO_ROOT / "config" / "settings.yaml"
+
+
+class ExchangeSettings(BaseModel):
+    active: str = "hyperliquid"
+    network: str = "testnet"
+
+
+class RiskSettings(BaseModel):
+    max_order_notional_usd: float = 500.0
+    max_total_exposure_usd: float = 2000.0
+    max_strategy_exposure_usd: float = 500.0
+    max_daily_loss_usd: float = 100.0
+    max_leverage_global: float = 5.0
+    min_order_notional_usd: float = 10.0
+
+
+class RateLimitSettings(BaseModel):
+    default_strategy_budget_per_min: int = 30
+    reserve_for_cancels: float = 0.2
+
+
+class WipLimits(BaseModel):
+    max_active_strategies: int = 6
+    max_dry_run_strategies: int = 10
+
+
+class FeeSettings(BaseModel):
+    taker_pct: float = 0.045
+    maker_pct: float = 0.015
+
+
+class PathSettings(BaseModel):
+    data_dir: str = "data"
+    logs_dir: str = "logs"
+    kill_file: str = "KILL"
+
+
+class GatewaySettings(BaseModel):
+    host: str = "0.0.0.0"
+    port: int = 8700
+
+
+class ReplicationSettings(BaseModel):
+    batch_size: int = 200
+    interval_seconds: int = 5
+    events_retention_days: int = 90
+
+
+class Settings(BaseModel):
+    exchange: ExchangeSettings = Field(default_factory=ExchangeSettings)
+    risk: RiskSettings = Field(default_factory=RiskSettings)
+    rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
+    wip_limits: WipLimits = Field(default_factory=WipLimits)
+    fees: FeeSettings = Field(default_factory=FeeSettings)
+    paths: PathSettings = Field(default_factory=PathSettings)
+    gateway: GatewaySettings = Field(default_factory=GatewaySettings)
+    replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
+
+    @staticmethod
+    def _resolve(raw: str) -> Path:
+        p = Path(raw)
+        return p if p.is_absolute() else REPO_ROOT / p
+
+    @property
+    def data_dir(self) -> Path:
+        p = self._resolve(self.paths.data_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def logs_dir(self) -> Path:
+        p = self._resolve(self.paths.logs_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def kill_file(self) -> Path:
+        return self._resolve(self.paths.kill_file)
+
+    @property
+    def sqlite_path(self) -> Path:
+        return self.data_dir / "tokio.db"
+
+
+def load_settings(path: Path | None = None) -> Settings:
+    # TOKIO_SETTINGS_PATH lets tests and one-off tooling point at an isolated
+    # settings file (temp dirs, paper exchange) without touching the repo copy.
+    env_path = os.environ.get("TOKIO_SETTINGS_PATH")
+    p = path or (Path(env_path) if env_path else SETTINGS_PATH)
+    if p.exists():
+        raw = yaml.safe_load(p.read_text()) or {}
+    else:
+        raw = {}
+    return Settings.model_validate(raw)
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return load_settings()
+
+
+ENGINE_SECRET_VARS = (
+    "HL_ACCOUNT_ADDRESS",
+    "HL_AGENT_PRIVATE_KEY",
+    "SUPABASE_URL",
+    "SUPABASE_ANON_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "DATABASE_URL",
+    "GATEWAY_CONTROL_TOKEN",
+)
+
+
+def validate_secrets_presence(required: tuple[str, ...] = ENGINE_SECRET_VARS) -> list[str]:
+    """Return the names of missing env vars. Values are never read into logs."""
+    return [name for name in required if not os.environ.get(name)]

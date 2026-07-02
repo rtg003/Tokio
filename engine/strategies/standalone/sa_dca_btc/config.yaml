@@ -1,0 +1,13 @@
+# Standalone strategy config — the uniform schema every standalone uses.
+id: sa_dca_btc
+name: DCA simples em BTC (template)
+symbol: BTC
+notional_usd: 15.0          # per purchase (>= 10 USD exchange minimum)
+interval_hours: 24          # one purchase per day
+max_exposure_usd: 200.0     # per-strategy cap enforced by the gateway
+initial_status: dry_run     # NEVER activated — this is a documented template
+cycle_interval_s: 5.0
+thresholds:
+  min_net_pnl: -30.0
+  min_trades: 5
+  eval_window_days: 30
