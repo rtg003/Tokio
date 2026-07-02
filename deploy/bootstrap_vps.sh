@@ -195,8 +195,18 @@ tokio.bz, www.tokio.bz {
 }
 CADDY
   if caddy validate --config "$CADDYFILE" >/dev/null 2>&1; then
-    systemctl reload caddy
-    ok "vhost tokio.bz adicionado e caddy recarregado"
+    # reload NUNCA pode derrubar o script (nem o Luthor): não-fatal, com diagnóstico
+    if systemctl reload caddy 2>/dev/null; then
+      ok "vhost tokio.bz adicionado e caddy recarregado"
+    elif caddy reload --config "$CADDYFILE" 2>/dev/null; then
+      ok "vhost aplicado via 'caddy reload' direto (admin API)"
+    else
+      warn "reload do Caddy FALHOU — config antiga segue ativa (Luthor intacto)."
+      warn "diagnóstico rápido:"
+      systemctl status caddy.service --no-pager 2>&1 | head -8 | sed 's/^/    /' || true
+      journalctl -u caddy.service --no-pager -n 12 2>&1 | sed 's/^/    /' || true
+      warn "envie a saída acima para o agente; o vhost já está salvo no Caddyfile."
+    fi
   else
     LATEST_BAK="$(ls -t "$CADDYFILE".bak-* | head -1)"
     cp "$LATEST_BAK" "$CADDYFILE"
