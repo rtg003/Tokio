@@ -1,3 +1,4 @@
+import DashboardControls, { AccountOption } from "@/components/DashboardControls";
 import StrategyActions from "@/components/StrategyActions";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -39,18 +40,60 @@ async function fetchBalance(): Promise<Balance> {
   }
 }
 
-export default async function Dashboard() {
+function parseDdMmYy(v: string | undefined): string | null {
+  // dd/mm/aa -> YYYY-MM-DD (UTC); null when malformed
+  const m = /^(\d{2})\/(\d{2})\/(\d{2})$/.exec(v ?? "");
+  if (!m) return null;
+  const [, dd, mm, yy] = m;
+  const day = Number(dd), month = Number(mm);
+  if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+  return `20${yy}-${mm}-${dd}`;
+}
+
+const PERIOD_LABEL: Record<string, string> = {
+  today: "hoje",
+  "7d": "últimos 7 dias",
+  "30d": "últimos 30 dias",
+  custom: "período personalizado",
+};
+
+export default async function Dashboard({
+  searchParams,
+}: {
+  searchParams: Promise<{ period?: string; from?: string; to?: string; account?: string }>;
+}) {
+  const params = await searchParams;
+  const period = ["today", "7d", "30d", "custom"].includes(params.period ?? "")
+    ? (params.period as string)
+    : "30d";
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+  let sinceDay = todayIso;
+  let untilDay = todayIso;
+  if (period === "7d") {
+    sinceDay = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+  } else if (period === "30d") {
+    sinceDay = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+  } else if (period === "custom") {
+    sinceDay = parseDdMmYy(params.from) ?? sinceDay;
+    untilDay = parseDdMmYy(params.to) ?? untilDay;
+  }
+  const sinceTs = `${sinceDay}T00:00:00Z`;
+  const untilTs = `${untilDay}T23:59:59Z`;
+
   const supabase = await createClient();
-  const since = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
 
   // KPIs come from strategy_metrics_daily — dashboards never scan `events`.
-  const [balance, { data: metrics }, { data: strategies }, { data: orders }, { data: fills }] =
+  const [balance, { data: exchanges }, { data: metrics }, { data: strategies },
+         { data: orders }, { data: fills }] =
     await Promise.all([
       fetchBalance(),
+      supabase.from("exchanges").select("name, network, status").order("id"),
       supabase
         .from("strategy_metrics_daily")
         .select("net_pnl, win_rate, n_trades, fees, profit_factor, max_drawdown")
-        .gte("day", since),
+        .gte("day", sinceDay)
+        .lte("day", untilDay),
       supabase
         .from("strategies")
         .select("id, module, name, status, config_snapshot, created_at")
@@ -59,14 +102,27 @@ export default async function Dashboard() {
       supabase
         .from("orders")
         .select("cloid, strategy_id, symbol, side, type, size, price, status, created_at, latency_ms, reject_reason")
+        .gte("created_at", sinceTs)
+        .lte("created_at", untilTs)
         .order("created_at", { ascending: false })
         .limit(15),
       supabase
         .from("fills")
         .select("cloid, strategy_id, symbol, side, price, size, fee, realized_pnl, ts")
+        .gte("ts", sinceTs)
+        .lte("ts", untilTs)
         .order("ts", { ascending: false })
         .limit(15),
     ]);
+
+  // value no formato exchange:conta:ambiente (parametriza as queries futuras)
+  const accounts: AccountOption[] = (exchanges ?? []).length
+    ? (exchanges ?? []).map((e) => ({
+        value: `${e.name === "hyperliquid" ? "hl" : e.name}:master:${e.network}`,
+        label: `${e.name === "hyperliquid" ? "Hyperliquid" : e.name} · master (${e.network})`,
+      }))
+    : [{ value: "hl:master:testnet", label: "Hyperliquid · master (testnet)" }];
+  const account = params.account ?? accounts[0].value;
 
   const m = (metrics ?? []) as Metrics[];
   const netPnl = m.reduce((s, r) => s + (r.net_pnl ?? 0), 0);
@@ -93,11 +149,13 @@ export default async function Dashboard() {
           <div className="eyebrow">Estratégias · copy trade</div>
           <h1>Copy Trade</h1>
         </div>
-        <div className="controls">
-          <span className="segmented">
-            <button className="on">30D</button>
-          </span>
-        </div>
+        <DashboardControls
+          accounts={accounts}
+          account={account}
+          period={period}
+          from={params.from ?? ""}
+          to={params.to ?? ""}
+        />
       </div>
 
       <div className="kpis">
@@ -120,7 +178,7 @@ export default async function Dashboard() {
         <div className="kpi">
           <div className="lab">Trades</div>
           <div className="val">{nTrades}</div>
-          <div className="sub">últimos 30 dias</div>
+          <div className="sub">{PERIOD_LABEL[period]}</div>
         </div>
         <div className="kpi">
           <div className="lab">Win rate</div>
