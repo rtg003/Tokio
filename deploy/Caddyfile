@@ -1,0 +1,11 @@
+# tokio.bz — automatic TLS (requires DNS resolving + ports 80/443 reachable).
+# DNS at Hostinger: A @ -> 2.57.91.91 (created) + CNAME www -> tokio.bz (pending).
+
+tokio.bz {
+	encode gzip
+	reverse_proxy web:3000
+}
+
+www.tokio.bz {
+	redir https://tokio.bz{uri} permanent
+}
