@@ -202,10 +202,9 @@ CADDY
       ok "vhost aplicado via 'caddy reload' direto (admin API)"
     else
       warn "reload do Caddy FALHOU — config antiga segue ativa (Luthor intacto)."
-      warn "diagnóstico rápido:"
-      systemctl status caddy.service --no-pager 2>&1 | head -8 | sed 's/^/    /' || true
-      journalctl -u caddy.service --no-pager -n 12 2>&1 | sed 's/^/    /' || true
-      warn "envie a saída acima para o agente; o vhost já está salvo no Caddyfile."
+      warn "Nesta VPS a admin API do Caddy é desligada (hardening): reload não"
+      warn "funciona. Aplicar o vhost exige um restart breve (~1-2s, operador):"
+      warn "    sudo caddy validate --config $CADDYFILE && sudo systemctl restart caddy"
     fi
   else
     LATEST_BAK="$(ls -t "$CADDYFILE".bak-* | head -1)"

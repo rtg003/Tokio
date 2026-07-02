@@ -10,8 +10,12 @@
 
 - NUNCA ler/tocar `/home/luthor` nem segredos do Luthor (`LUTHOR_*`,
   `POLYMARKET_*`, `POLY_BUILDER_*`, wallet, DATABASE_URL dele).
-- NUNCA reiniciar/parar `luthor.service`, `dash-lbx`, nem dar restart no
-  Caddy — mudanças de proxy só com `sudo caddy validate` + `systemctl reload caddy`.
+- NUNCA reiniciar/parar `luthor.service` nem `dash-lbx`.
+- Caddy: a admin API está DESLIGADA nesta VPS (hardening), então `reload` não
+  funciona — mudança de vhost exige `sudo caddy validate` seguido de
+  `sudo systemctl restart caddy` (~1–2s de indisponibilidade para todos os
+  vhosts; certs ficam em cache). Restart do Caddy é ato do OPERADOR, nunca do
+  Hermes, e sempre com validate antes.
 - O usuário `tokio` só tem sudo para `systemctl restart/status` de
   `tokio.service` e `tokio-engine.service`. Se algo pedir mais que isso,
   PARE e acione o operador (rtg003).
@@ -205,6 +209,7 @@ para interpretar o resultado e notificar o humano por exceção.
 | fills sem estratégia (`fill.unattributed`) | ordem manual na mesma conta | não operar manualmente na conta do engine |
 | web 502 em `/api/control/*` | gateway reiniciando | aguardar supervisor; checar health |
 | GHA falha com `i/o timeout` no SSH | rede GitHub→Hostinger flaky | re-trigger do workflow |
-| TLS não emite | DNS ainda no IP antigo (2.57.91.91) | corrigir registro A → `46.202.189.126`; `caddy reload` |
+| TLS não emite | DNS ainda no IP antigo (2.57.91.91) | corrigir registro A → `46.202.189.126` |
+| `caddy reload` falha com `connect: connection refused :2019` | admin API desligada nesta VPS | operador: `sudo caddy validate` + `sudo systemctl restart caddy` (breve; vhosts voltam sozinhos) |
 | query na HL devolve vazio | consultou endereço da agent wallet | consultar SEMPRE o endereço da conta master |
 | `luthor.io` fora do ar após mexer no proxy | restart do Caddy em vez de reload | `sudo systemctl reload caddy` e avisar o operador IMEDIATAMENTE |
