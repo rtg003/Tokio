@@ -214,7 +214,8 @@ def main() -> None:
     settings = get_settings()
     app = build_app(settings=settings)
     port = int(os.environ.get("TV_WEBHOOK_PORT", "8701"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    bind = os.environ.get("TV_WEBHOOK_BIND", "0.0.0.0")
+    uvicorn.run(app, host=bind, port=port)
 
 
 if __name__ == "__main__":

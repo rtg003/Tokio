@@ -1,0 +1,27 @@
+# Processes managed by engine/supervisor.py (tokio-engine.service on the VPS).
+# Per-process isolation is preserved: each entry is a separate OS process
+# with individual restart/backoff. Toggle with `enabled`.
+#
+# On the shared VPS everything binds to 127.0.0.1 only (exposure is the
+# shared Caddy's job) — hence the GATEWAY_BIND / TV_WEBHOOK_BIND overrides.
+
+processes:
+  - name: gateway
+    module: engine.gateway.server
+    env:
+      GATEWAY_BIND: "127.0.0.1"
+
+  - name: replicator
+    module: engine.replicator_main
+
+  - name: runner-copytrade
+    module: engine.strategies.copy_trade.executor
+
+  - name: runner-tradingview
+    module: engine.strategies.tradingview.webhook_server
+    env:
+      TV_WEBHOOK_BIND: "127.0.0.1"   # interno por enquanto (sem rota pública)
+
+  - name: runner-dummy
+    module: engine.strategies.dummy.runner
+    enabled: false                    # habilitar só para o teste de aceite

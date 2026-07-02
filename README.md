@@ -107,7 +107,13 @@ python -m engine.strategies.tradingview.backtest.harness --symbol BTC --interval
 
 ## Deploy (produção)
 
-`make deploy` (idempotente) na VPS, servindo `https://tokio.bz` via Caddy.
+Produção roda na VPS compartilhada via **systemd + supervisor** (ADR 0007):
+`tokio.service` (web em 127.0.0.1:3002) + `tokio-engine.service`
+(`engine/supervisor.py` mantendo gateway/replicator/runners como processos
+isolados), atrás do Caddy compartilhado servindo `https://tokio.bz`. Deploy
+contínuo por GitHub Actions no push em `main`
+([.github/workflows/deploy-vps.yml](.github/workflows/deploy-vps.yml)).
+Docker Compose (`make up`/`make deploy`) fica para dev local ou VPS dedicada.
 Procedimento completo, DNS, gates e troubleshooting:
 [`docs/HANDOFF_HERMES.md`](docs/HANDOFF_HERMES.md).
 

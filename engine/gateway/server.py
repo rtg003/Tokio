@@ -314,10 +314,14 @@ def main() -> None:
     adapter = make_adapter(settings.exchange.active, settings.exchange.network)
     state = GatewayState(settings, adapter, db)
     app = build_app(state)
+    # GATEWAY_BIND overrides the listen address (VPS: 127.0.0.1 — nothing
+    # from the engine is ever exposed publicly; see ADR 0007).
+    bind = os.environ.get("GATEWAY_BIND", settings.gateway.host)
+    port = int(os.environ.get("GATEWAY_PORT", settings.gateway.port))
     state.logger.info("health.gateway_start", {
-        "exchange": adapter.name, "network": adapter.network,
+        "exchange": adapter.name, "network": adapter.network, "bind": bind,
     })
-    uvicorn.run(app, host=settings.gateway.host, port=settings.gateway.port)
+    uvicorn.run(app, host=bind, port=port)
 
 
 if __name__ == "__main__":

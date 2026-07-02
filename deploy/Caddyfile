@@ -1,11 +1,18 @@
-# tokio.bz — automatic TLS (requires DNS resolving + ports 80/443 reachable).
-# DNS at Hostinger: A @ -> 2.57.91.91 (created) + CNAME www -> tokio.bz (pending).
+# Bloco do Tokio para o Caddyfile COMPARTILHADO da VPS (ex.: /etc/caddy/Caddyfile).
+# NÃO substitui o arquivo: o operador ACRESCENTA este bloco, preservando os
+# vhosts existentes (luthor.io, www.luthor.io, lbx.services).
+#
+# Aplicar com: sudo caddy validate --config /etc/caddy/Caddyfile
+#              sudo systemctl reload caddy    # reload, NUNCA restart
+#
+# DNS (Hostinger): A tokio.bz -> 46.202.189.126 · A www -> 46.202.189.126
+# (ou CNAME www -> tokio.bz). O registro antigo 2.57.91.91 deve ser CORRIGIDO.
+#
+# Webhook do TradingView: sem rota pública por enquanto (decisão 2026-07-02).
+# Quando for ativar, acrescentar dentro do bloco:
+#   handle /webhook* { reverse_proxy 127.0.0.1:8701 }
 
-tokio.bz {
+tokio.bz, www.tokio.bz {
 	encode gzip
-	reverse_proxy web:3000
-}
-
-www.tokio.bz {
-	redir https://tokio.bz{uri} permanent
+	reverse_proxy 127.0.0.1:3002
 }

@@ -1,4 +1,8 @@
 # Tokio — idempotent operations. See docs/HANDOFF_HERMES.md for procedures.
+#
+# NOTE (ADR 0007): compose targets are for LOCAL DEV or a dedicated VPS.
+# Production on the shared VPS uses systemd (deploy/systemd/*) + the
+# GitHub Actions workflow (.github/workflows/deploy-vps.yml) — not `make deploy`.
 
 COMPOSE_DEV  = docker compose
 COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml

@@ -1,0 +1,46 @@
+name: Deploy Tokio to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 46.202.189.126
+          username: tokio
+          port: 22
+          key: ${{ secrets.VPS_SSH_KEY }}
+          request_pty: true          # obrigatório p/ sudo -n funcionar
+          timeout: 90s               # SSH GitHub->Hostinger é flaky; re-trigger em i/o timeout
+          command_timeout: 20m
+          script: |
+            set -e
+            export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true
+            cd /home/tokio/Tokio
+            git pull --ff-only origin main
+
+            # --- engine (Python) ---
+            test -d .venv || python3 -m venv .venv
+            .venv/bin/pip install --quiet -e .
+            .venv/bin/python -m engine.cli db migrate
+
+            # --- web (Next.js standalone) ---
+            cd web
+            npm ci --no-audit --no-fund
+            npm run build
+            cp -r .next/static .next/standalone/.next/static
+            cp -r public .next/standalone/public
+            cd ..
+
+            # --- restart (sudoers: apenas restart/status destes services) ---
+            sudo -n systemctl restart tokio-engine.service
+            sudo -n systemctl restart tokio.service
+            sleep 3
+            sudo -n systemctl status tokio-engine.service --no-pager | head -15
+            sudo -n systemctl status tokio.service --no-pager | head -15
