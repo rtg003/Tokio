@@ -1,0 +1,9 @@
+id: tv_gap_fade
+symbols: [BTC]
+default_notional_usd: 25.0
+max_notional_usd: 100.0
+max_leverage: 2.0
+thresholds:
+  min_net_pnl: -15.0
+  min_trades: 5
+  eval_window_days: 14
