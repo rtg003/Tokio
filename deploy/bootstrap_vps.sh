@@ -165,6 +165,27 @@ fi
 # ----------------------------------------------------------------------------
 log "7/9 build (engine migrations + web standalone)"
 sudo -u "$APP_USER" bash -c "cd $APP_DIR && .venv/bin/python -m engine.cli db migrate" && ok "migrations locais ok"
+
+# Migrations do Supabase (Postgres) — idempotentes (IF NOT EXISTS / DROP POLICY IF EXISTS)
+if grep -q "^DATABASE_URL=..*" "$ENVF"; then
+  command -v psql >/dev/null 2>&1 || apt-get install -y -q postgresql-client >/dev/null 2>&1
+  MIG_OK=1
+  for sqlfile in "$APP_DIR"/db/migrations/supabase/*.sql; do
+    if ! sudo -u "$APP_USER" bash -c "set -a; . $ENVF; set +a; psql \"\$DATABASE_URL\" -v ON_ERROR_STOP=1 -q -f $sqlfile" 2>/tmp/tokio-psql-err.log; then
+      MIG_OK=0
+      warn "migration Supabase falhou ($(basename "$sqlfile")):"
+      head -3 /tmp/tokio-psql-err.log | sed 's/^/    /'
+      if grep -qiE "could not translate|Network is unreachable|timeout" /tmp/tokio-psql-err.log; then
+        warn "provável host direto db.* (só IPv6). Use a connection string do"
+        warn "SESSION POOLER (Connect → Session pooler) na linha DATABASE_URL= do .env"
+        warn "e rode este script de novo."
+      fi
+    fi
+  done
+  [ "$MIG_OK" -eq 1 ] && ok "migrations Supabase aplicadas (idempotente)"
+else
+  warn "DATABASE_URL ausente — migrations do Supabase puladas"
+fi
 # NEXT_PUBLIC_* é BUILD-time no Next: exportar o .env antes do build
 sudo -u "$APP_USER" bash -c "$NVM_SH cd $APP_DIR/web && set -a && . ../.env && set +a && npm ci --no-audit --no-fund >/dev/null && npm run build >/dev/null && rm -rf .next/standalone/.next/static .next/standalone/public && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public" \
   && ok "web buildado (standalone)"
