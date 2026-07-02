@@ -31,6 +31,27 @@ export function fmtTime(ts: string | null | undefined): string {
   }
 }
 
+export function fmtDateTime(ts: string | null | undefined): string {
+  // dd/mm hh:mm (America/Sao_Paulo)
+  if (!ts) return "—";
+  try {
+    const d = new Date(ts);
+    const date = d.toLocaleDateString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+    });
+    const time = d.toLocaleTimeString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return `${date} ${time}`;
+  } catch {
+    return ts;
+  }
+}
+
 export function shortAddr(a: string | null | undefined): string {
   if (!a) return "—";
   return a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;

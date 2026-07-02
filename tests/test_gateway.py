@@ -10,6 +10,15 @@ def test_health(client) -> None:
     assert data["kill_switch"] is False
 
 
+def test_balance_endpoint(client) -> None:
+    data = client.get("/balance").json()
+    assert data["ok"] is True
+    assert data["equity_usd"] == 10_000.0   # PaperAdapter fixture
+    assert data["network"] == "paper"
+    # cached response stays consistent
+    assert client.get("/balance").json()["equity_usd"] == 10_000.0
+
+
 def test_intent_full_lifecycle(client, gateway_state) -> None:
     register_strategy(gateway_state.db, "dm_test")
     resp = client.post("/intent", json={

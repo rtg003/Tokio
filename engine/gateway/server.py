@@ -275,6 +275,28 @@ def build_app(state: GatewayState) -> FastAPI:
     def positions() -> list[dict[str, Any]]:
         return [vars(p) for p in state.adapter.positions()]
 
+    _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
+
+    @app.get("/balance")
+    def balance() -> dict[str, Any]:
+        # 30s cache: balance queries hit the venue's rate-limited info API.
+        now = time.time()
+        if _balance_cache["data"] is None or now - _balance_cache["ts"] > 30:
+            try:
+                balances = state.adapter.balances()
+            except Exception as exc:  # noqa: BLE001 — venue hiccup must not 500 the UI
+                return {"ok": False, "error": str(exc)[:200],
+                        "network": state.adapter.network}
+            _balance_cache["data"] = balances
+            _balance_cache["ts"] = now
+        data = _balance_cache["data"]
+        return {
+            "ok": True,
+            "equity_usd": float(data.get("USDC", 0.0)),
+            "withdrawable_usd": float(data.get("withdrawable", 0.0)),
+            "network": state.adapter.network,
+        }
+
     # -- control API (internal network only; web is the only client) -------
     @app.post("/control/strategy/{strategy_id}/pause", dependencies=[Depends(_control_auth)])
     def pause_strategy(strategy_id: str) -> dict[str, Any]:

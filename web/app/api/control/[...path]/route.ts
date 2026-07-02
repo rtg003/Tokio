@@ -5,7 +5,7 @@ import { createClient, supabaseConfigured } from "@/lib/supabase/server";
 // internal compose network; the web is its single authenticated client. The
 // browser never sees GATEWAY_CONTROL_TOKEN. The web can never send orders and
 // can never switch accounts to mainnet — those routes simply don't exist here.
-const ALLOWED_GET = new Set(["health", "ledger", "positions"]);
+const ALLOWED_GET = new Set(["health", "ledger", "positions", "balance"]);
 const ALLOWED_POST_PATTERNS = [/^control\/strategy\/[\w-]+\/(pause|activate)$/];
 
 function gatewayBase(): string {

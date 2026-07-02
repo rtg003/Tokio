@@ -164,7 +164,12 @@ class HyperliquidAdapter(ExchangeAdapter):
 
     def subscribe_user_fills(self, address: str, callback: FillCallback) -> None:
         def _handler(msg: dict[str, Any]) -> None:
-            for fill in msg.get("data", {}).get("fills", []):
+            data = msg.get("data", {})
+            if data.get("isSnapshot"):
+                # Snapshot replays the account's PAST fills on every (re)connect;
+                # recording it would duplicate history. Only live fills count.
+                return
+            for fill in data.get("fills", []):
                 callback(fill)
 
         self.info.subscribe({"type": "userFills", "user": address}, _handler)

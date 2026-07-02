@@ -101,7 +101,7 @@ h1 { font: 600 22px/1.2 var(--sans); }
 .segmented button.on { background: var(--amber-soft); color: var(--amber); }
 
 /* ============ KPIs ============ */
-.kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 22px; }
+.kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 22px; }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); padding: 15px 16px 13px; }
 .kpi .lab { font: 600 10px var(--mono); letter-spacing: 0.14em; color: var(--faint); text-transform: uppercase; }
 .kpi .val { font: 600 26px/1.15 var(--mono); margin-top: 8px; font-feature-settings: "tnum"; }
@@ -196,7 +196,7 @@ th.num { text-align: right; }
 }
 
 /* ============ MOBILE ============ */
-@media (max-width: 1180px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 1180px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 880px) {
   .hamb { display: block; }
   .sidebar { transform: translateX(-100%); }

@@ -44,7 +44,8 @@ def gateway_state(settings: Settings, db: Database, paper: PaperAdapter) -> Gate
 def client(gateway_state: GatewayState):
     from fastapi.testclient import TestClient
 
-    os.environ.setdefault("GATEWAY_CONTROL_TOKEN", "test-token")
+    # force-set (not setdefault): the developer shell may have a real .env loaded
+    os.environ["GATEWAY_CONTROL_TOKEN"] = "test-token"
     with TestClient(build_app(gateway_state)) as c:
         yield c
 

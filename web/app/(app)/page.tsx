@@ -1,6 +1,7 @@
 import StrategyActions from "@/components/StrategyActions";
 import { createClient } from "@/lib/supabase/server";
 import {
+  fmtDateTime,
   fmtNum,
   fmtSigned,
   fmtTime,
@@ -20,13 +21,32 @@ type Metrics = {
   max_drawdown: number | null;
 };
 
+type Balance = { equity_usd: number; network: string } | null;
+
+async function fetchBalance(): Promise<Balance> {
+  const host = process.env.GATEWAY_HOST ?? "gateway";
+  const port = process.env.GATEWAY_PORT ?? "8700";
+  try {
+    const r = await fetch(`http://${host}:${port}/balance`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(4000),
+    });
+    const data = await r.json();
+    if (!data.ok) return null;
+    return { equity_usd: data.equity_usd, network: data.network };
+  } catch {
+    return null;
+  }
+}
+
 export default async function Dashboard() {
   const supabase = await createClient();
   const since = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
 
   // KPIs come from strategy_metrics_daily — dashboards never scan `events`.
-  const [{ data: metrics }, { data: strategies }, { data: orders }, { data: fills }] =
+  const [balance, { data: metrics }, { data: strategies }, { data: orders }, { data: fills }] =
     await Promise.all([
+      fetchBalance(),
       supabase
         .from("strategy_metrics_daily")
         .select("net_pnl, win_rate, n_trades, fees, profit_factor, max_drawdown")
@@ -65,7 +85,6 @@ export default async function Dashboard() {
     : null;
 
   const copyStrategies = (strategies ?? []).filter((s) => s.module === "copy_trade");
-  const otherStrategies = (strategies ?? []).filter((s) => s.module !== "copy_trade");
 
   return (
     <section>
@@ -82,6 +101,17 @@ export default async function Dashboard() {
       </div>
 
       <div className="kpis">
+        <div className="kpi">
+          <div className="lab">Saldo</div>
+          <div className="val">
+            {balance === null ? "—" : fmtNum(balance.equity_usd)}
+          </div>
+          <div className="sub">
+            {balance === null
+              ? "gateway indisponível"
+              : `USDC · ${balance.network === "mainnet" ? "mainnet" : "testnet"}`}
+          </div>
+        </div>
         <div className="kpi">
           <div className="lab">PnL líquido</div>
           <div className={`val ${pnlClass(netPnl)}`}>{fmtSigned(netPnl)}</div>
@@ -176,43 +206,6 @@ export default async function Dashboard() {
         </div>
       </div>
 
-      {otherStrategies.length > 0 && (
-        <div className="card">
-          <div className="cardhead">
-            <h2>Outras estratégias</h2>
-            <span className="cardnote">tradingview · standalone · dummy</span>
-          </div>
-          <div className="tablewrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Módulo</th>
-                  <th>Status</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {otherStrategies.map((s) => (
-                  <tr key={s.id}>
-                    <td>{s.id}</td>
-                    <td>{s.module}</td>
-                    <td>
-                      <span className={`chip ${statusChip[s.status] ?? "dry"}`}>
-                        {s.status.toUpperCase()}
-                      </span>
-                    </td>
-                    <td>
-                      <StrategyActions strategyId={s.id} status={s.status} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       <div className="card">
         <div className="cardhead">
           <h2>Ordens</h2>
@@ -295,7 +288,7 @@ export default async function Dashboard() {
               <tbody>
                 {(fills ?? []).map((f, i) => (
                   <tr key={`${f.cloid}-${i}`}>
-                    <td>{fmtTime(f.ts)}</td>
+                    <td>{fmtDateTime(f.ts)}</td>
                     <td>{f.strategy_id ?? "—"}</td>
                     <td>{f.symbol}</td>
                     <td>
