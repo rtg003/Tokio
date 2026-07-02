@@ -1,0 +1,14 @@
+# One YAML per copied trader. dry_run: true is the DEFAULT for every new
+# trader — no exceptions. Activation is a human gate via the Hermes runbook.
+name: whale01                # strategy_id becomes ct_whale01
+address: "0x0000000000000000000000000000000000000000"   # target address (replace)
+mode: fixed_usdc             # fixed_usdc | percent
+value: 50.0                  # USDC notional per position (fixed) | fraction (percent)
+max_leverage: 3.0
+blocked_assets: []           # e.g. ["MEME", "DOGE"]
+active: false                # master switch for this trader
+dry_run: true                # DEFAULT — never flip without the human gate
+thresholds:
+  min_net_pnl: -20.0
+  min_trades: 5
+  eval_window_days: 7
