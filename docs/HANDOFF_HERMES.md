@@ -21,9 +21,19 @@
 
 ## 1. Setup na VPS (PARTE A — operador com sudo, uma vez)
 
-O bootstrap admin (criar usuário `tokio`, grupo `deployers`, chave SSH de
-deploy, sudoers, units, bloco no Caddy) é do OPERADOR — roteiro completo no
-prompt de provisionamento. Resumo do que deve existir ao final:
+**Caminho rápido (recomendado)** — script idempotente que faz tudo desta
+seção (usuário, chave, sudoers, clone, runtimes, units, build, Caddy com
+validate+reload, tokens autogerados e validação final):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rtg003/Tokio/main/deploy/bootstrap_vps.sh | sudo bash
+# faltando credenciais no .env ele avisa e não sobe o engine; preencha e rode de novo
+```
+
+Ao final o script imprime a private key de deploy — copie para o secret
+`VPS_SSH_KEY` do repo (Settings → Secrets → Actions).
+
+Detalhe do que o script cria (ou faça manualmente, se preferir):
 
 1. Usuário `tokio` (home 700), no grupo `deployers`; `/home/luthor` com 750.
 2. Chave dedicada `gh_actions_deploy` no `authorized_keys` do tokio; a

@@ -31,9 +31,12 @@ jobs:
             .venv/bin/python -m engine.cli db migrate
 
             # --- web (Next.js standalone) ---
+            # NEXT_PUBLIC_* é BUILD-time no Next: exportar o .env antes do build
             cd web
             npm ci --no-audit --no-fund
+            set -a; . ../.env; set +a
             npm run build
+            rm -rf .next/standalone/.next/static .next/standalone/public
             cp -r .next/static .next/standalone/.next/static
             cp -r public .next/standalone/public
             cd ..

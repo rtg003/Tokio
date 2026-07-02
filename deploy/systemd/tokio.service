@@ -1,6 +1,7 @@
 # tokio.service — web Next.js em 127.0.0.1:3002 (VPS compartilhada, ADR 0007)
 # Instalação (operador, com sudo): copiar para /etc/systemd/system/tokio.service
-# Node via nvm: o ExecStart usa bash -l para carregar o nvm do usuário tokio.
+# Node: symlink estável /usr/local/bin/tokio-node criado pelo bootstrap_vps.sh
+# (nvm não carrega em shell não-interativo — não usar bash -lc aqui).
 
 [Unit]
 Description=Tokio web (Next.js)
@@ -15,7 +16,7 @@ Environment=PORT=3002
 Environment=HOSTNAME=127.0.0.1
 Environment=NODE_ENV=production
 # standalone build: o deploy copia .next/static e public para dentro de .next/standalone
-ExecStart=/usr/bin/env bash -lc 'exec node .next/standalone/server.js'
+ExecStart=/usr/local/bin/tokio-node .next/standalone/server.js
 Restart=always
 RestartSec=3
 MemoryMax=512M
