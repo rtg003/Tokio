@@ -2,10 +2,12 @@
 # ============================================================================
 # Tokio — bootstrap COMPLETO da VPS compartilhada (PARTE A + build + Caddy).
 #
-# Rodar como o OPERADOR (rtg003), com sudo, na VPS 46.202.189.126:
+# Rodar como o OPERADOR (rtg003), com sudo, na VPS 46.202.189.126.
+# O repo é PRIVADO: o acesso é via deploy key read-only (o script gera e
+# orienta). Com o repo já clonado:
 #
-#   curl -fsSL https://raw.githubusercontent.com/rtg003/Tokio/main/deploy/bootstrap_vps.sh | sudo bash
-#   # ou, com o repo clonado:  sudo bash deploy/bootstrap_vps.sh
+#   sudo bash /home/tokio/Tokio/deploy/bootstrap_vps.sh
+#   # branch diferente de main (pré-merge): TOKIO_BRANCH=<branch> sudo -E bash ...
 #
 # IDEMPOTENTE: pode rodar quantas vezes precisar; cada etapa detecta o que
 # já existe. Se faltar credencial no .env, ele avisa, NÃO sobe o engine, e
@@ -20,7 +22,10 @@ set -euo pipefail
 
 APP_USER="tokio"
 APP_DIR="/home/tokio/Tokio"
-REPO_URL="https://github.com/rtg003/Tokio.git"
+# Repo é PRIVADO: clone/pull via deploy key (read-only) do usuário tokio.
+REPO_URL="git@github.com:rtg003/Tokio.git"
+GIT_SSH='ssh -i /home/tokio/.ssh/gh_repo_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
+BRANCH="${TOKIO_BRANCH:-main}"
 CADDYFILE="/etc/caddy/Caddyfile"
 REQUIRED_VARS=(HL_ACCOUNT_ADDRESS HL_AGENT_PRIVATE_KEY SUPABASE_URL SUPABASE_ANON_KEY
                SUPABASE_SERVICE_ROLE_KEY DATABASE_URL NEXT_PUBLIC_SUPABASE_URL
@@ -72,13 +77,39 @@ chmod 440 /etc/sudoers.d/tokio
 visudo -c >/dev/null && ok "sudoers válido"
 
 # ----------------------------------------------------------------------------
-log "4/9 repositório em $APP_DIR"
+log "4/9 repositório em $APP_DIR (repo privado — deploy key read-only)"
+DEPLOY_KEY="/home/$APP_USER/.ssh/gh_repo_deploy"
+if [ ! -f "$DEPLOY_KEY" ]; then
+  sudo -u "$APP_USER" ssh-keygen -t ed25519 -f "$DEPLOY_KEY" -N "" -C "tokio-repo-deploy" >/dev/null
+fi
+if ! grep -q "gh_repo_deploy" "/home/$APP_USER/.ssh/config" 2>/dev/null; then
+  sudo -u "$APP_USER" tee -a "/home/$APP_USER/.ssh/config" >/dev/null <<'SSHCFG'
+Host github.com
+  IdentityFile ~/.ssh/gh_repo_deploy
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+SSHCFG
+  sudo -u "$APP_USER" chmod 600 "/home/$APP_USER/.ssh/config"
+fi
+if ! sudo -u "$APP_USER" env GIT_SSH_COMMAND="$GIT_SSH" git ls-remote "$REPO_URL" HEAD >/dev/null 2>&1; then
+  warn "GitHub ainda não aceita a deploy key deste servidor."
+  warn "Adicione a chave abaixo em: github.com/rtg003/Tokio → Settings → Deploy keys →"
+  warn "'Add deploy key' → título 'vps-tokio' → NÃO marque 'Allow write access'."
+  echo "  ============================================================"
+  cat "$DEPLOY_KEY.pub"
+  echo "  ============================================================"
+  warn "Depois rode este script de novo."
+  exit 0
+fi
 if [ ! -d "$APP_DIR/.git" ]; then
-  sudo -u "$APP_USER" git clone "$REPO_URL" "$APP_DIR"
-  ok "clonado"
+  sudo -u "$APP_USER" env GIT_SSH_COMMAND="$GIT_SSH" git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+  ok "clonado (branch $BRANCH)"
 else
-  sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only origin main
-  ok "atualizado (git pull)"
+  sudo -u "$APP_USER" git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+  sudo -u "$APP_USER" env GIT_SSH_COMMAND="$GIT_SSH" git -C "$APP_DIR" fetch origin "$BRANCH"
+  sudo -u "$APP_USER" git -C "$APP_DIR" checkout "$BRANCH" >/dev/null 2>&1 || true
+  sudo -u "$APP_USER" env GIT_SSH_COMMAND="$GIT_SSH" git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
+  ok "atualizado (branch $BRANCH)"
 fi
 
 # ----------------------------------------------------------------------------

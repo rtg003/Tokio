@@ -21,16 +21,31 @@
 
 ## 1. Setup na VPS (PARTE A — operador com sudo, uma vez)
 
-**Caminho rápido (recomendado)** — script idempotente que faz tudo desta
-seção (usuário, chave, sudoers, clone, runtimes, units, build, Caddy com
-validate+reload, tokens autogerados e validação final):
+**Caminho rápido (recomendado)** — o repo é PRIVADO, então o primeiro acesso
+usa uma deploy key read-only. Três blocos, como rtg003 na VPS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rtg003/Tokio/main/deploy/bootstrap_vps.sh | sudo bash
-# faltando credenciais no .env ele avisa e não sobe o engine; preencha e rode de novo
+# (1) criar usuário + deploy key do repo e IMPRIMIR a chave pública
+sudo adduser --disabled-password --gecos "" --home /home/tokio tokio 2>/dev/null || true
+sudo -u tokio mkdir -p /home/tokio/.ssh
+sudo -u tokio ssh-keygen -t ed25519 -f /home/tokio/.ssh/gh_repo_deploy -N "" -C "tokio-repo-deploy"
+sudo cat /home/tokio/.ssh/gh_repo_deploy.pub
 ```
 
-Ao final o script imprime a private key de deploy — copie para o secret
+Adicionar a chave pública impressa em: github.com/rtg003/Tokio → Settings →
+**Deploy keys** → Add deploy key → título `vps-tokio` → **sem** write access.
+
+```bash
+# (2) clonar e (3) rodar o bootstrap idempotente
+sudo -u tokio env GIT_SSH_COMMAND='ssh -i /home/tokio/.ssh/gh_repo_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' \
+  git clone git@github.com:rtg003/Tokio.git /home/tokio/Tokio
+sudo bash /home/tokio/Tokio/deploy/bootstrap_vps.sh
+```
+
+O script faz o resto (sudoers, runtimes, units, build, Caddy com
+validate+reload, tokens autogerados, validação) e, faltando credenciais no
+`.env`, avisa e não sobe o engine — preencha e rode de novo. Ao final imprime
+a private key de deploy do GitHub Actions — copie para o secret
 `VPS_SSH_KEY` do repo (Settings → Secrets → Actions).
 
 Detalhe do que o script cria (ou faça manualmente, se preferir):
