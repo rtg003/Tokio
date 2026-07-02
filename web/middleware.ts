@@ -14,6 +14,16 @@ function supabaseUrlValid(u: string | undefined): u is string {
   }
 }
 
+// Behind the reverse proxy the internal origin is 127.0.0.1:3002; redirects
+// must target the PUBLIC origin from the X-Forwarded-* headers set by Caddy.
+function publicUrl(request: NextRequest, path: string): URL {
+  const host =
+    request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  const proto = request.headers.get("x-forwarded-proto") ?? "https";
+  if (host) return new URL(path, `${proto}://${host}`);
+  return new URL(path, request.url);
+}
+
 // Session required on ALL routes except /login and static assets.
 export async function middleware(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -24,7 +34,7 @@ export async function middleware(request: NextRequest) {
     // Unconfigured environment (first boot): only the login screen renders,
     // showing the configuration notice.
     if (request.nextUrl.pathname !== "/login") {
-      return NextResponse.redirect(new URL("/login", request.url));
+      return NextResponse.redirect(publicUrl(request, "/login"));
     }
     return response;
   }
@@ -52,10 +62,10 @@ export async function middleware(request: NextRequest) {
 
   const isLogin = request.nextUrl.pathname === "/login";
   if (!user && !isLogin) {
-    return NextResponse.redirect(new URL("/login", request.url));
+    return NextResponse.redirect(publicUrl(request, "/login"));
   }
   if (user && isLogin) {
-    return NextResponse.redirect(new URL("/", request.url));
+    return NextResponse.redirect(publicUrl(request, "/"));
   }
   return response;
 }
