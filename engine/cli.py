@@ -141,6 +141,43 @@ def cmd_strategy_archive(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_strategy_activate(args: argparse.Namespace) -> int:
+    """HUMAN GATE tool: promotes dry_run -> active (the control API refuses this
+    on purpose). Requires --evidence pointing to the docs/ file with net
+    positive expectancy, and interactive confirmation unless --yes."""
+    db = _db()
+    settings = get_settings()
+    logger = EventLogger("cli", settings.logs_dir, db=db)
+    sid = args.strategy_id
+    rows = db.query("SELECT status FROM strategies WHERE id = ?", (sid,))
+    if not rows:
+        print(f"estratégia desconhecida: {sid}", file=sys.stderr)
+        return 1
+    status = rows[0]["status"]
+    if status == "active":
+        print(f"{sid} já está ativa")
+        return 0
+    if status not in ("dry_run", "paused", "auto_paused"):
+        print(f"não é possível ativar a partir de '{status}'", file=sys.stderr)
+        return 1
+    if status == "dry_run" and not args.evidence:
+        print("ERRO: promover de dry_run exige --evidence docs/<arquivo> com a "
+              "expectância positiva líquida registrada (gate humano).", file=sys.stderr)
+        return 1
+    if not args.yes:
+        print(f"ATIVAR {sid} (status atual: {status}). Ordens REAIS serão enviadas "
+              f"à corretora ({get_settings().exchange.network}).")
+        if input("confirmar? [y/N] ").strip().lower() != "y":
+            print("abortado")
+            return 1
+    db.execute("UPDATE strategies SET status = 'active' WHERE id = ?", (sid,))
+    logger.info("strategy.activated",
+                {"by": "cli_human_gate", "from": status, "evidence": args.evidence},
+                strategy_id=sid)
+    print(f"{sid} ativa (evidência: {args.evidence or 'n/a — reativação de pausa'})")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     db = _db()
     if args.strategy:
@@ -239,6 +276,11 @@ def build_parser() -> argparse.ArgumentParser:
     arch.add_argument("--close-positions", action="store_true")
     arch.add_argument("--yes", action="store_true")
     arch.set_defaults(func=cmd_strategy_archive)
+    act = st_sub.add_parser("activate")
+    act.add_argument("strategy_id")
+    act.add_argument("--evidence", help="docs/<arquivo> com expectância positiva líquida")
+    act.add_argument("--yes", action="store_true")
+    act.set_defaults(func=cmd_strategy_activate)
 
     rep = sub.add_parser("report")
     rep.add_argument("--daily", action="store_true")

@@ -60,10 +60,12 @@ O contrato é uniforme (`base_runner`): o mesmo procedimento serve para todas.
 1. `python -m engine.cli strategy list` — confirme id e estado.
 2. Leia o `strategy.md` da estratégia (lógica de decisão isolada por pasta).
 3. Métricas: `python -m engine.cli report --strategy <id>`.
-4. Pausar/ativar: API de controle do gateway (`POST /control/strategy/<id>/pause`
-   ou `/activate`, header `X-Control-Token`). Ativar só funciona de
-   `paused/auto_paused`; promover de `dry_run` a `active` é gate humano com
-   evidência de expectância positiva líquida registrada em `docs/`.
+4. Pausar/reativar: API de controle do gateway (`POST /control/strategy/<id>/pause`
+   ou `/activate`, header `X-Control-Token`) — `/activate` só funciona de
+   `paused/auto_paused`. Promover de `dry_run` a `active` é GATE HUMANO:
+   `python -m engine.cli strategy activate <id> --evidence docs/<arquivo>`
+   (exige a evidência de expectância positiva líquida; execute somente após
+   confirmação humana explícita no turno).
 5. Arquivar: `python -m engine.cli strategy archive <id> --yes`
    (cancela ordens, marca `archived`, move a pasta; histórico fica no banco).
    Depois escreva o post-mortem em `docs/post_mortems/<id>.md` e agregue a
