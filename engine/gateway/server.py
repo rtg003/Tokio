@@ -71,7 +71,47 @@ class GatewayState:
             kill_file=settings.kill_file,
         )
         self.started_at = time.time()
+        self._kill_handled = False
         adapter.subscribe_own_fills(self.on_own_fill)
+
+    # -- kill switch: cancel open orders once when engaged ------------------
+    def handle_kill_engaged(self) -> int:
+        """Cancel every open order (best effort). Returns cancelled count.
+        Called by the control API and by the sentinel-file watcher, so the
+        CLI path (KILL file) also triggers cancellation."""
+        if self._kill_handled:
+            return 0
+        self._kill_handled = True
+        open_orders = self.db.query(
+            "SELECT cloid, symbol FROM orders WHERE status IN "
+            "('created','sent','acked','partially_filled')")
+        cancelled = 0
+        for o in open_orders:
+            try:
+                if self.adapter.cancel(o["symbol"], cloid=o["cloid"]):
+                    self.db.update_order_status(o["cloid"], "cancelled",
+                                                closed_at=utcnow())
+                    cancelled += 1
+            except Exception as exc:  # noqa: BLE001 — keep cancelling the rest
+                self.logger.error("killswitch.cancel_failed",
+                                  {"cloid": o["cloid"], "error": str(exc)[:200]})
+        self.logger.error("killswitch.open_orders_cancelled",
+                          {"cancelled": cancelled, "total_open": len(open_orders)})
+        return cancelled
+
+    def watch_kill_file(self, interval_s: float = 2.0) -> None:
+        """Background watcher: reacts to the KILL sentinel created by the CLI."""
+        import threading
+
+        def _loop() -> None:
+            while True:
+                if self.enforcer.kill_switch_engaged():
+                    self.handle_kill_engaged()
+                else:
+                    self._kill_handled = False
+                time.sleep(interval_s)
+
+        threading.Thread(target=_loop, daemon=True, name="kill-watcher").start()
 
     # -- fills ------------------------------------------------------------
     def on_own_fill(self, fill: dict[str, Any]) -> None:
@@ -320,7 +360,8 @@ def build_app(state: GatewayState) -> FastAPI:
     @app.post("/control/kill", dependencies=[Depends(_control_auth)])
     def kill(reason: str = "control_api") -> dict[str, Any]:
         state.enforcer.engage_kill_switch(reason)
-        return {"ok": True}
+        cancelled = state.handle_kill_engaged()
+        return {"ok": True, "open_orders_cancelled": cancelled}
 
     return app
 
@@ -335,6 +376,7 @@ def main() -> None:
 
     adapter = make_adapter(settings.exchange.active, settings.exchange.network)
     state = GatewayState(settings, adapter, db)
+    state.watch_kill_file()
     app = build_app(state)
     # GATEWAY_BIND overrides the listen address (VPS: 127.0.0.1 — nothing
     # from the engine is ever exposed publicly; see ADR 0007).

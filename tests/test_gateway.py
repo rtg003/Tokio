@@ -88,6 +88,28 @@ def test_control_api_cannot_promote_dry_run(client, gateway_state) -> None:
     assert r.status_code == 409  # dry_run -> active is a human gate
 
 
+def test_kill_switch_cancels_open_orders(client, gateway_state) -> None:
+    from engine.core.db import utcnow
+
+    register_strategy(gateway_state.db, "dm_kill")
+    gateway_state.db.insert("orders", {
+        "cloid": "0xopen1", "strategy_id": "dm_kill", "symbol": "BTC",
+        "side": "buy", "type": "limit", "size": 0.001, "price": 90_000.0,
+        "status": "acked", "created_at": utcnow(),
+    })
+    r = client.post("/control/kill", headers={"X-Control-Token": "test-token"}).json()
+    assert r["ok"] is True
+    assert r["open_orders_cancelled"] == 1
+    row = gateway_state.db.query("SELECT status FROM orders WHERE cloid = '0xopen1'")[0]
+    assert row["status"] == "cancelled"
+    # engaged switch blocks any new intent
+    resp = client.post("/intent", json={
+        "strategy_id": "dm_kill", "symbol": "BTC", "side": "buy",
+        "notional_usd": 50.0,
+    }).json()
+    assert resp["ok"] is False and resp["reason"] == "kill_switch_engaged"
+
+
 def test_circuit_breaker_auto_pauses_all(client, gateway_state, settings) -> None:
     register_strategy(gateway_state.db, "dm_loss")
     register_strategy(gateway_state.db, "dm_other")
