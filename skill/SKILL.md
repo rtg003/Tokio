@@ -32,7 +32,8 @@ pausar/ativar/arquivar estratégias e responder a incidentes.
 A fonte da verdade é o banco. Para saber o que existe e em que estado:
 
 ```bash
-cd ${HERMES_SKILL_DIR}/../.. && python -m engine.cli strategy list
+# ${HERMES_SKILL_DIR} aponta para <repo>/skill — a raiz do repo é um nível acima
+cd ${HERMES_SKILL_DIR}/.. && python -m engine.cli strategy list
 ```
 
 Estados: `draft → dry_run → active → paused/auto_paused → archived`.

@@ -92,6 +92,25 @@ Ver [`PLAN.md`](PLAN.md) e o prompt de build. Pastas principais: `engine/`
 (gateway, core, exchanges, strategies), `db/migrations/`, `skill/`, `web/`,
 `docs/`, `tests/`, `config/`.
 
+## Ferramentas de análise (CLI)
+
+```bash
+# discovery de traders p/ copy trade (relatório ranqueado JSON + markdown)
+python -m engine.strategies.copy_trade.discovery --top 10
+
+# scanner 24/7: gap do CME, anomalias de funding, baixa liquidez
+python -m engine.strategies.tradingview.scanner
+
+# backtest local com candles históricos da Hyperliquid (métricas líquidas)
+python -m engine.strategies.tradingview.backtest.harness --symbol BTC --interval 4h --days 90
+```
+
+## Deploy (produção)
+
+`make deploy` (idempotente) na VPS, servindo `https://tokio.bz` via Caddy.
+Procedimento completo, DNS, gates e troubleshooting:
+[`docs/HANDOFF_HERMES.md`](docs/HANDOFF_HERMES.md).
+
 ## Segurança
 
 - `.env` está no `.gitignore` desde o commit 0; nenhum secret é commitado,
