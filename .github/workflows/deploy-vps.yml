@@ -1,8 +1,10 @@
+# CAMINHO SECUNDÁRIO (manual). O deploy primário é PULL-BASED: o timer
+# tokio-autodeploy na VPS puxa origin/main a cada 2 min (deploy/autodeploy.sh)
+# usando a deploy key do repo — sem secret VPS_SSH_KEY e sem depender da rede
+# GitHub->Hostinger. Este workflow fica disponível apenas para disparo manual.
 name: Deploy Tokio to VPS
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch: {}
 
 jobs:

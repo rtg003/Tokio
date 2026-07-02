@@ -1,0 +1,10 @@
+[Unit]
+Description=Tokio autodeploy — verifica origin/main a cada 2 min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=tokio-autodeploy.service
+
+[Install]
+WantedBy=timers.target

@@ -191,11 +191,16 @@ sudo -u "$APP_USER" bash -c "$NVM_SH cd $APP_DIR/web && set -a && . ../.env && s
   && ok "web buildado (standalone)"
 
 # ----------------------------------------------------------------------------
-log "8/9 systemd units"
+log "8/9 systemd units (+ autodeploy pull-based a cada 2 min)"
 cp "$APP_DIR/deploy/systemd/tokio.service" /etc/systemd/system/
 cp "$APP_DIR/deploy/systemd/tokio-engine.service" /etc/systemd/system/
+cp "$APP_DIR/deploy/systemd/tokio-autodeploy.service" /etc/systemd/system/
+cp "$APP_DIR/deploy/systemd/tokio-autodeploy.timer" /etc/systemd/system/
+chmod +x "$APP_DIR/deploy/autodeploy.sh"
 systemctl daemon-reload
 systemctl enable tokio.service tokio-engine.service >/dev/null 2>&1
+systemctl enable --now tokio-autodeploy.timer >/dev/null 2>&1
+ok "autodeploy: a VPS puxa origin/main a cada 2 min e se atualiza sozinha"
 systemctl restart tokio.service && ok "tokio.service (web) no ar"
 if [ "$ENV_READY" -eq 1 ]; then
   systemctl restart tokio-engine.service && ok "tokio-engine.service (engine) no ar"

@@ -1,0 +1,9 @@
+# Executa um ciclo de autodeploy (chamado pelo tokio-autodeploy.timer).
+[Unit]
+Description=Tokio pull-based autodeploy (origin/main)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/tokio/Tokio/deploy/autodeploy.sh
+TimeoutStartSec=20m

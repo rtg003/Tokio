@@ -94,16 +94,20 @@ Supabase (projeto **Tokio**) — estado: migration `0001_initial` aplicada,
 signups desabilitados, usuário `rtg003@gmail.com` criado (itens 1–3 do passo
 a passo, concluídos em 2026-07-02).
 
-## 2. Deploy contínuo
+## 2. Deploy contínuo (PULL-BASED)
 
-- **Caminho normal**: push/merge em `main` dispara
-  `.github/workflows/deploy-vps.yml` → SSH como `tokio` → `git pull` → build
-  (venv + migrations + `next build` standalone) → `sudo -n systemctl restart`
-  dos dois services. Re-trigger manual: aba Actions → "Deploy Tokio to VPS".
-- Pegadinhas herdadas: `request_pty: true` + `sudo -n` são obrigatórios;
-  `dial tcp :22: i/o timeout` do runner do GitHub é flaky — apenas re-trigger.
-- **Rollback**: `git revert` do commit ruim em `main` (novo push = novo
-  deploy). Dados locais (`data/`, `logs/`) não são tocados pelo deploy.
+- **Caminho normal**: o timer `tokio-autodeploy.timer` roda
+  `deploy/autodeploy.sh` a cada 2 min na própria VPS: se `origin/main` mudou,
+  faz `git pull` (deploy key read-only), rebuilda engine+web e reinicia os
+  services. **Merge na `main` = deploy em até ~2 min**, sem segredo no GitHub
+  e sem depender da rede GitHub→Hostinger.
+- Acompanhar: `journalctl -u tokio-autodeploy.service -n 30 --no-pager`
+  (como operador) ou `systemctl list-timers | grep tokio`.
+- Deploy manual imediato (sem esperar o timer): `sudo systemctl start
+  tokio-autodeploy.service` (operador) — ou o workflow "Deploy Tokio to VPS"
+  na aba Actions (secundário, exige o secret `VPS_SSH_KEY`).
+- **Rollback**: `git revert` do commit ruim em `main` (o autodeploy aplica o
+  revert no ciclo seguinte). Dados locais (`data/`, `logs/`) nunca são tocados.
 
 ## 3. Registro da skill no Hermes
 
