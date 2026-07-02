@@ -3,11 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { supabaseConfigured } from "@/lib/supabase/config";
 
-const configured = Boolean(
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-);
+const configured = supabaseConfigured();
 
 export default function LoginPage() {
   const router = useRouter();
@@ -19,7 +17,10 @@ export default function LoginPage() {
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     if (!configured) {
-      setError("Supabase não configurado — preencha o .env do servidor.");
+      setError(
+        "Supabase não configurado — confira NEXT_PUBLIC_SUPABASE_URL no .env " +
+          "(precisa começar com https:// e ser rebuildado).",
+      );
       return;
     }
     setLoading(true);
