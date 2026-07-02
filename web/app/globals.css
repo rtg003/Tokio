@@ -99,6 +99,9 @@ h1 { font: 600 22px/1.2 var(--sans); }
 .segmented button { padding: 8px 13px; font: 500 12px var(--mono); color: var(--muted); border-right: 1px solid var(--line); }
 .segmented button:last-child { border-right: none; }
 .segmented button.on { background: var(--amber-soft); color: var(--amber); }
+.datewrap { display: none; gap: 6px; align-items: center; font: 500 12px var(--mono); color: var(--faint); }
+.datewrap.show { display: flex; }
+.dateinput { width: 106px; text-align: center; }
 
 /* ============ KPIs ============ */
 .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 22px; }
