@@ -23,12 +23,22 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
   verdadeiro); `profit_factor` e `liq_distance` não calculados; coorte não é
   bidimensional.
 
-## logic_version: 2 — spec PROMPT_DISCOVERY_TRADERS_v4 (PENDENTE)
+## logic_version: 2 — spec PROMPT_DISCOVERY_TRADERS_v5 (EM IMPLEMENTAÇÃO)
 
-Substitui integralmente a spec breve da Fase 3. Aguardando o arquivo
-`PROMPT_DISCOVERY_TRADERS_v4.md` (não recebido junto ao patch). Ao aplicar:
-
-- coorte **bidimensional** (incl. separação smart vs. rekt, com teste);
-- TWRR 30d real, profit factor por candidato, distância de liquidação;
-- `cohort_snapshots` alimentado pela nova segmentação;
-- candidatos existentes re-upsertados com `logic_version: 2`.
+- **Spec**: `docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md` (recebida 2026-07-03).
+  Substitui integralmente a spec breve da Fase 3. Funil de 3 estágios
+  (coleta 4 janelas → 11 hard filters → scoring ponderado), coorte
+  bidimensional (tamanho × PnL), coorte de controle rekt com teste de
+  separação, TWRR neutro a aportes, CLI `scan/inspect/positioning/token/report`.
+- **Patch de scoring (2026-07-03, humano)** — profit factor com crédito
+  gradativo, já implementado em `engine/strategies/copy_trade/metrics.py`:
+  - antes: cap duro em 3.0 → depois: integral até 3.0; meio-crédito 3.0–5.0
+    APENAS se `n_trades ≥ 60` na janela; acima de 5.0 não pontua;
+  - PF calculado incluindo PnL não realizado das posições abertas no
+    fechamento da janela (PF só de realizados é inflável ao não fechar
+    perdedores);
+  - motivo: PF extremo com amostra pequena é variância, não habilidade;
+  - resultado esperado: score deixa de premiar sortudos de poucas operações;
+  - testes: PF 4.8/32 trades sem crédito estendido; PF 4.5/80 trades com.
+- Mini-plano endpoint → métrica em `docs/discovery_v2_plan.md` (gate humano
+  da spec antes do código do funil).
