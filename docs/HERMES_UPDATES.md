@@ -1,6 +1,8 @@
 # HERMES_UPDATES — inbox de atualizações para o operador (Hermes)
 
-> Canal formal CONSTRUTOR → OPERADOR. Arquivo **append-only**: entradas são
+> Canal formal CONSTRUTOR (Cursor) → OPERADOR (Hermes). Espelho de
+> `docs/CURSOR_UPDATES.md`; protocolo bilateral completo em `AGENTS.md`
+> (ADR 0009). Arquivo **append-only**: entradas são
 > numeradas sequencialmente (`UPDATE-NNNN`) e **nunca editadas depois de
 > publicadas** — a ÚNICA alteração permitida em entrada antiga é a linha
 > `Status:` (`PENDENTE` → `APLICADO em <data>`), feita pelo Hermes após
@@ -130,3 +132,56 @@ f) **Rotinas**: `discovery scan` diário às **05:00 America/Sao_Paulo**;
   correspondente.
 - Explicar de volta ao humano, em uma mensagem, a regra do PF (item c) e o
   porquê do gate em testnet (item a) — teste de internalização do racional.
+
+---
+
+## UPDATE-0002 · 2026-07-03 · Status: PENDENTE
+
+**Origem**: PR #6 (protocolo bilateral — evolução do inbox instaurado no
+mesmo PR)
+
+**Tipo**: operacao
+
+**Resumo**: o protocolo de comunicação virou **BILATERAL** e ganhou regras de
+coordenação de trabalho concorrente — contrato completo em **`AGENTS.md`** na
+raiz do repo (ADR 0009,
+`docs/decisions/0009-protocolo-bilateral-cursor-hermes.md`). Racional: dois
+agentes (Cursor = construtor; Hermes = operador) abrem PRs em paralelo e as
+sessões não têm memória — sem inbox reverso, ritual de sincronização e trava
+de área, um agente sobrescreve ou "corrige" o trabalho do outro. Em resumo:
+
+- **Inbox reverso**: `docs/CURSOR_UPDATES.md` (você → Cursor), mesmo formato
+  deste arquivo (UPDATE-NNNN, append-only, Status como única edição, nunca
+  autoriza violar gates/caps).
+- **Ritual pré-alteração** (AGENTS.md §2, obrigatório para os dois agentes):
+  fetch+pull da main → ler o próprio inbox e aplicar PENDENTES → `gh pr list`
+  (área sobreposta a PR aberto do outro = não iniciar; comentar/inboxar e
+  aguardar) → branch + **draft PR imediato** como trava de área.
+- **Regra do mesmo PR, bilateral** (AGENTS.md §3): seus PRs que afetem o
+  Cursor DEVEM incluir entrada em `docs/CURSOR_UPDATES.md` no mesmo PR — e o
+  Cursor vai exigir isso em review, assim como você deve exigir a entrada
+  neste arquivo nos PRs dele que te afetem.
+- **Desempate de área** (AGENTS.md §4): código/arquitetura/schema =
+  prioridade do Cursor; config operacional/skill/cron = SUA prioridade;
+  conflito genuíno = ambos param e notificam o humano (rtg003).
+
+**Ações do Hermes**:
+
+1. Ler `AGENTS.md` integralmente e adotá-lo como contrato de coordenação.
+2. Incorporar o ritual pré-alteração (§2) como primeira ação de toda sessão
+   sua que vá alterar algo no repo — incluindo abrir draft PR imediatamente
+   ao começar.
+3. Passar a escrever em `docs/CURSOR_UPDATES.md` (no mesmo PR) toda mudança
+   sua que exija ação/conhecimento do Cursor.
+4. Em review de PRs do Cursor que te afetem, exigir a entrada neste arquivo
+   antes de aprovar.
+5. Após aplicar cada entrada deste inbox, marcar `Status: APLICADO em
+   <data>` (única edição permitida).
+
+**Validação**:
+
+- Próximo PR seu que afete o Cursor contém entrada em
+  `docs/CURSOR_UPDATES.md`.
+- Seus PRs nascem como draft imediatamente ao iniciar o trabalho.
+- Este arquivo com UPDATE-0001 e UPDATE-0002 marcados `APLICADO` após você
+  executar as ações.

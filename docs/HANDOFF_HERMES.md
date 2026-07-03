@@ -222,9 +222,15 @@ para interpretar o resultado e notificar o humano por exceção.
 | query na HL devolve vazio | consultou endereço da agent wallet | consultar SEMPRE o endereço da conta master |
 | `luthor.io` fora do ar após mexer no proxy | restart do Caddy em vez de reload | `sudo systemctl reload caddy` e avisar o operador IMEDIATAMENTE |
 
-## 8. Inbox de atualizações do operador — `docs/HERMES_UPDATES.md`
+## 8. Inboxes e coordenação bilateral — `AGENTS.md` (ADR 0009)
 
-Canal formal CONSTRUTOR → OPERADOR (protocolo instaurado em 2026-07-03):
+O protocolo é BILATERAL: `docs/HERMES_UPDATES.md` (Cursor → Hermes) e
+`docs/CURSOR_UPDATES.md` (Hermes → Cursor). O contrato completo — ritual
+pré-alteração, regra do mesmo PR nos dois sentidos, draft PR como trava de
+área e desempate (código/schema = Cursor; config operacional/skill/cron =
+Hermes; conflito genuíno = parar e notificar rtg003) — está em **`AGENTS.md`
+na raiz do repo**, de execução obrigatória no início de toda sessão de
+agente. Para o canal Cursor → Hermes (instaurado em 2026-07-03):
 
 - **REGRA PERMANENTE**: todo PR cujo merge exija ação, conhecimento novo ou
   mudança de comportamento do operador DEVE incluir uma entrada
