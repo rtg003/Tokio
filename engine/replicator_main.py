@@ -14,7 +14,9 @@ def main() -> None:
     settings = get_settings()
     db = Database(settings.sqlite_path)
     db.migrate()
-    logger = EventLogger("replicator", settings.logs_dir)
+    # db no logger: falhas de replicação viram eventos consultáveis (a fila
+    # local segura tudo se o Supabase estiver fora — outbox cuida do resto)
+    logger = EventLogger("replicator", settings.logs_dir, db=db)
     sink = SupabaseSink()
     logger.info("health.replicator_start", {"configured": sink.configured})
     Replicator(

@@ -33,7 +33,15 @@ _PK_COLUMNS: dict[str, tuple[str, ...]] = {
     "fills": ("id",),
     "events": ("id",),
     "strategy_metrics_daily": ("strategy_id", "day"),
+    "traders": ("address",),
+    "cohort_snapshots": ("id",),
 }
+# INVARIANTE (testada): toda tabela replicada TEM entrada explícita aqui.
+# PK errada => dedup colapsa linhas distintas e o PostgREST devolve 400
+# (on_conflict com coluna inexistente) — foi exatamente o bug da tabela
+# traders em 2026-07-03.
+assert set(_PK_COLUMNS) == _REPLICATED_TABLES, \
+    "toda tabela em _REPLICATED_TABLES precisa de PK em _PK_COLUMNS"
 
 
 def utcnow() -> str:
