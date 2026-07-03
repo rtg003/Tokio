@@ -33,7 +33,7 @@ Validação: como confirmar que aplicou corretamente
 
 ## UPDATE-0001 · 2026-07-03 · Status: PENDENTE
 
-**Origem**: PRs #4 e #5 (merged) + este PR (que instaura o protocolo do inbox)
+**Origem**: PR #6 (protocolo do inbox), consolidando PRs #4 e #5 (merged)
 
 **Tipo**: logica_discovery + operacao
 
