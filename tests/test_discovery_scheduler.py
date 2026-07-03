@@ -91,12 +91,12 @@ def test_bootstrap_retries_while_table_empty(settings, db) -> None:
 
 def test_scan_failure_is_captured_and_logged(settings, db, monkeypatch) -> None:
     """run_scan nunca vaza exceção: falha vira discovery.scan_failed + False."""
-    import engine.strategies.copy_trade.discovery as discovery_mod
+    import engine.strategies.copy_trade.funnel as funnel_mod
 
     def boom(*a: object, **kw: object) -> None:
         raise RuntimeError("api fora do ar (simulado)")
 
-    monkeypatch.setattr(discovery_mod, "run_discovery", boom)
+    monkeypatch.setattr(funnel_mod, "run_scan", boom)
     logger = EventLogger("sched-test", settings.logs_dir, db=db)
     from engine.strategies.copy_trade.discovery_scheduler import run_scan
 

@@ -42,34 +42,40 @@ def traders_table_empty(db: Database) -> bool:
 
 
 def run_scan(db: Database, logger: EventLogger, *, reason: str) -> bool:
-    """Executa uma varredura e persiste na tabela `traders`. True = sucesso."""
+    """Executa uma varredura v2 (funil completo) e persiste. True = sucesso."""
+    from engine.strategies.copy_trade import funnel
     from engine.strategies.copy_trade.discovery import (
-        HyperliquidDiscoverySource,
-        LOGIC_VERSION,
-        persist_candidates,
-        render_markdown,
-        run_discovery,
+        emit_logic_updated_if_needed,
+        reports_dir,
     )
+    from engine.strategies.copy_trade.hl_data import HLDataClient
 
     t0 = time.monotonic()
-    logger.info("discovery.scan_started", {"reason": reason, "top": SCAN_TOP})
     try:
-        source = HyperliquidDiscoverySource()
-        candidates = run_discovery(source, top=SCAN_TOP)
-        persist_candidates(db, candidates)
+        cfg = funnel.load_config()
+        emit_logic_updated_if_needed(db, logger, cfg)
+        logger.info("discovery.scan_started",
+                    {"reason": reason, "logic_version": cfg["logic_version"]})
+        col = cfg["collection"]
+        client = HLDataClient(db, request_budget=int(col["request_budget"]),
+                              cache_ttl_hours=float(col["cache_ttl_hours"]))
+        result = funnel.run_scan(client, db, cfg, logger=logger)
+        funnel.persist_scan(db, result, cfg, client=client, logger=logger)
 
-        settings = get_settings()
-        out = settings.data_dir / "reports" / "discovery"
-        out.mkdir(parents=True, exist_ok=True)
+        js, md = funnel.render_report(result, cfg)
         stamp = time.strftime("%Y-%m-%d-%H%M")
-        (out / f"discovery-{stamp}.md").write_text(render_markdown(candidates))
+        out = reports_dir()
+        (out / f"scan-{stamp}-{result.scan_id}.json").write_text(js)
+        (out / f"scan-{stamp}-{result.scan_id}.md").write_text(md)
 
-        approved = len([c for c in candidates if not c.excluded])
         logger.info("discovery.scan_completed", {
             "reason": reason,
-            "approved": approved,
-            "excluded": len(candidates) - approved,
-            "logic_version": LOGIC_VERSION,
+            "scan_id": result.scan_id,
+            "approved": len(result.approved),
+            "rejected": len(result.rejected),
+            "funnel_stats": result.funnel_stats,
+            "requests_used": result.requests_used,
+            "logic_version": cfg["logic_version"],
             "duration_s": round(time.monotonic() - t0, 1),
         })
         return True

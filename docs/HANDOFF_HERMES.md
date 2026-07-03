@@ -135,7 +135,11 @@ a passo, concluídos em 2026-07-02).
 | CLI | KILL switch | `.venv/bin/python -m engine.cli kill --reason "<motivo>"` |
 | CLI | remover KILL | `.venv/bin/python -m engine.cli unkill` (+ restart do engine) |
 | CLI | replicação manual | `.venv/bin/python -m engine.cli replicate once` |
-| discovery | varredura | `.venv/bin/python -m engine.strategies.copy_trade.discovery --top 10` |
+| discovery | varredura manual | `.venv/bin/python -m engine.strategies.copy_trade.discovery scan` (a diária 05:00 SP é do scheduler do engine) |
+| discovery | dossiê de endereço | `.venv/bin/python -m engine.strategies.copy_trade.discovery inspect <address>` |
+| discovery | posicionamento smart vs. rekt | `.venv/bin/python -m engine.strategies.copy_trade.discovery positioning` (insumo do briefing) |
+| discovery | deep dive por ativo | `.venv/bin/python -m engine.strategies.copy_trade.discovery token <ativo>` |
+| discovery | último relatório | `.venv/bin/python -m engine.strategies.copy_trade.discovery report --last` |
 | scanner | varredura | `.venv/bin/python -m engine.strategies.tradingview.scanner` |
 | backtest | rodada | `.venv/bin/python -m engine.strategies.tradingview.backtest.harness --symbol BTC --interval 4h --days 90` |
 
@@ -154,8 +158,9 @@ exponencial); `health.child_exited` nos logs indica quedas.
 # briefing de mercado (scanner) — 05:00, com destaque de fim de semana p/ gap CME
 0 5 * * * cd /home/tokio/Tokio && .venv/bin/python -m engine.strategies.tradingview.scanner
 
-# varredura de traders (discovery) — 05:30
-30 5 * * * cd /home/tokio/Tokio && .venv/bin/python -m engine.strategies.copy_trade.discovery --top 10
+# varredura de traders: NÃO agendar — o discovery-scheduler do engine roda o
+# scan diário às 05:00 SP sozinho (UPDATE-0003). O briefing LÊ o resultado:
+#   .venv/bin/python -m engine.strategies.copy_trade.discovery positioning
 
 # revisão semanal — segunda 08:00
 0 8 * * 1 cd /home/tokio/Tokio && .venv/bin/python -m engine.cli strategy list
