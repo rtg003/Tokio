@@ -23,6 +23,18 @@ _REPLICATED_TABLES = {
     "strategy_metrics_daily", "traders", "cohort_snapshots",
 }
 
+# Primary key columns per replicated table — used for batch deduplication
+# (prevents PostgREST 400 when multiple versions of the same row accumulate
+# in the replication queue between drain cycles).
+_PK_COLUMNS: dict[str, tuple[str, ...]] = {
+    "exchanges": ("id",),
+    "strategies": ("id",),
+    "orders": ("id",),
+    "fills": ("id",),
+    "events": ("id",),
+    "strategy_metrics_daily": ("strategy_id", "day"),
+}
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -82,10 +94,30 @@ class Database:
     ) -> None:
         if table not in _REPLICATED_TABLES:
             return
-        cur.execute(
-            "INSERT INTO replication_queue (table_name, op, payload) VALUES (?, 'upsert', ?)",
-            (table, json.dumps(row, ensure_ascii=False, default=str)),
+        # Coalesce: if there's already a pending queue entry for the same PK,
+        # update its payload in-place instead of inserting a duplicate.
+        # This prevents PK collisions in the batch that cause PostgREST 400.
+        pk_cols = _PK_COLUMNS.get(table, ("id",))
+        where = " AND ".join(
+            f"json_extract(payload, '$.{c}') = ?" for c in pk_cols
         )
+        pk_vals = [row.get(c) for c in pk_cols]
+        existing = cur.execute(
+            f"SELECT id FROM replication_queue "
+            f"WHERE table_name=? AND op='upsert' AND {where} "
+            f"ORDER BY id DESC LIMIT 1",
+            [table, *pk_vals],
+        ).fetchone()
+        if existing:
+            cur.execute(
+                "UPDATE replication_queue SET payload=? WHERE id=?",
+                (json.dumps(row, ensure_ascii=False, default=str), existing[0]),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO replication_queue (table_name, op, payload) VALUES (?, 'upsert', ?)",
+                (table, json.dumps(row, ensure_ascii=False, default=str)),
+            )
 
     def upsert(self, table: str, row: dict[str, Any], conflict_keys: tuple[str, ...]) -> int | None:
         """Insert-or-replace by conflict keys; enqueues the row for replication."""
@@ -200,8 +232,11 @@ class SupabaseSink:
     def upsert_rows(self, table: str, rows: list[dict[str, Any]]) -> None:
         import httpx
 
+        # Specify on_conflict columns so PostgREST knows which PK to merge on.
+        on_conflict = ",".join(_PK_COLUMNS.get(table, ("id",)))
+
         resp = httpx.post(
-            f"{self.url}/rest/v1/{table}",
+            f"{self.url}/rest/v1/{table}?on_conflict={on_conflict}",
             headers={
                 "apikey": self.key,
                 "Authorization": f"Bearer {self.key}",
@@ -249,19 +284,29 @@ class Replicator:
 
         synced = failed = 0
         for table, items in by_table.items():
-            ids = [i["id"] for i in items]
-            rows = [json.loads(i["payload"]) for i in items]
+            # Deduplicate by primary key, keeping the LAST (most recent) payload
+            # per key. This prevents PostgREST 400 when multiple versions of the
+            # same row accumulate in the queue between replication cycles.
+            pk_cols = _PK_COLUMNS.get(table, ("id",))
+            seen: dict[tuple, dict[str, Any]] = {}
+            for i in items:
+                payload = json.loads(i["payload"])
+                key = tuple(payload.get(c) for c in pk_cols)
+                seen[key] = payload  # last one wins (most recent state)
+            rows = list(seen.values())
+            all_ids = [i["id"] for i in items]  # delete ALL enqueued versions on success
+
             try:
                 self.sink.upsert_rows(table, rows)
-                self.db.queue_delete(ids)
-                synced += len(ids)
+                self.db.queue_delete(all_ids)
+                synced += len(all_ids)
             except Exception as exc:  # noqa: BLE001 — outage must not crash the engine
-                self.db.queue_mark_failed(ids, str(exc))
-                failed += len(ids)
+                self.db.queue_mark_failed(all_ids, str(exc))
+                failed += len(all_ids)
                 if self.logger:
                     self.logger.warning(
                         "replication.batch_failed",
-                        {"table": table, "count": len(ids), "error": str(exc)[:200]},
+                        {"table": table, "count": len(all_ids), "error": str(exc)[:200]},
                     )
         if self.logger and synced:
             self.logger.info(
