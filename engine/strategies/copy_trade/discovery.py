@@ -37,26 +37,55 @@ class DiscoverySource(Protocol):
 
 
 class HyperliquidDiscoverySource:
-    """Live source — mainnet stats (leaderboard only exists on mainnet)."""
+    """Live source — mainnet stats (leaderboard only exists on mainnet).
 
-    def __init__(self) -> None:
+    Rate-limit friendly (exigência da spec): intervalo mínimo entre requests
+    (limite por IP é 1.200 weight/min; endpoints de info pesam ~20 → ~60
+    req/min máx.) + backoff exponencial em 429.
+    """
+
+    def __init__(self, *, min_interval_s: float = 1.3,
+                 max_retries: int = 4) -> None:
         import httpx
 
         self._http = httpx.Client(timeout=30.0)
+        self.min_interval_s = min_interval_s
+        self.max_retries = max_retries
+        self._last_request_ts = 0.0
+
+    def _throttled(self, do_request: Any) -> Any:
+        """Aplica intervalo mínimo + retry com backoff exponencial em 429."""
+        import httpx
+
+        backoff = 5.0
+        for attempt in range(self.max_retries + 1):
+            wait = self.min_interval_s - (time.monotonic() - self._last_request_ts)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_request_ts = time.monotonic()
+            try:
+                resp = do_request()
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 429 or attempt == self.max_retries:
+                    raise
+                time.sleep(backoff)
+                backoff *= 2
+        raise RuntimeError("unreachable")
 
     def leaderboard(self) -> list[dict[str, Any]]:
-        resp = self._http.get(LEADERBOARD_URL)
-        resp.raise_for_status()
+        resp = self._throttled(lambda: self._http.get(LEADERBOARD_URL))
         return resp.json().get("leaderboardRows", [])
 
     def user_fills(self, address: str) -> list[dict[str, Any]]:
-        resp = self._http.post(INFO_URL, json={"type": "userFills", "user": address})
-        resp.raise_for_status()
+        resp = self._throttled(
+            lambda: self._http.post(INFO_URL, json={"type": "userFills", "user": address}))
         return resp.json()
 
     def portfolio(self, address: str) -> dict[str, Any]:
-        resp = self._http.post(INFO_URL, json={"type": "portfolio", "user": address})
-        resp.raise_for_status()
+        resp = self._throttled(
+            lambda: self._http.post(INFO_URL, json={"type": "portfolio", "user": address}))
         return dict(resp.json())
 
 
@@ -223,7 +252,7 @@ def run_discovery(
     source: DiscoverySource,
     *,
     top: int = 10,
-    max_candidates: int = 50,
+    max_candidates: int = 30,   # 2 requests/candidato; manter o scan < ~90s
     min_equity: float = 10_000.0,
     now_ms: float | None = None,
 ) -> list[CandidateMetrics]:

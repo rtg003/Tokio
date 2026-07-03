@@ -64,6 +64,31 @@ def test_daily_trigger_fires_when_time_reached(settings, db) -> None:
     assert calls == ["agendado_diario"]
 
 
+def test_bootstrap_retries_while_table_empty(settings, db) -> None:
+    logger = EventLogger("sched-test", settings.logs_dir, db=db)
+    calls: list[str] = []
+
+    def failing_then_ok(reason: str) -> bool:
+        calls.append(reason)
+        if len(calls) >= 2:   # 2ª tentativa "funciona": popula a tabela
+            upsert_candidate(db, address="0x" + "cc" * 20, score=10.0)
+            return True
+        return False          # 1ª tentativa falha (ex.: 429)
+
+    sched = DiscoveryScheduler(db, logger, scan_fn=failing_then_ok,
+                               now_fn=lambda: datetime(2026, 7, 3, 10, 0, tzinfo=SP))
+    t = threading.Thread(target=sched.run_forever,
+                         kwargs={"poll_interval_s": 0.02, "bootstrap_retry_s": 0.05})
+    t.start()
+    deadline = _time.monotonic() + 5
+    while len(calls) < 2 and _time.monotonic() < deadline:
+        _time.sleep(0.02)
+    _time.sleep(0.15)          # janela extra: NÃO pode haver 3ª tentativa
+    sched.stop()
+    t.join(timeout=5)
+    assert calls == ["bootstrap_tabela_vazia", "bootstrap_tabela_vazia"]
+
+
 def test_scan_failure_is_captured_and_logged(settings, db, monkeypatch) -> None:
     """run_scan nunca vaza exceção: falha vira discovery.scan_failed + False."""
     import engine.strategies.copy_trade.discovery as discovery_mod

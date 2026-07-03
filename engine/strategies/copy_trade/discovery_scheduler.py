@@ -99,11 +99,15 @@ class DiscoveryScheduler:
             return self.scan_fn(reason="bootstrap_tabela_vazia")
         return False
 
-    def run_forever(self, poll_interval_s: float = 30.0) -> None:
+    def run_forever(self, poll_interval_s: float = 30.0,
+                    bootstrap_retry_s: float = 900.0) -> None:
         settings = get_settings()
         self.logger.info("health.discovery_scheduler_start",
                          {"scan_hour_sp": SCAN_HOUR, "top": SCAN_TOP})
         self.bootstrap_if_empty()
+        # bootstrap falhou (ex.: 429)? re-tenta a cada 15 min enquanto vazia,
+        # em vez de esperar até as 05:00 do dia seguinte
+        next_bootstrap_retry = time.monotonic() + bootstrap_retry_s
         target = next_scan_at(self.now_fn())
         while not self._stop:
             if settings.kill_file.exists():
@@ -111,6 +115,9 @@ class DiscoveryScheduler:
                 time.sleep(poll_interval_s)
                 target = next_scan_at(self.now_fn())
                 continue
+            if traders_table_empty(self.db) and time.monotonic() >= next_bootstrap_retry:
+                self.bootstrap_if_empty()
+                next_bootstrap_retry = time.monotonic() + bootstrap_retry_s
             if self.now_fn() >= target:
                 self.scan_fn(reason="agendado_diario")
                 target = next_scan_at(self.now_fn())
