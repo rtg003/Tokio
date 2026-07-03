@@ -86,6 +86,24 @@ def test_traders_rows_replicate_with_address_pk(db: Database) -> None:
     assert by_addr[a1]["score"] == 60.0             # última versão vence
 
 
+def test_reconcile_requeues_state_tables(settings, db: Database) -> None:
+    """Start do replicator reenfileira traders/strategies/metrics — recupera
+    linhas perdidas por bugs históricos de outbox."""
+    from engine.core.logger import EventLogger
+    from engine.replicator_main import reconcile_state_tables
+    from engine.strategies.copy_trade.traders_store import upsert_candidate
+
+    upsert_candidate(db, address="0x" + "33" * 20, score=42.0)
+    db.queue_delete([r["id"] for r in db.queue_batch(1000)])   # simula fila perdida
+    assert db.queue_depth() == 0
+
+    n = reconcile_state_tables(db, EventLogger("rec-test", settings.logs_dir))
+    assert n >= 1
+    assert db.queue_depth() >= 1
+    batch = db.queue_batch(100)
+    assert any(i["table_name"] == "traders" for i in batch)
+
+
 def test_engine_writes_never_block_on_unconfigured_sink(db: Database) -> None:
     # No Supabase config at all: inserts still succeed instantly.
     for i in range(50):
