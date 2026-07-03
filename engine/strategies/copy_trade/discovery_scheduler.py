@@ -41,6 +41,17 @@ def traders_table_empty(db: Database) -> bool:
     return db.query("SELECT COUNT(*) AS n FROM traders")[0]["n"] == 0
 
 
+def logic_outdated(db: Database) -> bool:
+    """True quando a tabela foi populada por uma logic_version anterior à do
+    config — o bootstrap re-scaneia para re-upsertar na lógica nova."""
+    from engine.strategies.copy_trade.funnel import load_config
+
+    current = int(load_config()["logic_version"])
+    rows = db.query("SELECT MAX(logic_version) AS v FROM traders")
+    populated_with = rows[0]["v"] or 0
+    return 0 < populated_with < current
+
+
 def run_scan(db: Database, logger: EventLogger, *, reason: str) -> bool:
     """Executa uma varredura v2 (funil completo) e persiste. True = sucesso."""
     from engine.strategies.copy_trade import funnel
@@ -98,11 +109,20 @@ class DiscoveryScheduler:
         self._stop = False
 
     def bootstrap_if_empty(self) -> bool:
-        """Primeira varredura quando a tabela está vazia (uma vez por start)."""
+        """Varredura imediata quando a tabela está vazia OU quando a
+        logic_version do config avançou (re-upsert na lógica nova)."""
         if traders_table_empty(self.db):
             self.logger.info("discovery.bootstrap_scan",
                              {"motivo": "tabela traders vazia"})
             return self.scan_fn(reason="bootstrap_tabela_vazia")
+        try:
+            outdated = logic_outdated(self.db)
+        except Exception:  # noqa: BLE001 — config quebrado não derruba o scheduler
+            outdated = False
+        if outdated:
+            self.logger.info("discovery.bootstrap_scan",
+                             {"motivo": "logic_version avançou"})
+            return self.scan_fn(reason="bootstrap_logic_version")
         return False
 
     def run_forever(self, poll_interval_s: float = 30.0,

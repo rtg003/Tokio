@@ -23,7 +23,35 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
   verdadeiro); `profit_factor` e `liq_distance` não calculados; coorte não é
   bidimensional.
 
-## logic_version: 2 — spec PROMPT_DISCOVERY_TRADERS_v5 (EM IMPLEMENTAÇÃO)
+## logic_version: 2 — spec PROMPT_DISCOVERY_TRADERS_v5 (EM PRODUÇÃO em 2026-07-03)
+
+- **Autor**: Cursor (construtor), por diretiva humana; spec v5 + diagnóstico
+  do humano sobre as 5 falhas da v1.
+- **Motivo**: v1 restrita (top 30, 1 janela, 4 filtros) e enviesada (bug do
+  hold via startPosition; score punitivo; PnL absoluto no ranking).
+- **O que mudou (antes → depois)**:
+  - Fonte: top 30 por PnL → **top 500**, corte barato por 30d>0 + equity ≥
+    US$ 5k, aprofundamento priorizado por **ROI 30d** (PnL absoluto puro só
+    trazia mega-baleias inativas — constatação da validação real).
+  - Janelas: 30d apenas → **7d/30d/60d/90d** com regra de entrada "≥3/4
+    positivas, 30d e 60d obrigatórias" (7d pode ser negativa).
+  - Filtros: 4 → **F1–F11** (com F1 pre-check barato em janela própria de 7d
+    — a paginação de fills enviesava o last_activity de hiperativos).
+  - Hold: startPosition==0 → **episódios de posição** (início desconhecido =
+    excluído da mediana; hold desconhecido NUNCA classifica scalper).
+  - Trades fechados: episódios zerados → **fills de fechamento (closedPnl≠0)**
+    (position traders reduzem sem zerar e eram punidos).
+  - Retorno: ROI simples → **TWRR neutro a aportes** (+ F10 anti-aporte).
+  - Score: 4 componentes punitivos → fórmula da spec (25/20/15/15/15/10) com
+    PF gradativo (patch de 2026-07-03), ROI log, DD quality, copiabilidade,
+    expectância líquida; ajustes +5/−10/−5.
+  - Coortes: estilo unidimensional → **bidimensional** (tamanho × PnL) +
+    coorte de controle **rekt** com snapshots de posicionamento por ativo.
+  - Reprovados: descartados → persistidos **REJEITADO + reject_reason**.
+- **Resultado esperado**: ranking maior e de qualidade auditável; scalpers e
+  contas infladas por aporte fora; separação smart vs. rekt testada em CI.
+
+## Registro histórico da implementação
 
 - **Spec**: `docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md` (recebida 2026-07-03).
   Substitui integralmente a spec breve da Fase 3. Funil de 3 estágios

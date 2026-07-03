@@ -155,6 +155,22 @@ def classify_style(median_hold_h: float | None) -> str:
 
 
 # ----------------------------------------------------------------------------
+def precheck_activity(c: Candidate, client: DataClient, cfg: dict[str, Any],
+                      now_ms: float | None = None) -> str | None:
+    """F1 barato ANTES do deep dive (1 request na janela de 7d).
+
+    Também corrige o viés da paginação: `userFillsByTime` pagina do mais
+    antigo p/ o mais novo — em traders hiperativos as páginas da janela longa
+    nunca alcançam os fills recentes, e o F1 reprovaria exatamente quem mais
+    opera. A janela curta dedicada dá o last_activity correto."""
+    f1_days = int(cfg["hard_filters"]["f1_recent_activity_days"])
+    recent, _ = client.fills_by_time(c.address, window_days=f1_days, max_pages=1)
+    if not recent:
+        return f"F1: sem trade nos últimos {f1_days}d"
+    c.last_activity = utcnow_from_ms(max(float(f["time"]) for f in recent))
+    return None
+
+
 def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
               liquid: set[str], now_ms: float | None = None) -> None:
     """Coleta cara por candidato + cálculo de todas as métricas do Estágio 2/3."""
@@ -174,17 +190,23 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
         times = [float(f["time"]) for f in fills]
         covered_days = max((now_ms - min(times)) / DAY_MS, 1e-9)
         c.fills_per_day = len(fills) / covered_days
-        c.last_activity = utcnow_from_ms(max(times))
+        latest = utcnow_from_ms(max(times))
+        # não regredir o last_activity do precheck (janela curta é mais fresca)
+        c.last_activity = max(c.last_activity, latest) if c.last_activity else latest
         episodes = M.position_episodes(fills)
-        closed = [e for e in episodes if e.end_ms is not None]
-        c.n_trades = len(closed)
-        c.n_trades_30d = len([e for e in closed
-                              if e.end_ms and e.end_ms >= now_ms - 30 * DAY_MS])
-        c.trades_per_day = len(closed) / covered_days
         c.median_hold_hours = M.median_hold_hours(episodes)
 
-        closed_pnls = [float(f.get("closedPnl", 0) or 0) for f in fills
-                       if float(f.get("closedPnl", 0) or 0) != 0.0]
+        # "trade fechado" = fill de fechamento (closedPnl != 0): position
+        # traders reduzem parcialmente sem nunca zerar — contar episódios
+        # zerados os excluiria injustamente (validação real de 2026-07-03)
+        closing_fills = [f for f in fills
+                         if float(f.get("closedPnl", 0) or 0) != 0.0]
+        c.n_trades = len(closing_fills)
+        c.n_trades_30d = len([f for f in closing_fills
+                              if float(f["time"]) >= now_ms - 30 * DAY_MS])
+        c.trades_per_day = len(closing_fills) / covered_days
+
+        closed_pnls = [float(f.get("closedPnl", 0) or 0) for f in closing_fills]
         wins = [p for p in closed_pnls if p > 0]
         c.win_rate = len(wins) / len(closed_pnls) if closed_pnls else None
         c.top3_concentration = M.top_n_concentration(closed_pnls, 3)
@@ -399,10 +421,14 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     candidates = [parse_leaderboard_row(r) for r in rows]
     top20 = {c.address for c in candidates[:int(cfg["score_adjustments"]["crowding_top_n"])]}
 
-    # corte barato: 30d positiva (janela obrigatória visível no leaderboard)
-    cheap = [c for c in candidates if c.windows_pnl.get("30d", 0.0) > 0]
+    # corte barato: 30d positiva (janela obrigatória) + piso de equity.
+    # Prioridade do aprofundamento por ROI 30d: PnL absoluto puro só traria
+    # mega-baleias holders (reprovam em F1/F2 — validação real de 2026-07-03).
+    min_eq = float(col.get("min_equity_usd", 0))
+    cheap = [c for c in candidates
+             if c.windows_pnl.get("30d", 0.0) > 0 and c.equity >= min_eq]
     stats["corte_barato_30d"] = len(candidates) - len(cheap)
-    cheap.sort(key=lambda c: -c.windows_pnl.get("30d", 0.0))
+    cheap.sort(key=lambda c: -c.roi_30d_pct)
     deep = cheap[: int(col["deep_dive_max"])]
     stats["aprofundados"] = len(deep)
 
@@ -420,6 +446,13 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
 
     for c in deep:
         try:
+            # F1 primeiro e barato (1 request): reprova sem gastar o deep dive
+            f1_reason = precheck_activity(c, client, cfg, now_ms)
+            if f1_reason:
+                c.reject_reason = f1_reason
+                rejected.append(c)
+                stats["reprovados_F1"] = stats.get("reprovados_F1", 0) + 1
+                continue
             deep_dive(c, client, cfg, liquid, now_ms)
         except RequestBudgetExceeded:
             stats["interrompidos_por_orcamento"] = len(deep) - len(approved) - len(rejected)

@@ -8,8 +8,11 @@ logic_version: 2
 
 collection:
   leaderboard_top_n: 500          # coleta ampla (Estágio 1)
-  deep_dive_max: 120              # candidatos aprofundados por varredura
-  request_budget: 600             # requests máx. por varredura (throttle 1,3s/req)
+  deep_dive_max: 100              # candidatos aprofundados por varredura
+  request_budget: 650             # requests máx. por varredura (throttle 1,3s/req)
+  min_equity_usd: 5000            # corte barato: ignora contas-poeira no deep dive
+  # prioridade do aprofundamento: ROI 30d (desc) — PnL absoluto puro só traz
+  # mega-baleias holders, que reprovam em F1/F2 (validação de 2026-07-03)
   fills_window_days: 60           # janela baixada de fills (paginada)
   fills_max_pages: 4              # ~2000 fills/página
   cache_ttl_hours: 20
