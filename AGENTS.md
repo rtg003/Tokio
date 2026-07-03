@@ -60,7 +60,27 @@ Antes de INICIAR qualquer mudança em código/config/lógica:
 Prioridade define quem conduz e quem revisa — não dispensa o ritual da
 seção 2 nem a regra do mesmo PR da seção 3.
 
-## 5. Persistência deste protocolo
+## 5. Regras centrais de produto (invioláveis para os DOIS agentes)
+
+### 5.1 Isolamento de observabilidade (ADR 0010)
+
+**Cada estratégia/módulo SÓ ENXERGA os próprios dados.** Sem exceção:
+
+- Toda visão de estratégia ou módulo — dashboard, relatório da CLI, resposta
+  de agente, briefing — exibe SOMENTE dados das estratégias daquele módulo.
+  **Filtro por `strategy_id`/módulo é OBRIGATÓRIO em toda query de exibição**;
+  "SELECT sem escopo" em tela/relatório de estratégia é bug crítico
+  (incidente de 2026-07-03: dashboard de Copy Trade exibindo ordens/fills do
+  módulo TradingView e dados sem atribuição).
+- Dados sem atribuição (`strategy_id NULL`) só aparecem em **visões de
+  sistema** (tela Logs, `report --daily` agregado) e são tratados como
+  anomalia a investigar — nunca como dado de estratégia.
+- Novas telas, relatórios e análises NASCEM com o filtro de escopo. Em
+  review, ausência de filtro reprova o PR.
+- A atribuição é sempre via `cloid` → `strategy_id` (ledger); nenhum dado
+  entra numa visão de módulo por inferência ou "parece ser".
+
+## 6. Persistência deste protocolo
 
 - Registrado como decisão em
   `docs/decisions/0009-protocolo-bilateral-cursor-hermes.md`.
