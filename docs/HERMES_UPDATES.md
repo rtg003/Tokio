@@ -231,3 +231,50 @@ e) Relatórios em `data/reports/discovery/`; eventos `discovery.scan_started`
 - Tabela `traders` populada (dashboard e `trader list` com candidatos
   SUGERIDO, score decrescente).
 - Crontab do `tokio` SEM linha de discovery.
+
+---
+
+## UPDATE-0004 · 2026-07-03 · Status: PENDENTE
+
+**Origem**: PR do Cursor "isolamento de observabilidade" (merged)
+
+**Tipo**: operacao + skill
+
+**Resumo**: incidente detectado pelo humano — o dashboard de Copy Trade
+exibia ordens/fills do módulo TradingView (`tv_gap_fade`) e fills sem
+atribuição (`strategy_id NULL`, resíduo de bug antigo do snapshot da HL, já
+corrigido na origem). Regra formalizada como **ADR 0010** e centralizada em
+**`AGENTS.md` §5.1** (espelhada em `CLAUDE.md`):
+
+- **Cada estratégia/módulo SÓ ENXERGA os próprios dados.** Toda visão de
+  estratégia/módulo (dashboard, relatório, briefing, resposta sua) filtra
+  por `strategy_id` do módulo — obrigatório, sem exceção.
+- Dados sem atribuição (`strategy_id NULL`) só existem em visão de SISTEMA
+  (tela Logs, agregado do `report --daily`) e são anomalia a investigar.
+- Racional: sem isolamento, a análise de uma estratégia contamina a outra —
+  PnL/comportamento atribuídos ao módulo errado geram decisão errada de
+  gate, pausa e arquivamento.
+- Limpeza executada: os 13 fills `NULL` foram removidos (migration
+  `0003_cleanup_unattributed_fills` + DELETE no Supabase). Os dados de
+  `tv_gap_fade` permanecem — são histórico legítimo do módulo TV.
+
+**Ações do Hermes**:
+
+1. Internalizar a regra: análises e relatórios POR ESTRATÉGIA usam apenas
+   dados da própria estratégia (`report --strategy <id>`, queries filtradas);
+   visão agregada só em contexto de portfólio/sistema, rotulada como tal.
+2. NUNCA "corrigir" os filtros de escopo de volta (dashboards com tabelas
+   vazias em módulos sem trades é o comportamento CORRETO, não regressão).
+3. Refletir a regra na `skill/SKILL.md` via PR seu (área sua pelo AGENTS.md
+   §4), referenciando ADR 0010.
+4. **Investigar e reportar ao humano**: como surgiram 5 ordens e 2 fills de
+   `tv_gap_fade` em produção? A estratégia está `dry_run` — ordens dry_run
+   não geram fills. Se houve teste live seu, documente; se não foi você,
+   é anomalia séria (possível violação de gate) e o humano decide.
+
+**Validação**:
+
+- Dashboard Copy Trade sem dados de outros módulos (hoje: tabelas vazias).
+- Skill atualizada com a regra, mergeada na `main`.
+- Resposta ao humano sobre a origem dos dados `tv_gap_fade`.
+- Este UPDATE marcado `APLICADO` após executar as ações.

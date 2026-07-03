@@ -99,9 +99,22 @@ export default async function Dashboard({
 
   const supabase = await createClient();
 
+  // REGRA DE ISOLAMENTO DE OBSERVABILIDADE (AGENTS.md / ADR 0010): esta é a
+  // visão do módulo COPY TRADE — toda query de exibição é filtrada pelos
+  // strategy_ids do módulo. Fills/ordens sem atribuição (strategy_id NULL) ou
+  // de outros módulos NUNCA aparecem aqui (visão de sistema = tela Logs).
+  const { data: strategies } = await supabase
+    .from("strategies")
+    .select("id, module, name, status, config_snapshot, created_at")
+    .neq("status", "archived")
+    .order("id");
+  const ctIds = (strategies ?? [])
+    .filter((s) => s.module === "copy_trade")
+    .map((s) => s.id);
+
   // KPIs come from strategy_metrics_daily — dashboards never scan `events`.
   const [balance, { data: exchanges }, { data: traders }, { data: metrics },
-         { data: strategies }, { data: orders }, { data: fills }] =
+         { data: orders }, { data: fills }] =
     await Promise.all([
       fetchBalance(),
       supabase.from("exchanges").select("name, network, status").order("id"),
@@ -113,16 +126,13 @@ export default async function Dashboard({
       supabase
         .from("strategy_metrics_daily")
         .select("net_pnl, win_rate, n_trades, fees, profit_factor, max_drawdown")
+        .in("strategy_id", ctIds)
         .gte("day", sinceDay)
         .lte("day", untilDay),
       supabase
-        .from("strategies")
-        .select("id, module, name, status, config_snapshot, created_at")
-        .neq("status", "archived")
-        .order("id"),
-      supabase
         .from("orders")
         .select("cloid, strategy_id, symbol, side, type, size, price, status, created_at, latency_ms, reject_reason")
+        .in("strategy_id", ctIds)
         .gte("created_at", sinceTs)
         .lte("created_at", untilTs)
         .order("created_at", { ascending: false })
@@ -130,6 +140,7 @@ export default async function Dashboard({
       supabase
         .from("fills")
         .select("cloid, strategy_id, symbol, side, price, size, fee, realized_pnl, ts")
+        .in("strategy_id", ctIds)
         .gte("ts", sinceTs)
         .lte("ts", untilTs)
         .order("ts", { ascending: false })
@@ -385,7 +396,7 @@ export default async function Dashboard({
         </div>
         <div className="tablewrap">
           {(orders ?? []).length === 0 ? (
-            <div className="empty">nenhuma ordem registrada ainda</div>
+            <div className="empty">nenhuma ordem de copy trade no período</div>
           ) : (
             <table>
               <thead>
@@ -441,7 +452,7 @@ export default async function Dashboard({
         </div>
         <div className="tablewrap">
           {(fills ?? []).length === 0 ? (
-            <div className="empty">nenhum fill registrado ainda</div>
+            <div className="empty">nenhum trade de copy trade no período</div>
           ) : (
             <table>
               <thead>
