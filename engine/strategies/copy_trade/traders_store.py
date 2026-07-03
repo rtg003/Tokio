@@ -21,7 +21,10 @@ HUMAN_GATE_TRANSITIONS = {("SUGERIDO", "DRY_RUN"), ("SUGERIDO", "COPIANDO"),
 # Transições operacionais permitidas via API de controle do gateway.
 CONTROL_API_TRANSITIONS = {("DRY_RUN", "PAUSADO"), ("COPIANDO", "PAUSADO"),
                            ("PAUSADO", "DRY_RUN"), ("PAUSADO", "COPIANDO"),
-                           ("SUGERIDO", "REJEITADO")}
+                           ("SUGERIDO", "REJEITADO"),
+                           # re-scan pode reabilitar um rejeitado que voltou a
+                           # passar no funil (vira candidato de novo)
+                           ("REJEITADO", "SUGERIDO")}
 
 
 def strategy_id_for(address: str, name: str | None = None) -> str:
@@ -35,9 +38,11 @@ def upsert_candidate(db: Database, *, address: str, name: str | None = None,
                      windows: dict[str, Any] | None = None,
                      profit_factor: float | None = None, win_rate: float | None = None,
                      max_drawdown: float | None = None, liq_distance: float | None = None,
-                     origin: str = "discovery", logic_version: int = 1) -> None:
+                     origin: str = "discovery", logic_version: int = 1,
+                     extras: dict[str, Any] | None = None) -> None:
     """Upsert de candidato SEM tocar em status/config de execução existentes
-    (um re-scan nunca rebaixa um trader COPIANDO para SUGERIDO)."""
+    (um re-scan nunca rebaixa um trader COPIANDO para SUGERIDO).
+    `extras`: colunas adicionais da logic_version 2 (migration 0004)."""
     address = address.lower()
     row = db.query("SELECT address FROM traders WHERE address = ?", (address,))
     metrics = {
@@ -46,6 +51,7 @@ def upsert_candidate(db: Database, *, address: str, name: str | None = None,
         "profit_factor": profit_factor, "win_rate": win_rate,
         "max_drawdown": max_drawdown, "liq_distance": liq_distance,
         "origin": origin, "logic_version": logic_version, "updated_at": utcnow(),
+        **(extras or {}),
     }
     if row:
         sets = ", ".join(f"{k} = ?" for k in metrics)
