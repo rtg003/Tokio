@@ -294,6 +294,13 @@ class Replicator:
                 key = tuple(payload.get(c) for c in pk_cols)
                 seen[key] = payload  # last one wins (most recent state)
             rows = list(seen.values())
+            # Normalize: PostgREST PGRST102 requires all objects in a batch
+            # to have the same set of keys. Pad missing keys with None.
+            if rows:
+                all_keys: set[str] = set()
+                for r in rows:
+                    all_keys.update(r.keys())
+                rows = [{k: r.get(k) for k in all_keys} for r in rows]
             all_ids = [i["id"] for i in items]  # delete ALL enqueued versions on success
 
             try:
