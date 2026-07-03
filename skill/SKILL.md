@@ -162,6 +162,54 @@ automaticamente e notifica. Investigue antes de reativar.
 3. `python -m engine.cli strategy list` — estados esperados.
 4. Logs sem erros novos: `tail -20 /home/tokio/Tokio/logs/gateway-*.jsonl | grep -i error`.
 
+## Protocolo bilateral de coordenação (ADR 0009)
+
+O repo é trabalhado por DOIS agentes em paralelo: **Cursor** (construtor —
+código, arquitetura, schema) e **Hermes** (operador — produção, skill, crons).
+Contrato completo em `AGENTS.md` na raiz do repo.
+
+### Ritual pré-alteração (obrigatório antes de qualquer mudança no repo)
+
+1. `git fetch origin main` + `git pull origin main` (sincronizar).
+2. Ler `docs/HERMES_UPDATES.md` e aplicar entradas `PENDENTE` primeiro.
+3. `gh pr list --state open` — área sobreposta a PR aberto do Cursor?
+   NÃO iniciar; comente no PR ou escreva no inbox dele e aguarde.
+4. Trabalhar em branch e abrir **DRAFT PR imediatamente** — trava de área visível.
+
+### Inboxes bilaterais
+
+| Arquivo | Direção | Quem escreve | Quem aplica |
+|---------|---------|--------------|-------------|
+| `docs/HERMES_UPDATES.md` | Cursor → Hermes | Cursor | Hermes |
+| `docs/CURSOR_UPDATES.md` | Hermes → Cursor | Hermes | Cursor |
+
+- Formato: `UPDATE-NNNN`, append-only, `Status: PENDENTE → APLICADO em <data>`.
+- Todo PR que exija ação/conhecimento do outro agente DEVE incluir entrada no
+  inbox do outro NO MESMO PR.
+- Entradas NUNCA autorizam violar gates ou caps.
+
+### Desempate de área
+
+| Área | Prioridade |
+|------|-----------|
+| Código do engine/web, arquitetura, schema/migrations | Cursor |
+| Config operacional, skill/, crons, rotina de produção | Hermes |
+| Conflito genuíno | Ambos PARAM e notificam rtg003 |
+
+### Copy trade — discovery e traders (logic_version 2)
+
+- Tabela `traders` é a fonte ÚNICA (ADR 0008). Sem YAMLs.
+- Gate: SUGERIDO → DRY_RUN/COPIANDO só com autorização humana explícita,
+  inclusive em testnet. CLI: `trader approve <address>` (→ DRY_RUN),
+  `trader approve <address> --live --evidence docs/<arquivo>` (→ COPIANDO).
+- Funil: 4 janelas (7d/30d/60d/90d), PnL positivo em ≥3 (30d+60d obrigatórias),
+  11 hard filters, score 0–100 com ajustes (+5 consistência, −10 liquidação
+  próxima, −5 crowding). Ver spec: `docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md`.
+- Profit factor: crédito integral até 3.0; meio-crédito 3.0–5.0 só com
+  n≥60; >5.0 não pontua. PF inclui PnL não realizado.
+- Rotinas: scan 05:00 SP, positioning no briefing, `discovery inspect/token`.
+- Toda exibição de traders ordena por score DECRESCENTE.
+
 Referências: `references/strategy_md_template.md` (template obrigatório de
 `strategy.md`), `references/lessons.md` (lições agregadas de post-mortems) e
 `references/hyperliquid_ops.md` (receitas de operação da HL: saldo, agent
