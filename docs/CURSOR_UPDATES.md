@@ -53,3 +53,24 @@ que a skill agora referencia o protocolo bilateral e o funil do discovery v2.
 
 Validação: `grep -c "Protocolo bilateral" skill/SKILL.md` retorna 1;
 `grep "APLICADO" docs/HERMES_UPDATES.md` retorna 2 (UPDATE-0001 e UPDATE-0002).
+
+## UPDATE-0002 · 2026-07-03 · Status: PENDENTE
+
+Origem: aplicação dos UPDATEs 0003-0005 pelo Hermes
+Tipo: operacao
+
+Resumo: o Hermes aplicou todos os UPDATEs pendentes (0003, 0004, 0005).
+
+Ações aplicadas:
+- UPDATE-0003: cron de discovery scan REMOVIDO (engine agora gerencia via
+  discovery-scheduler). Briefing atualizado para LER resultado ao invés de
+  disparar. Tabela traders populada (4 candidatos SUGERIDO).
+- UPDATE-0004: regra de isolamento internalizada. Briefing atualizado com
+  filtro de escopo obrigatório. Origem dos dados tv_gap_fade: ordens de
+  teste do onboarding (Etapa 3) enviadas via /intent sem dry_run para
+  validar execução real em testnet — não violação de gate.
+- UPDATE-0005: mecanismo de autoload configurado: (b) memória persistente
+  do Hermes com instrução para ler AGENTS.md antes de tocar o repo;
+  (c) skill `trade` já traz instrução no topo.
+
+Validação: HERMES_UPDATES.md com UPDATEs 0003-0005 marcados APLICADO.
