@@ -1,0 +1,74 @@
+# ============================================================================
+# Discovery de traders (copy trade) — thresholds, pesos e faixas VERSIONADOS.
+# Toda mudança aqui exige: PR com justificativa numérica + bump de
+# logic_version + entrada em docs/discovery_changelog.md + evento logic_updated.
+# (spec: docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md · ADR 0008)
+# ============================================================================
+logic_version: 2
+
+collection:
+  leaderboard_top_n: 500          # coleta ampla (Estágio 1)
+  deep_dive_max: 120              # candidatos aprofundados por varredura
+  request_budget: 600             # requests máx. por varredura (throttle 1,3s/req)
+  fills_window_days: 60           # janela baixada de fills (paginada)
+  fills_max_pages: 4              # ~2000 fills/página
+  cache_ttl_hours: 20
+  rekt_sample: 20                 # tamanho da coorte de controle
+  positioning_sample: 15          # wallets por coorte p/ snapshot de posicionamento
+
+entry_rule:
+  min_positive_windows: 3         # PnL positivo em >= 3 das 4 janelas
+  required_windows: ["30d", "60d"]  # obrigatórias; 7d PODE ser negativa
+
+hard_filters:                     # F1–F11 (binários, ordem de custo)
+  f1_recent_activity_days: 7
+  f2_min_closed_trades: 30
+  f2_min_history_days: 60
+  f3_min_avg_holding_hours: 2.0
+  f3_max_trades_per_day: 20.0
+  f4_min_twrr_30d_pct: 5.0
+  f5_max_drawdown_90d_pct: 25.0
+  f6_max_top3_pnl_concentration: 0.50
+  f7_max_avg_leverage: 15.0
+  f8_min_liquid_volume_share: 0.80
+  f8_liquid_assets_top_n: 25      # top N por volume 24h vira a lista de líquidos
+  f9_mm_max_trades_per_day: 200.0
+  f9_mm_max_pnl_over_volume: 0.0001
+  f10_max_deposit_growth_share: 0.50   # crescimento de equity vindo de aporte
+  f11_min_mirror_notional_usd: 10.0
+  f11_mirror_capital_usd: 1000.0       # capital configurado p/ estimar a cópia
+
+score_weights:                    # somam 1.0
+  consistency: 0.25
+  profit_factor: 0.20
+  roi_log: 0.15
+  drawdown_quality: 0.15
+  copyability: 0.15
+  net_expectancy: 0.10
+
+score_adjustments:
+  full_consistency_bonus: 5       # 4/4 janelas positivas
+  liq_distance_penalty: -10       # posição aberta a < 10% da liquidação
+  liq_distance_threshold_pct: 10.0
+  crowding_penalty: -5            # wallet no top 20 all-time
+  crowding_top_n: 20
+
+copyability:
+  hold_sweet_spot_hours: [4, 72]  # 4h – 3 dias
+  freq_sweet_spot_trades_day: [0.3, 20.0]
+
+cost_of_copy:
+  taker_fee_pct: 0.045            # por perna
+  slippage_pct: 0.02              # por perna
+
+cohorts:
+  size_bands:                     # equity USD → rótulo
+    Shrimp: 250
+    Fish: 10000
+    Dolphin: 100000
+    Whale: 5000000
+    Leviathan: .inf
+  pnl_bands:                      # PnL acumulado (janela all-time) → rótulo
+    Rekt: 0                       # < 0
+    Flat: 1000                    # 0 – 1k
+    Printer: .inf                 # > 1k ("Money Printer")

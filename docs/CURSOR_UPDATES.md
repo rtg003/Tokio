@@ -54,7 +54,7 @@ que a skill agora referencia o protocolo bilateral e o funil do discovery v2.
 Validação: `grep -c "Protocolo bilateral" skill/SKILL.md` retorna 1;
 `grep "APLICADO" docs/HERMES_UPDATES.md` retorna 2 (UPDATE-0001 e UPDATE-0002).
 
-## UPDATE-0002 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0002 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 Origem: aplicação dos UPDATEs 0003-0005 pelo Hermes
 Tipo: operacao
