@@ -22,6 +22,11 @@ processes:
     env:
       TV_WEBHOOK_BIND: "127.0.0.1"   # interno por enquanto (sem rota pública)
 
+  - name: discovery-scheduler
+    module: engine.strategies.copy_trade.discovery_scheduler
+    # 1ª varredura automática se a tabela traders estiver vazia + scan diário
+    # 05:00 America/Sao_Paulo (horário oficial do runbook). Read-only.
+
   - name: runner-dummy
     module: engine.strategies.dummy.runner
     enabled: false                    # habilitar só para o teste de aceite

@@ -185,3 +185,49 @@ de área, um agente sobrescreve ou "corrige" o trabalho do outro. Em resumo:
 - Seus PRs nascem como draft imediatamente ao iniciar o trabalho.
 - Este arquivo com UPDATE-0001 e UPDATE-0002 marcados `APLICADO` após você
   executar as ações.
+
+---
+
+## UPDATE-0003 · 2026-07-03 · Status: PENDENTE
+
+**Origem**: PR do Cursor "discovery scheduler" (merged)
+
+**Tipo**: operacao + logica_discovery
+
+**Resumo**: o `discovery scan` deixou de depender de cron externo — agora é um
+processo supervisionado do engine (`discovery-scheduler` em
+`deploy/engine-processes.yaml`, módulo
+`engine/strategies/copy_trade/discovery_scheduler.py`). Racional: a tabela
+`traders` ficou vazia em produção porque nenhum cron foi instalado (o
+onboarding ainda não ocorreu) — agendamento crítico não pode depender de
+passo manual. Comportamento:
+
+a) **Bootstrap**: no start, se a tabela `traders` estiver vazia, roda uma
+   varredura imediatamente.
+b) **Diário**: varredura às **05:00 America/Sao_Paulo** (configurável via
+   `DISCOVERY_SCAN_HOUR_SP`), com a `logic_version` vigente.
+c) **Kill switch**: com o arquivo `KILL` presente, não roda varredura.
+d) Falha de scan gera `discovery.scan_failed` (em `events`) e o scheduler
+   tenta no próximo horário — nunca morre.
+e) Relatórios em `data/reports/discovery/`; eventos `discovery.scan_started`
+   / `scan_completed` (com aprovados/excluídos/duração) replicados ao Supabase.
+
+**Ações do Hermes**:
+
+1. **NÃO instalar cron de `discovery scan`** (nem manter, se já criou) — o
+   agendamento agora é do engine; cron duplicado geraria varredura dobrada e
+   gasto de rate limit. Os DEMAIS crons do runbook (health, report diário,
+   scanner, revisão semanal) continuam seus.
+2. O briefing matinal passa a LER o resultado do scan das 05:00 (eventos
+   `discovery.*` + `trader list`), em vez de disparar a varredura.
+3. `discovery positioning`/`inspect`/`token` (spec v5) seguem sob demanda —
+   ainda não implementados; chegam com o funil logic_version 2.
+
+**Validação**:
+
+- `systemctl status tokio-engine.service` lista o processo
+  `discovery-scheduler` entre os filhos do supervisor.
+- `events` contém `discovery.scan_started`/`scan_completed` após o start.
+- Tabela `traders` populada (dashboard e `trader list` com candidatos
+  SUGERIDO, score decrescente).
+- Crontab do `tokio` SEM linha de discovery.
