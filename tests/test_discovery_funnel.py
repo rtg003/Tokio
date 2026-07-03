@@ -117,8 +117,9 @@ class FakeClient:
 
 
 GOOD = "0x" + "aa" * 20     # swing saudável — deve APROVAR
-SCALP = "0x" + "bb" * 20    # scalper lucrativo — deve REPROVAR (F3)
-DEPOSIT = "0x" + "cc" * 20  # inflado por aporte — deve REPROVAR (F4/F10)
+SCALP = "0x" + "bb" * 20    # scalper lucrativo — v3: APROVA com score < GOOD
+                            # (F3 desabilitado; copiabilidade baixa penaliza)
+DEPOSIT = "0x" + "cc" * 20  # inflado por aporte — deve REPROVAR (F10)
 REKT1 = "0x" + "dd" * 20
 REKT2 = "0x" + "ee" * 20
 
@@ -144,7 +145,9 @@ def make_client() -> FakeClient:
     profiles = {
         GOOD: {"fills": swing_fills()},
         SCALP: {"fills": scalper_fills},
-        DEPOSIT: {"fills": swing_fills(n=35, pnl_each=20.0),
+        # início há 45d → último trade recente (passa F1) e cai no F10
+        DEPOSIT: {"fills": swing_fills(n=35, pnl_each=20.0,
+                                       start_ms=NOW_MS - 45 * DAY_MS),
                   "curve": flat_curve,
                   "ledger": [{"time": NOW_MS - 15 * DAY_MS,
                               "delta": {"type": "deposit", "usdc": 40_000}}]},
@@ -157,12 +160,15 @@ def test_scan_approves_swing_rejects_traps(db) -> None:
     client = make_client()
     result = run_scan(client, db, CFG, now_ms=NOW_MS)
 
-    approved = {c.address for c in result.approved}
+    approved = {c.address: c for c in result.approved}
     rejected = {c.address: c.reject_reason for c in result.rejected}
 
     assert GOOD in approved
-    assert SCALP in rejected and rejected[SCALP].startswith("F3")   # scalper lucrativo
-    assert DEPOSIT in rejected                                       # aporte/TWRR
+    # v3: F3 desabilitado — o scalper APROVA, mas o score de copiabilidade
+    # o mantém abaixo do swing saudável
+    assert SCALP in approved
+    assert approved[SCALP].score < approved[GOOD].score
+    assert DEPOSIT in rejected and rejected[DEPOSIT].startswith("F10")  # anti-aporte
     assert result.funnel_stats["aprovados"] == len(result.approved)
     assert result.funnel_stats["coletados"] == 5
     # rekt não entra no funil de aprovação, vira coorte de controle
@@ -201,15 +207,15 @@ def test_persist_scan_populates_traders_and_snapshots(db) -> None:
     rows = {r["address"]: r for r in db.query("SELECT * FROM traders")}
     good = rows[GOOD]
     assert good["status"] == "SUGERIDO"
-    assert good["logic_version"] == 2
+    assert good["logic_version"] == CFG["logic_version"]
     assert good["windows_positive"] == "4/4"
     assert good["reject_reason"] is None
     assert good["n_trades_30d"] > 0
     assert json.loads(good["top_assets"]) == ["BTC"]
 
-    scalp = rows[SCALP]
-    assert scalp["status"] == "REJEITADO"
-    assert scalp["reject_reason"].startswith("F3")
+    deposit = rows[DEPOSIT]
+    assert deposit["status"] == "REJEITADO"
+    assert deposit["reject_reason"].startswith("F10")
 
     snaps = db.query("SELECT DISTINCT cohort FROM cohort_snapshots")
     assert {s["cohort"] for s in snaps} <= {"smart", "rekt"}
@@ -219,13 +225,14 @@ def test_rescan_reinstates_rejected_that_now_passes(db) -> None:
     client = make_client()
     result = run_scan(client, db, CFG, now_ms=NOW_MS)
     persist_scan(db, result, CFG)
-    # scalper reprovado vira swing no scan seguinte (mudou de comportamento)
+    # reprovado por aporte (F10) para de aportar no scan seguinte: sem ledger e
+    # com curva de crescimento orgânico → REJEITADO volta a SUGERIDO
     client2 = make_client()
-    client2.profiles[SCALP] = {"fills": swing_fills()}
+    client2.profiles[DEPOSIT] = {"fills": swing_fills()}
     result2 = run_scan(client2, db, CFG, now_ms=NOW_MS)
     persist_scan(db, result2, CFG)
     row = db.query("SELECT status, reject_reason FROM traders WHERE address = ?",
-                   (SCALP,))[0]
+                   (DEPOSIT,))[0]
     assert row["status"] == "SUGERIDO"
     assert row["reject_reason"] is None
 
@@ -235,14 +242,38 @@ def test_report_contains_funnel_stats_and_ranking(db) -> None:
     result = run_scan(client, db, CFG, now_ms=NOW_MS)
     js, md = render_report(result, CFG)
     payload = json.loads(js)
-    assert payload["logic_version"] == 2
+    assert payload["logic_version"] == CFG["logic_version"]
     assert payload["funnel_stats"]["coletados"] == 5
-    assert "F3" in json.dumps(payload["rejected_reasons"])
+    assert "F10" in json.dumps(payload["rejected_reasons"])
     assert "| 1 |" in md and "Funil:" in md
 
 
 def test_entry_rule_windows() -> None:
     c = Candidate(address="0x1", windows_pnl={"7d": -10, "30d": 100, "60d": 50, "90d": 80})
     assert entry_rule_ok(c, CFG) is True and c.windows_positive == "3/4"
+    # v3: 60d deixou de ser obrigatória — 3/4 com 30d positiva passa
     c2 = Candidate(address="0x2", windows_pnl={"7d": 10, "30d": 100, "60d": -5, "90d": 80})
-    assert entry_rule_ok(c2, CFG) is False        # 60d obrigatória negativa
+    assert entry_rule_ok(c2, CFG) is True
+    # 30d segue obrigatória: negativa reprova mesmo com 3/4
+    c3 = Candidate(address="0x3", windows_pnl={"7d": 10, "30d": -5, "60d": 50, "90d": 80})
+    assert entry_rule_ok(c3, CFG) is False
+    # mínimo 2/4: só a 30d positiva não basta
+    c4 = Candidate(address="0x4", windows_pnl={"7d": -1, "30d": 100, "60d": -5, "90d": -8})
+    assert entry_rule_ok(c4, CFG) is False and c4.windows_positive == "1/4"
+
+
+def test_null_thresholds_disable_f3_f4() -> None:
+    """v3: threshold null desabilita o filtro — hiperfrequência e TWRR negativo
+    não são mais eliminatórios (viram penalidade de score)."""
+    from engine.strategies.copy_trade.funnel import hard_filters
+    from engine.core.db import utcnow
+
+    c = Candidate(
+        address="0x5", windows_pnl={"7d": 1, "30d": 1, "60d": 1, "90d": 1},
+        last_activity=utcnow(), n_trades=50, trades_per_day=300.0,
+        median_hold_hours=0.1, twrr_30d_pct=-50.0, max_dd_90d_pct=10.0,
+        top3_concentration=0.1, avg_leverage=5.0, liquid_volume_share=1.0,
+        fills_per_day=10.0, pnl_over_volume=0.01, net_exposure_share=1.0,
+        deposit_share=0.0, equity=0.0,
+    )
+    assert hard_filters(c, CFG, now_ms=NOW_MS) is None

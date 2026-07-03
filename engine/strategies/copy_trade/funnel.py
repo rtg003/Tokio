@@ -312,14 +312,19 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
     if c.n_trades < int(f["f2_min_closed_trades"]):
         return f"F2: amostra {c.n_trades} < {f['f2_min_closed_trades']} trades fechados"
 
-    # F3 anti-scalper: exige EVIDÊNCIA positiva (hold None nunca reprova sozinho)
-    if c.trades_per_day > float(f["f3_max_trades_per_day"]):
+    # F3 anti-scalper (threshold null = desabilitado): exige EVIDÊNCIA positiva
+    # (hold None nunca reprova sozinho)
+    if f.get("f3_max_trades_per_day") is not None and \
+            c.trades_per_day > float(f["f3_max_trades_per_day"]):
         return f"F3: {c.trades_per_day:.1f} trades/dia > {f['f3_max_trades_per_day']}"
-    if c.median_hold_hours is not None and \
+    if f.get("f3_min_avg_holding_hours") is not None and \
+            c.median_hold_hours is not None and \
             c.median_hold_hours < float(f["f3_min_avg_holding_hours"]):
         return f"F3: hold mediano {c.median_hold_hours:.2f}h < {f['f3_min_avg_holding_hours']}h"
 
-    if c.twrr_30d_pct is not None and c.twrr_30d_pct < float(f["f4_min_twrr_30d_pct"]):
+    if f.get("f4_min_twrr_30d_pct") is not None and \
+            c.twrr_30d_pct is not None and \
+            c.twrr_30d_pct < float(f["f4_min_twrr_30d_pct"]):
         return f"F4: TWRR 30d {c.twrr_30d_pct:.1f}% < {f['f4_min_twrr_30d_pct']}%"
 
     if c.max_dd_90d_pct is not None and \
@@ -467,7 +472,10 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
             continue
 
         if not entry_rule_ok(c, cfg):
-            c.reject_reason = f"entrada: janelas {c.windows_positive} (30d e 60d obrigatórias)"
+            required = " e ".join(cfg["entry_rule"]["required_windows"])
+            c.reject_reason = (f"entrada: janelas {c.windows_positive} "
+                               f"({required} obrigatória(s), mín. "
+                               f"{cfg['entry_rule']['min_positive_windows']}/4)")
             rejected.append(c)
             stats["reprovados_entrada"] = stats.get("reprovados_entrada", 0) + 1
             continue
