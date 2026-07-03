@@ -274,8 +274,11 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
     # -- drawdown 90d ----------------------------------------------------------
     curve_all = _series(portfolio, "allTime", "accountValueHistory")
     curve_90d = [(t, v) for t, v in curve_all if t >= now_ms - 90 * DAY_MS] or curve_30d
+    dd_bands = cfg["hard_filters"].get("f5_dd_quality_bands")
     c.max_dd_90d_pct, c.dd_quality = M.drawdown_quality(
-        curve_90d, max_dd_cap_pct=float(cfg["hard_filters"]["f5_max_drawdown_90d_pct"]))
+        curve_90d,
+        max_dd_cap_pct=float(cfg["hard_filters"]["f5_max_drawdown_90d_pct"]),
+        bands=dd_bands)
 
     # -- consistência semanal ------------------------------------------------------
     pnl_30d_hist = _series(portfolio, "month", "pnlHistory")
@@ -489,6 +492,13 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
         c.is_top20_alltime = c.address in top20
         score_candidate(c, cfg)
         assign_cohort(c, cfg)
+        # v4: score mínimo para SUGERIDO — abaixo vira REJEITADO
+        min_score = float(cfg.get("score_adjustments", {}).get("min_score_for_suggestion", 0))
+        if min_score > 0 and c.score < min_score:
+            c.reject_reason = f"score {c.score:.1f} < mínimo {min_score:.0f}"
+            rejected.append(c)
+            stats["reprovados_score_min"] = stats.get("reprovados_score_min", 0) + 1
+            continue
         approved.append(c)
 
     approved.sort(key=lambda c: -c.score)

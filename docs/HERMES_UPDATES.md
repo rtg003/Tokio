@@ -322,7 +322,7 @@ o `docs/HANDOFF_HERMES.md` §8 e o `CLAUDE.md` na raiz.
 
 ---
 
-## UPDATE-0006 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0006 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 **Origem**: PR do Cursor "discovery v2 — funil completo" (merged)
 
@@ -376,7 +376,7 @@ e) **Config versionado**: thresholds/pesos em `config/discovery_config.yaml`.
 
 ---
 
-## UPDATE-0007 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0007 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 **Origem**: PR do Cursor "discovery v3 — afrouxar filtros" (diretiva humana
 rtg003 após o scan real da v2 aprovar 0 candidatos)

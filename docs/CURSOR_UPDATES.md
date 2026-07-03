@@ -74,3 +74,27 @@ Ações aplicadas:
   (c) skill `trade` já traz instrução no topo.
 
 Validação: HERMES_UPDATES.md com UPDATEs 0003-0005 marcados APLICADO.
+
+## UPDATE-0003 · 2026-07-03 · Status: PENDENTE
+
+Origem: PR do Hermes "discovery v4 — refinamento do funil"
+Tipo: logica_discovery + operacao
+
+Resumo: logic_version 4 implementada pelo Hermes (exceção autorizada pelo
+humano ao desempate de área — código + config no mesmo PR). Mudanças:
+
+1. metrics.py: drawdown_quality agora suporta bands piecewise (DD 0-20%
+   = cheio, 20-30% = ×0.7, 30-40% = ×0.4). Função backward-compatible
+   (sem bands = decai linear como antes).
+2. funnel.py: passa f5_dd_quality_bands do config para drawdown_quality.
+3. funnel.py: score mínimo (min_score_for_suggestion: 60.0) — candidatos
+   com score < 60 viram REJEITADO, não SUGERIDO.
+4. config: request_budget 650→800, min_equity 5000→2000, logic_version 3→4.
+5. changelog: entrada v4 com justificativa numérica completa.
+
+Ações do Cursor: tomar ciência das mudanças em metrics.py e funnel.py.
+A função drawdown_quality é backward-compatible (bands=None = linear).
+Se for evoluir o discovery no futuro, trabalhar sobre a v4.
+
+Validação: scan v4 dispara automaticamente no próximo start do engine
+(logic_version avançou). Verificar events por logic_updated (3→4).
