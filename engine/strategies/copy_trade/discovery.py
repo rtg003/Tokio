@@ -267,12 +267,53 @@ def render_markdown(candidates: list[CandidateMetrics]) -> str:
     return "\n".join(lines)
 
 
+# v1 da lógica em produção (ver docs/discovery_changelog.md). A spec v2
+# (PROMPT_DISCOVERY_TRADERS_v4) substituirá score/coorte/TWRR quando aplicada.
+LOGIC_VERSION = 1
+
+
+def persist_candidates(db: Any, candidates: list[CandidateMetrics]) -> None:
+    """Upsert dos candidatos na tabela `traders` (fonte única, ADR 0008) +
+    snapshot agregado por coorte. Nunca rebaixa status de quem já opera."""
+    from engine.strategies.copy_trade.traders_store import (
+        upsert_candidate,
+        write_cohort_snapshot,
+    )
+
+    ranked = [c for c in candidates if not c.excluded]
+    for c in ranked:
+        upsert_candidate(
+            db,
+            address=c.address,
+            name=c.display_name,
+            score=c.score,
+            cohort=c.style,               # v1: coorte = estilo (unidimensional)
+            twrr_30d=c.roi_30d,           # v1: aproximação — ROI da janela 30d
+            pnl_30d=c.pnl_30d,
+            windows={"pnl_30d": c.pnl_30d, "pnl_alltime": c.pnl_alltime},
+            win_rate=c.win_rate,
+            max_drawdown=c.max_drawdown_pct,
+            logic_version=LOGIC_VERSION,
+        )
+    cohorts: dict[str, dict[str, Any]] = {}
+    for c in ranked:
+        agg = cohorts.setdefault(c.style, {"n": 0, "scores": []})
+        agg["n"] += 1
+        agg["scores"].append(c.score)
+    write_cohort_snapshot(db, logic_version=LOGIC_VERSION, cohorts={
+        k: {"n": v["n"], "avg_score": sum(v["scores"]) / v["n"]}
+        for k, v in cohorts.items()
+    })
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="copy_trade.discovery")
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--max-candidates", type=int, default=50)
     parser.add_argument("--min-equity", type=float, default=10_000.0)
     parser.add_argument("--out", default="docs/reports/discovery")
+    parser.add_argument("--no-db", action="store_true",
+                        help="não gravar na tabela traders (só relatório)")
     args = parser.parse_args(argv)
 
     source = HyperliquidDiscoverySource()
@@ -286,6 +327,15 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps([asdict(c) for c in candidates], indent=2, ensure_ascii=False))
     md = render_markdown(candidates)
     (out / f"discovery-{stamp}.md").write_text(md)
+    if not args.no_db:
+        from engine.core.config import get_settings
+        from engine.core.db import Database
+
+        db = Database(get_settings().sqlite_path)
+        db.migrate()
+        persist_candidates(db, candidates)
+        print(f"[traders] {len([c for c in candidates if not c.excluded])} candidatos "
+              f"upsertados (logic_version={LOGIC_VERSION}) + cohort_snapshot gravado")
     print(md)
     return 0
 

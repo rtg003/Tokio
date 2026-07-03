@@ -31,10 +31,32 @@ def _db() -> Database:
 
 
 # --------------------------------------------------------------------------
+def _migrate_trader_yamls(db: Database) -> None:
+    """Migração única (ADR 0008): YAMLs por trader -> tabela `traders`.
+    Após importar, os arquivos são REMOVIDOS — a tabela é a fonte única."""
+    import yaml as _yaml
+
+    from engine.strategies.copy_trade.traders_store import import_yaml_trader
+
+    tdir = REPO_ROOT / "engine" / "strategies" / "copy_trade" / "traders"
+    if not tdir.exists():
+        return
+    for f in sorted(tdir.glob("*.yaml")):
+        cfg = _yaml.safe_load(f.read_text()) or {}
+        address = str(cfg.get("address", "")).lower()
+        if address and address != "0x" + "0" * 40:  # placeholder do template: ignora
+            import_yaml_trader(db, cfg)
+            print(f"trader migrado p/ tabela: {cfg.get('name')} ({address[:10]}…)")
+        f.unlink()
+        print(f"yaml removido: {f.name}")
+    shutil.rmtree(tdir, ignore_errors=True)
+
+
 def cmd_db_migrate(_: argparse.Namespace) -> int:
     settings = get_settings()
     db = Database(settings.sqlite_path)
     ran = db.migrate()
+    _migrate_trader_yamls(db)
     print(f"migrations aplicadas: {ran or 'nenhuma nova'} (db: {settings.sqlite_path})")
     return 0
 
@@ -139,6 +161,62 @@ def cmd_strategy_archive(args: argparse.Namespace) -> int:
     print(f"{sid} arquivada (ordens canceladas: {cancelled}; pasta: {moved or 'n/a'}). "
           f"Lembrete: escreva o post-mortem em docs/post_mortems/{sid}.md")
     return 0
+
+
+def cmd_trader_list(_: argparse.Namespace) -> int:
+    db = _db()
+    from engine.strategies.copy_trade.traders_store import list_traders
+
+    rows = list_traders(db)
+    if not rows:
+        print("nenhum trader na tabela — rode o discovery")
+        return 0
+    fmt = "{:<4} {:<14} {:<44} {:<10} {:<9} {:<12} {}"
+    print(fmt.format("#", "NAME", "ADDRESS", "STATUS", "SCORE", "COHORT", "LOGIC"))
+    for i, r in enumerate(rows, 1):
+        print(fmt.format(i, (r["name"] or "")[:13], r["address"], r["status"],
+                         f"{r['score']:.1f}" if r["score"] is not None else "—",
+                         r["cohort"] or "—", f"v{r['logic_version']}"))
+    return 0
+
+
+def cmd_trader_approve(args: argparse.Namespace) -> int:
+    """GATE 2 (humano): SUGERIDO -> DRY_RUN (ou DRY_RUN -> COPIANDO com --live)."""
+    db = _db()
+    settings = get_settings()
+    logger = EventLogger("cli", settings.logs_dir, db=db)
+    from engine.strategies.copy_trade.traders_store import set_status, update_exec_config
+
+    target = "COPIANDO" if args.live else "DRY_RUN"
+    if args.live and not args.evidence:
+        print("ERRO: --live (dinheiro de verdade no espelhamento) exige --evidence "
+              "docs/<arquivo> com a expectância positiva do dry-run.", file=sys.stderr)
+        return 1
+    if not args.yes:
+        print(f"GATE 2 — aprovar trader {args.address} para {target}?")
+        if input("confirmar? [y/N] ").strip().lower() != "y":
+            print("abortado")
+            return 1
+    res = set_status(db, args.address, target, by="cli_gate2_humano",
+                     logger=logger, human_gate=True)
+    if res.get("ok") and args.live:
+        update_exec_config(db, args.address, by="cli_gate2_humano",
+                           logger=logger, dry_run=0)
+        logger.info("trader.gate2_live", {"address": args.address,
+                                          "evidence": args.evidence})
+    print(res)
+    return 0 if res.get("ok") else 1
+
+
+def cmd_trader_reject(args: argparse.Namespace) -> int:
+    db = _db()
+    settings = get_settings()
+    logger = EventLogger("cli", settings.logs_dir, db=db)
+    from engine.strategies.copy_trade.traders_store import set_status
+
+    res = set_status(db, args.address, "REJEITADO", by="cli_humano", logger=logger)
+    print(res)
+    return 0 if res.get("ok") else 1
 
 
 def cmd_strategy_activate(args: argparse.Namespace) -> int:
@@ -281,6 +359,20 @@ def build_parser() -> argparse.ArgumentParser:
     act.add_argument("--evidence", help="docs/<arquivo> com expectância positiva líquida")
     act.add_argument("--yes", action="store_true")
     act.set_defaults(func=cmd_strategy_activate)
+
+    tr = sub.add_parser("trader")
+    tr_sub = tr.add_subparsers(dest="tr_cmd", required=True)
+    tr_sub.add_parser("list").set_defaults(func=cmd_trader_list)
+    appr = tr_sub.add_parser("approve")
+    appr.add_argument("address")
+    appr.add_argument("--live", action="store_true",
+                      help="DRY_RUN -> COPIANDO (exige --evidence)")
+    appr.add_argument("--evidence")
+    appr.add_argument("--yes", action="store_true")
+    appr.set_defaults(func=cmd_trader_approve)
+    rej = tr_sub.add_parser("reject")
+    rej.add_argument("address")
+    rej.set_defaults(func=cmd_trader_reject)
 
     rep = sub.add_parser("report")
     rep.add_argument("--daily", action="store_true")

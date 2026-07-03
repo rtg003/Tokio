@@ -75,9 +75,19 @@ O contrato é uniforme (`base_runner`): o mesmo procedimento serve para todas.
 
 ```bash
 python -m engine.cli report --daily      # por exceção: agregado + violações
-python -m engine.cli kill --reason "..." # KILL switch global (arquivo sentinela)
+python -m engine.cli kill --reason "..." # KILL switch global (cancela ordens abertas)
 python -m engine.cli unkill              # remove após resolver o incidente
 ```
+
+## Traders de copy trade (tabela única — ADR 0008)
+
+`python -m engine.cli trader list` — candidatos + copiados, por score.
+Ciclo: SUGERIDO → DRY_RUN → COPIANDO (Gate 2, humano) · PAUSADO/REJEITADO.
+Aprovar (SÓ com confirmação humana no turno):
+`trader approve <address>` (dry-run) · `trader approve <address> --live
+--evidence docs/<arquivo>` (dinheiro real no espelhamento). Pausar/retomar/
+rejeitar: API de controle do gateway (`POST /control/trader/<addr>/status`).
+Toda mudança fica logada em `events` (`trader.*`).
 
 Circuit breaker: perda diária no cap pausa TODAS as estratégias
 automaticamente e notifica. Investigue antes de reativar.

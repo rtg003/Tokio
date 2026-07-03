@@ -1,9 +1,11 @@
 """Copy-trade executor — event-driven mirroring, 100% deterministic.
 
 One isolated process for the module; each copied trader is its own strategy
-(`ct_<name>`, one YAML in `traders/`). Reading target fills over WebSocket is
-public market data; every ORDER goes to the gateway as an intent — never
-straight to the venue.
+(`ct_<name>`). A fonte ÚNICA de traders é a tabela `traders` (ADR 0008):
+o executor espelha quem está em DRY_RUN/COPIANDO e recarrega a tabela
+periodicamente (mudanças via API de controle entram sem restart). Reading
+target fills over WebSocket is public market data; every ORDER goes to the
+gateway as an intent — never straight to the venue.
 
 Mirroring model (see strategy.md):
 - target opens from flat  -> open with `value` USDC (fixed) or proportional
@@ -17,19 +19,18 @@ every trade; a periodic drift check compares expected vs. ledger positions.
 """
 from __future__ import annotations
 
+import json
 import time
-from pathlib import Path
 from typing import Any, Callable, Protocol
 
-import yaml
 from pydantic import BaseModel, Field
 
 from engine.core.config import Settings, get_settings
 from engine.core.db import Database
 from engine.core.logger import EventLogger
 from engine.strategies.base_runner import GatewayClient
+from engine.strategies.copy_trade.traders_store import operable_traders, strategy_id_for
 
-TRADERS_DIR = Path(__file__).resolve().parent / "traders"
 DRIFT_TOLERANCE = 0.05
 
 
@@ -40,13 +41,27 @@ class TraderConfig(BaseModel):
     value: float = 50.0
     max_leverage: float = 3.0
     blocked_assets: list[str] = Field(default_factory=list)
-    active: bool = False
+    status: str = "SUGERIDO"      # da tabela traders
     dry_run: bool = True          # DEFAULT for every new trader — no exceptions
     thresholds: dict[str, float] = Field(default_factory=dict)
 
     @property
     def strategy_id(self) -> str:
-        return f"ct_{self.name}"
+        return strategy_id_for(self.address, self.name)
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> "TraderConfig":
+        return cls(
+            name=row.get("name") or row["address"][2:10],
+            address=row["address"],
+            mode=row.get("mode", "fixed_usdc"),
+            value=float(row.get("value", 50.0)),
+            max_leverage=float(row.get("max_leverage", 3.0)),
+            blocked_assets=json.loads(row.get("blocked_assets") or "[]"),
+            status=row.get("status", "SUGERIDO"),
+            dry_run=bool(row.get("dry_run", 1)),
+            thresholds=json.loads(row.get("thresholds") or "{}"),
+        )
 
 
 class FillWatcher(Protocol):
@@ -88,7 +103,6 @@ class CopyTradeExecutor:
         db: Database | None = None,
         gateway: GatewayClient | None = None,
         watcher: FillWatcher,
-        traders_dir: Path = TRADERS_DIR,
         my_equity_fn: Callable[[], float] | None = None,
         target_equity_fn: Callable[[str], float] | None = None,
     ) -> None:
@@ -100,21 +114,33 @@ class CopyTradeExecutor:
         self.my_equity_fn = my_equity_fn or (lambda: 1_000.0)
         self.target_equity_fn = target_equity_fn or (lambda _addr: 0.0)
         self.traders: dict[str, TraderConfig] = {}
+        self._subscribed: set[str] = set()
         # (strategy_id, symbol) -> sizes for mirroring + drift check
         self._target_pos: dict[tuple[str, str], float] = {}
         self._my_pos: dict[tuple[str, str], float] = {}
-
-        for cfg_file in sorted(traders_dir.glob("*.yaml")):
-            cfg = TraderConfig.model_validate(yaml.safe_load(cfg_file.read_text()))
-            self._register_trader(cfg)
+        self.reload_traders()
 
     # -- setup ---------------------------------------------------------------
-    def _register_trader(self, cfg: TraderConfig) -> None:
-        self.traders[cfg.strategy_id] = cfg
+    def reload_traders(self) -> None:
+        """Recarrega da tabela `traders` (fonte única). Novos DRY_RUN/COPIANDO
+        ganham subscrição WS; quem saiu desses estados para de ser espelhado
+        (o status é checado a cada fill de qualquer forma)."""
+        for row in operable_traders(self.db):
+            cfg = TraderConfig.from_row(row)
+            self.traders[cfg.strategy_id] = cfg
+            self._register_strategy(cfg)
+            if cfg.address not in self._subscribed:
+                self._subscribed.add(cfg.address)
+                self.watcher.subscribe(
+                    cfg.address,
+                    lambda fill, sid=cfg.strategy_id: self.on_target_fill(sid, fill),
+                )
+                self.logger.info("ws.subscribed_target", {"address": cfg.address},
+                                 strategy_id=cfg.strategy_id)
+
+    def _register_strategy(self, cfg: TraderConfig) -> None:
         rows = self.db.query("SELECT id FROM strategies WHERE id = ?", (cfg.strategy_id,))
         if not rows:
-            import json
-
             self.db.upsert("strategies", {
                 "id": cfg.strategy_id,
                 "module": "copy_trade",
@@ -123,26 +149,33 @@ class CopyTradeExecutor:
                 "config_snapshot": json.dumps(cfg.model_dump(), ensure_ascii=False),
                 "thresholds": json.dumps(cfg.thresholds, ensure_ascii=False),
             }, ("id",))
-        if cfg.active:
-            self.watcher.subscribe(
-                cfg.address,
-                lambda fill, sid=cfg.strategy_id: self.on_target_fill(sid, fill),
-            )
-            self.logger.info("ws.subscribed_target", {"address": cfg.address},
-                             strategy_id=cfg.strategy_id)
 
     def _strategy_status(self, strategy_id: str) -> str:
         rows = self.db.query("SELECT status FROM strategies WHERE id = ?", (strategy_id,))
         return rows[0]["status"] if rows else "draft"
 
+    def _trader_status(self, address: str) -> str:
+        rows = self.db.query("SELECT status FROM traders WHERE address = ?",
+                             (address.lower(),))
+        return rows[0]["status"] if rows else "ARQUIVADO"
+
     def _is_dry_run(self, cfg: TraderConfig) -> bool:
-        return cfg.dry_run or self._strategy_status(cfg.strategy_id) != "active"
+        # Ordem real só quando o trader está COPIANDO com dry_run desligado
+        # (Gate 2 humano) E a estratégia correspondente está ativa.
+        return (cfg.dry_run
+                or self._trader_status(cfg.address) != "COPIANDO"
+                or self._strategy_status(cfg.strategy_id) != "active")
 
     # -- mirroring core ----------------------------------------------------------
     def on_target_fill(self, strategy_id: str, fill: dict[str, Any]) -> dict[str, Any] | None:
         t0 = time.time()
         cfg = self.traders[strategy_id]
         symbol = str(fill.get("coin", ""))
+        trader_status = self._trader_status(cfg.address)
+        if trader_status not in ("DRY_RUN", "COPIANDO"):
+            self.logger.debug("signal.ignored_status", {"trader_status": trader_status},
+                              strategy_id=strategy_id)
+            return None
         status = self._strategy_status(strategy_id)
         if status not in ("dry_run", "active"):
             self.logger.debug("signal.ignored_status", {"status": status},
@@ -245,17 +278,25 @@ class CopyTradeExecutor:
         return drifts
 
     # -- process loop --------------------------------------------------------------
-    def run_forever(self, drift_interval_s: float = 60.0) -> None:
+    def run_forever(self, drift_interval_s: float = 60.0,
+                    reload_interval_s: float = 30.0) -> None:
         self.logger.info("strategy.runner_start",
                          {"module": "copy_trade",
                           "traders": [t.strategy_id for t in self.traders.values()],
-                          "active": [t.strategy_id for t in self.traders.values() if t.active]})
+                          "copying": [t.strategy_id for t in self.traders.values()
+                                      if t.status == "COPIANDO"]})
         last_drift = 0.0
+        last_reload = 0.0
         while True:
             if self.settings.kill_file.exists():
                 self.logger.error("killswitch.runner_halt", {})
                 break
             now = time.monotonic()
+            if now - last_reload >= reload_interval_s:
+                # tabela `traders` é a fonte única: mudanças via API de
+                # controle entram sem restart do runner
+                self.reload_traders()
+                last_reload = now
             if now - last_drift >= drift_interval_s:
                 self.drift_check()
                 self.logger.info("health.heartbeat",
