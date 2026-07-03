@@ -9,6 +9,29 @@ from engine.core.config import get_settings
 from engine.core.db import Database, Replicator, SupabaseSink
 from engine.core.logger import EventLogger
 
+# Tabelas pequenas de estado (não-append-only) reenfileiradas no start:
+# reconcilia perdas históricas de outbox (ex.: bug de PK do dedup, 2026-07-03).
+_RECONCILE_TABLES: dict[str, tuple[str, ...]] = {
+    "traders": ("address",),
+    "strategies": ("id",),
+    "strategy_metrics_daily": ("strategy_id", "day"),
+}
+
+
+def reconcile_state_tables(db: Database, logger: EventLogger) -> int:
+    """Reenfileira as linhas atuais das tabelas de estado (upsert idempotente
+    no destino). Barato: tabelas pequenas, 1x por start do replicator."""
+    total = 0
+    for table, pk in _RECONCILE_TABLES.items():
+        rows = db.query(f"SELECT * FROM {table}")
+        for row in rows:
+            db.upsert(table, row, pk)
+        total += len(rows)
+    if total:
+        logger.info("replication.reconciled", {"rows": total,
+                                               "tables": sorted(_RECONCILE_TABLES)})
+    return total
+
 
 def main() -> None:
     settings = get_settings()
@@ -19,6 +42,7 @@ def main() -> None:
     logger = EventLogger("replicator", settings.logs_dir, db=db)
     sink = SupabaseSink()
     logger.info("health.replicator_start", {"configured": sink.configured})
+    reconcile_state_tables(db, logger)
     Replicator(
         db, sink,
         batch_size=settings.replication.batch_size,
