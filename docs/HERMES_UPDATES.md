@@ -188,7 +188,7 @@ de área, um agente sobrescreve ou "corrige" o trabalho do outro. Em resumo:
 
 ---
 
-## UPDATE-0003 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0003 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 **Origem**: PR do Cursor "discovery scheduler" (merged)
 
@@ -234,7 +234,7 @@ e) Relatórios em `data/reports/discovery/`; eventos `discovery.scan_started`
 
 ---
 
-## UPDATE-0004 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0004 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 **Origem**: PR do Cursor "isolamento de observabilidade" (merged)
 
@@ -281,7 +281,7 @@ corrigido na origem). Regra formalizada como **ADR 0010** e centralizada em
 
 ---
 
-## UPDATE-0005 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0005 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 **Origem**: PR do Cursor "hermes context autoload" (merged) — pedido direto
 do humano: "Cursor e Hermes precisam se entender sem ruído nem atropelo"
