@@ -4,13 +4,15 @@
 # logic_version + entrada em docs/discovery_changelog.md + evento logic_updated.
 # (spec: docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md · ADR 0008)
 # ============================================================================
-logic_version: 5
+logic_version: 6
 
 collection:
-  leaderboard_top_n: 500          # coleta ampla (Estágio 1)
+  leaderboard_top_n: 5000           # v6: era 500 (leaderboard tem 40k+ rows; 500 pegava só baleias)
   deep_dive_max: 150              # v5: era 100 (orçamento permite, era o limitante real)
   request_budget: 1100            # v5: era 800 (150 candidatos × ~7 req = 1050)
   min_equity_usd: 2000            # v4: era 5000 (traders pequenos/médios podem ter edge melhor)
+  # v6: coleta prioriza por PnL 7d (atividade recente), não PnL all-time
+  sort_by: "pnl_7d"               # v6: ordena coleta por PnL 7d (desc) em vez de all-time
   # prioridade do aprofundamento: ROI 30d (desc) — PnL absoluto puro só traz
   # mega-baleias holders, que reprovam em F1/F2 (validação de 2026-07-03)
   fills_window_days: 60           # janela baixada de fills (paginada)

@@ -136,3 +136,32 @@ Ações do Cursor:
 
 Validação: scan v5 dispara automaticamente no próximo start do engine
 (logic_version avançou). Verificar events por logic_updated (4→5).
+
+## UPDATE-0005 · 2026-07-03 · Status: PENDENTE
+
+Origem: PR do Hermes "discovery v6 — coleta por atividade recente"
+Tipo: logica_discovery + operacao
+
+Resumo: descoberta crítica — o leaderboard da HL tem 40.191 rows, mas o
+discovery coletava só 500 (por PnL all-time). Deep dive manual encontrou
+2.277 candidatos realistas e 10 traders ativos em 48h que NÃO estavam sendo
+coletados. Mudanças:
+
+Código (funnel.py):
+1. run_scan agora ordena o leaderboard por PnL 7d (config sort_by) antes
+   de cortar em leaderboard_top_n. Antes pegava os primeiros N rows
+   (ordenados por PnL all-time pelo stats API).
+
+Config (discovery_config.yaml):
+- logic_version: 5 → 6
+- leaderboard_top_n: 500 → 5000
+- sort_by: "pnl_7d" (novo)
+
+Ações do Cursor: tomar ciência da mudança de coleta. O método
+client.leaderboard() retorna TODAS as rows (40k+); o sort agora acontece
+no funnel.py (Python), não no stats API. Se performance for um problema
+(40k rows em memória), considerar mover o sort para o hl_data.py com
+paginação ou cache.
+
+Validação: scan v6 dispara automaticamente no próximo start do engine.
+Verificar events por logic_updated (5→6) e comparar aprovados com v5.
