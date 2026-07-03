@@ -175,11 +175,16 @@ def median_hold_hours(episodes: list[Episode]) -> float | None:
 
 # --- Drawdown: magnitude + velocidade de recuperação -----------------------------
 def drawdown_quality(curve: list[tuple[float, float]],
-                     max_dd_cap_pct: float = 25.0) -> tuple[float, float]:
+                     max_dd_cap_pct: float = 25.0,
+                     bands: list[list[float]] | None = None) -> tuple[float, float]:
     """Retorna (max_dd_pct, quality [0,1]).
 
-    quality = 70% magnitude (1 − dd/cap) + 30% recuperação (fração do tempo
-    de drawdown já recuperada — quem cai e volta rápido pontua mais).
+    quality = 70% magnitude + 30% recuperação.
+
+    v4: magnitude é piecewise por faixas de DD (em vez de linear):
+      bands = [[0, 20, 1.0], [20, 30, 0.7], [30, 40, 0.4]]
+      DD 0-20% = quality cheio; 20-30% = ×0.7; 30-40% = ×0.4.
+    Sem bands: decai linear (1 − dd/cap) — comportamento v2/v3.
     """
     if len(curve) < 2:
         return (0.0, 1.0)
@@ -200,9 +205,27 @@ def drawdown_quality(curve: list[tuple[float, float]],
             max_dd = max(max_dd, dd)
             dd_periods += 1
             in_dd = True
-    magnitude = max(0.0, 1.0 - (max_dd * 100) / max_dd_cap_pct)
+    max_dd_pct = max_dd * 100
+
+    # v4: magnitude piecewise por faixas
+    if bands:
+        magnitude = 0.0
+        for lo, hi, mult in bands:
+            if max_dd_pct <= lo:
+                break
+            seg = min(max_dd_pct, hi) - lo
+            if seg > 0:
+                # dentro da faixa [lo, hi], o decai é proporcional ao segmento
+                seg_frac = seg / (hi - lo)
+                magnitude = max(magnitude, mult * (1.0 - seg_frac * 0.5))
+        # se DD excede o teto (última faixa), magnitude = 0
+        if max_dd_pct > bands[-1][1]:
+            magnitude = 0.0
+    else:
+        magnitude = max(0.0, 1.0 - max_dd_pct / max_dd_cap_pct)
+
     recovery = recovered_periods / max(1, recovered_periods + (1 if in_dd else 0))
-    return (max_dd * 100, 0.7 * magnitude + 0.3 * recovery)
+    return (max_dd_pct, 0.7 * magnitude + 0.3 * recovery)
 
 
 # --- Consistência ------------------------------------------------------------

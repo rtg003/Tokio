@@ -106,3 +106,29 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
   - testes: PF 4.8/32 trades sem crédito estendido; PF 4.5/80 trades com.
 - Mini-plano endpoint → métrica em `docs/discovery_v2_plan.md` (gate humano
   da spec antes do código do funil).
+
+## logic_version: 4 — refinamento do funil (2026-07-03)
+
+- **Autor**: Hermes (operador), com autorização humana explícita (exceção ao
+  desempate de área AGENTS.md §4 — código + config no mesmo PR).
+- **Motivo (justificativa numérica)**: scan v3 real (`4439dbfd5038`) aprovou
+  5 candidatos com scores 57.6–91.3, mas 3 dos 4 candidatos em produção (v1)
+  tinham DD > 40% (incl. um com 99.3%). F5 (DD) reprovou 48% dos aprofundados
+  — maior gargalo. 17 candidatos interrompidos por orçamento. min_equity
+  $5k filtrava traders pequenos/médios potencialmente melhores.
+- **O que mudou (antes → depois)**:
+  - **F5 drawdown_quality piecewise** (código: `metrics.py`): magnitude decai
+    por faixas em vez de linear. DD 0-20% = score cheio; 20-30% = ×0.7;
+    30-40% = ×0.4; >40% = reprovado. Um trader com DD 25% agora pontua menos
+    que um com DD 15% — antes tinham o mesmo quality.
+  - **request_budget: 650 → 800** (config): elimina os 17 interrompidos por
+    orçamento no scan v3.
+  - **min_equity_usd: 5000 → 2000** (config): abre o funil para traders
+    pequenos/médios ($2k–$50k) que podem ter edge melhor que baleias.
+  - **min_score_for_suggestion: 60.0** (config): candidatos com score < 60
+    viram REJEITADO (não SUGERIDO). Diferencia candidatos ruins de bons.
+- **O que NÃO mudou**: F1–F4 (filtros), F6–F11, pesos do score, coortes,
+  entry_rule, copyability, cost_of_copy.
+- **Resultado esperado**: mais candidatos analisados (800 req vs 650),
+  distribuição de score mais granular (faixas de DD), só SUGERIDO acima de
+  60.

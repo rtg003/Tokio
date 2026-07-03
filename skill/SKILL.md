@@ -202,19 +202,33 @@ Contrato completo em `AGENTS.md` na raiz do repo.
 | Config operacional, skill/, crons, rotina de produção | Hermes |
 | Conflito genuíno | Ambos PARAM e notificam rtg003 |
 
-### Copy trade — discovery e traders (logic_version 2)
+### Copy trade — discovery e traders (logic_version 3)
 
 - Tabela `traders` é a fonte ÚNICA (ADR 0008). Sem YAMLs.
 - Gate: SUGERIDO → DRY_RUN/COPIANDO só com autorização humana explícita,
   inclusive em testnet. CLI: `trader approve <address>` (→ DRY_RUN),
   `trader approve <address> --live --evidence docs/<arquivo>` (→ COPIANDO).
-- Funil: 4 janelas (7d/30d/60d/90d), PnL positivo em ≥3 (30d+60d obrigatórias),
-  11 hard filters, score 0–100 com ajustes (+5 consistência, −10 liquidação
-  próxima, −5 crowding). Ver spec: `docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md`.
+- Funil v3 (config: `config/discovery_config.yaml`):
+  - 4 janelas (7d/30d/60d/90d). Entrada: **≥2/4 com 30d obrigatória** (v3 —
+    era ≥3/4 com 30d+60d na v2). A 7d PODE ser negativa.
+  - 11 hard filters (F1–F11), mas na v3: **F3 (anti-scalper) OFF**,
+    **F4 (TWRR≥5%) OFF**, **F5 (max DD) 40%** (era 25%). Filtros desabilitados
+    têm threshold `null` no config — reativar = config + bump de logic_version.
+  - Score 0–100 com ajustes (+5 consistência 4/4, −10 liquidação <10%,
+    −5 crowding top-20).
+  - Scalpers agora ENTRAM com score penalizado pela copiabilidade — cite
+    `avg_holding_hours` e `n_trades_30d` ao sugerir.
 - Profit factor: crédito integral até 3.0; meio-crédito 3.0–5.0 só com
-  n≥60; >5.0 não pontua. PF inclui PnL não realizado.
-- Rotinas: scan 05:00 SP, positioning no briefing, `discovery inspect/token`.
+  n≥60; >5.0 não pontua. PF incl. PnL não realizado.
+- Scan diário 05:00 SP (engine scheduler, não cron externo). Re-scan
+  automático quando logic_version avança.
+- CLI (quando registrada): `discovery scan`, `discovery inspect <address>`,
+  `discovery positioning`, `discovery token <ativo>`, `discovery report --last`.
+  Alternativa atual: `trader list` + `discovery.py` direto.
+- Reprovados ficam na tabela como REJEITADO com `reject_reason`.
 - Toda exibição de traders ordena por score DECRESCENTE.
+- Ao sugerir wallet para Gate 2, citar explicitamente: score, janelas,
+  TWRR, PF+n, hold médio, trades/dia, DD.
 
 Referências: `references/strategy_md_template.md` (template obrigatório de
 `strategy.md`), `references/lessons.md` (lições agregadas de post-mortems) e
