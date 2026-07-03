@@ -439,7 +439,14 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     now_ms = now_ms or time.time() * 1000
     stats: dict[str, int] = {}
 
-    rows = client.leaderboard()[: int(col["leaderboard_top_n"])]
+    rows = client.leaderboard()
+    # v6: ordenar por PnL 7d (atividade recente) em vez de pegar os primeiros N
+    # (leaderboard vem por PnL all-time — baleias inativas dominam o topo)
+    sort_by = col.get("sort_by", "all_time")
+    if sort_by == "pnl_7d":
+        rows.sort(key=lambda r: -float(dict(r.get("windowPerformances", []))
+                                       .get("week", {}).get("pnl", 0) or 0))
+    rows = rows[: int(col["leaderboard_top_n"])]
     stats["coletados"] = len(rows)
     candidates = [parse_leaderboard_row(r) for r in rows]
     top20 = {c.address for c in candidates[:int(cfg["score_adjustments"]["crowding_top_n"])]}

@@ -202,7 +202,7 @@ Contrato completo em `AGENTS.md` na raiz do repo.
 | Config operacional, skill/, crons, rotina de produção | Hermes |
 | Conflito genuíno | Ambos PARAM e notificam rtg003 |
 
-### Copy trade — discovery e traders (logic_version 5)
+### Copy trade — discovery e traders (logic_version 6)
 
 - Tabela `traders` é a fonte ÚNICA (ADR 0008). Sem YAMLs.
 - Gate: SUGERIDO → DRY_RUN/COPIANDO só com autorização humana explícita,

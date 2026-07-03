@@ -162,3 +162,25 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
 - **Resultado esperado**: menos falsos positivos (F2b elimina inativos),
   scores mais justos (PF penalizado), mais candidatos (150 vs 100), fonte
   menos enviesada (varredura ativa além do leaderboard).
+
+## logic_version: 6 — coleta por atividade recente + leaderboard expandido (2026-07-03)
+
+- **Autor**: Hermes (operador), com autorização humana explícita.
+- **Motivo (justificativa numérica)**: varredura ativa manual revelou que o
+  leaderboard tem 40.191 rows (não 500), com 2.277 candidatos realistas
+  (PnL 7d>$200, equity $5k-$500k, ROI 10-100%). O discovery pegava só os
+  primeiros 500 (por PnL all-time) — majoritariamente baleias inativas ou
+  com DD absurdo. Apenas 3 dos 100 aprofundados no v5 tinham trades reais
+  em 48h. Deep dive manual encontrou 10 traders ativos em 48h com perfil
+  copiável que não estavam sendo coletados.
+- **O que mudou**:
+  a) **leaderboard_top_n: 500 → 5000** — coleta 10x mais candidatos do
+     leaderboard (40k+ rows disponíveis).
+  b) **sort_by: "pnl_7d"** — ordena coleta por PnL 7d (atividade recente)
+     em vez de PnL all-time. Baleias inativas que dominavam o topo por
+     PnL acumulado agora ficam no fim da fila.
+- **O que NÃO mudou**: F1-F11, F2b, score, entry_rule, deep_dive_max,
+  request_budget, varredura ativa (v5).
+- **Resultado esperado**: candidatos aprofundados são majoritariamente
+  ativos nesta semana, não baleias inativas. Mais traders copiáveis
+  (equity $5k-$500k) entram no funil.
