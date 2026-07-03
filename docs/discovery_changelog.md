@@ -51,6 +51,36 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
 - **Resultado esperado**: ranking maior e de qualidade auditável; scalpers e
   contas infladas por aporte fora; separação smart vs. rekt testada em CI.
 
+## logic_version: 3 — afrouxamento de filtros (2026-07-03)
+
+- **Autor**: humano (rtg003), implementado pelo Cursor.
+- **Motivo (justificativa numérica)**: o primeiro scan real full-budget da v2
+  (`b684b8bbe5f5`, 2026-07-03: 500 coletados, 100 aprofundados, 650 requests)
+  aprovou **0 candidatos**. Reprovações: F3 anti-scalper **34**, F5 DD>25%
+  **24**, F4 TWRR<5% **8**, entrada (30d+60d obrigatórias) **7**, F1 3, F2 2,
+  F6 1, F7 3, interrompidos por orçamento 18. Os filtros estavam calibrados
+  para um universo que não existe no leaderboard real.
+- **O que mudou (antes → depois)**:
+  - **F3 (anti-scalper): desabilitado** (`f3_*: null` no config; o código pula
+    filtros com threshold null). Scalper deixa de ser eliminado e passa a ser
+    penalizado pelo score de copiabilidade (frequência fora do sweet spot
+    0.3–20 trades/dia e hold fora de 4h–72h derrubam o componente de 15%).
+  - **F4 (TWRR 30d ≥ 5%): desabilitado** (`null`). O TWRR segue calculado,
+    persistido e exibido no dossiê/rationale — só não é mais eliminatório.
+  - **F5: teto de DD 90d 25% → 40%**. Efeito colateral documentado: o teto
+    também é o cap do componente `drawdown_quality` do score, que fica
+    proporcionalmente mais tolerante (DD 20% agora pontua 0.5 de magnitude,
+    antes 0.2).
+  - **Entrada: "≥3/4 janelas, 30d e 60d obrigatórias" → "≥2/4 janelas, só a
+    30d obrigatória"**. Sem reduzir o mínimo para 2, os reprovados "2/4" do
+    scan real continuariam fora e a flexibilização seria inócua.
+- **O que NÃO mudou**: F1/F2 (atividade e amostra), F6–F11, pesos do score,
+  coortes, orçamento de requests. A numeração F1–F11 é preservada (filtros
+  desabilitados ficam no código; reativar = config + novo bump).
+- **Resultado esperado**: tabela `traders` populada com aprovados reais; perfis
+  de maior frequência/DD aparecem com score proporcionalmente menor em vez de
+  sumirem do funil.
+
 ## Registro histórico da implementação
 
 - **Spec**: `docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md` (recebida 2026-07-03).
