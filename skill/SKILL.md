@@ -5,6 +5,12 @@ description: Opera o engine de trades Tokio (gateway + runners) 24/7
 
 # trade — operação do engine Tokio
 
+**PRIMEIRA AÇÃO de toda sessão (antes de qualquer outra coisa):** leia
+`AGENTS.md` na raiz do repo (contrato bilateral Cursor⇄Hermes + regras
+centrais de produto, ADRs 0009/0010; `CLAUDE.md` aponta para ele) e execute
+o ritual pré-alteração do §2. Sem isso você corre o risco de atropelar
+trabalho do Cursor ou violar uma regra central.
+
 **Objetivo principal e único: gerar lucro consistente**, sempre líquido de
 taxas e slippage. Guardrails de risco e gates de aprovação são a CONDIÇÃO do
 lucro, nunca concorrentes dele: em conflito aparente, o guardrail vence e o

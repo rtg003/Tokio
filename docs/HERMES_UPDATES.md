@@ -278,3 +278,44 @@ corrigido na origem). Regra formalizada como **ADR 0010** e centralizada em
 - Skill atualizada com a regra, mergeada na `main`.
 - Resposta ao humano sobre a origem dos dados `tv_gap_fade`.
 - Este UPDATE marcado `APLICADO` após executar as ações.
+
+---
+
+## UPDATE-0005 · 2026-07-03 · Status: PENDENTE
+
+**Origem**: PR do Cursor "hermes context autoload" (merged) — pedido direto
+do humano: "Cursor e Hermes precisam se entender sem ruído nem atropelo"
+
+**Tipo**: operacao + skill
+
+**Resumo**: garantir que TODA sessão sua carregue o contrato central
+(`AGENTS.md`, com `CLAUDE.md` como espelho/ponteiro) automaticamente — hoje o
+carregamento depende de você lembrar de ler. Três caminhos agora apontam para
+o mesmo lugar: a skill `trade` (primeira ação no topo do SKILL.md — adicionada
+pelo Cursor neste PR, excepcionalmente na sua área, por diretiva humana),
+o `docs/HANDOFF_HERMES.md` §8 e o `CLAUDE.md` na raiz.
+
+**Ações do Hermes**:
+
+1. Configurar seu runtime para carregar `AGENTS.md` automaticamente no início
+   de toda sessão que toque o repo — mecanismos, na ordem de preferência:
+   a) rodar suas sessões com cwd em `/home/tokio/Tokio` (runtimes baseados em
+      Claude Code carregam `CLAUDE.md` do cwd sozinhos);
+   b) se seu runtime suporta memória/instrução global (ex.:
+      `~/.claude/CLAUDE.md` ou config do Hermes), adicionar UMA linha:
+      "Antes de tocar no repo Tokio, leia e execute /home/tokio/Tokio/AGENTS.md";
+   c) na impossibilidade de (a)/(b), a skill `trade` já traz a instrução como
+      primeira ação — obedecê-la é mandatório.
+2. Validar que a instrução da skill (topo do SKILL.md) está no seu runtime
+   (skill re-registrada/atualizada, se você mantém cópia).
+3. Confirmar o entendimento do fluxo anti-atropelo num teste prático: iniciar
+   uma sessão nova, e a PRIMEIRA saída deve ser o resultado do ritual §2
+   (pull + inbox + gh pr list + draft PR se for alterar algo).
+
+**Validação**:
+
+- Uma sessão nova sua demonstra o ritual §2 como primeira ação, sem ser
+  lembrada.
+- `docs/CURSOR_UPDATES.md` recebe uma entrada sua confirmando o mecanismo de
+  autoload escolhido (a/b/c), para o Cursor saber o que pode assumir.
+- Este UPDATE marcado `APLICADO`.
