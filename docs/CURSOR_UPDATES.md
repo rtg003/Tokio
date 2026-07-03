@@ -35,7 +35,7 @@ Validação: como confirmar que aplicou corretamente
 
 *(sem entradas ainda — a primeira será UPDATE-0001)*
 
-## UPDATE-0001 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0001 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 Origem: PR #7 (Hermes — skill bilateral protocol)
 Tipo: skill
