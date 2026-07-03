@@ -42,6 +42,9 @@ class DataClient(Protocol):
     def clearinghouse(self, address: str) -> dict[str, Any]: ...
     def ledger_updates(self, address: str, *, window_days: int = 35) -> list[dict[str, Any]]: ...
     def liquid_assets(self, top_n: int = 25) -> set[str]: ...
+    def active_addresses(self, *, window_hours: int = 48,
+                         max_addresses: int = 200,
+                         min_notional_usd: float = 1000) -> list[str]: ...
 
 
 # ----------------------------------------------------------------------------
@@ -315,6 +318,11 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
     if c.n_trades < int(f["f2_min_closed_trades"]):
         return f"F2: amostra {c.n_trades} < {f['f2_min_closed_trades']} trades fechados"
 
+    # v5: F2b — trader sem atividade recente não tem o que copiar
+    f2b = f.get("f2b_min_trades_30d")
+    if f2b is not None and c.n_trades_30d < int(f2b):
+        return f"F2b: {c.n_trades_30d} trades fechados nos últimos 30d < {f2b}"
+
     # F3 anti-scalper (threshold null = desabilitado): exige EVIDÊNCIA positiva
     # (hold None nunca reprova sozinho)
     if f.get("f3_max_trades_per_day") is not None and \
@@ -390,12 +398,19 @@ def score_candidate(c: Candidate, cfg: dict[str, Any]) -> float:
     if c.is_top20_alltime:
         comps.adjustments.append(("crowding_top20", float(adj["crowding_penalty"])))
 
+    # v5: penalizar PF absurdo (> 10 = ausência de perdas realizadas, não habilidade)
+    pf_absurd = float(adj.get("pf_absurd_threshold", 0))
+    if pf_absurd > 0 and c.pf is not None and c.pf > pf_absurd:
+        comps.adjustments.append(("pf_absurdo", float(adj.get("pf_absurd_penalty", 0))))
+
     c.components = comps
     c.score = M.composite_score(comps, w)
+    # v5: capar PF exibido em 10.0 (PF > 10 é enganoso)
+    pf_display = min(c.pf, 10.0) if c.pf is not None else None
     c.rationale = [
         f"janelas positivas: {c.windows_positive}",
         f"TWRR 30d: {c.twrr_30d_pct:.1f}%" if c.twrr_30d_pct is not None else "TWRR: n/d",
-        f"PF: {c.pf:.2f} (n={c.n_trades})" if c.pf is not None else "PF: n/d",
+        f"PF: {pf_display:.2f} (n={c.n_trades})" if pf_display is not None else "PF: n/d",
         f"max DD 90d: {c.max_dd_90d_pct:.1f}%" if c.max_dd_90d_pct is not None else "DD: n/d",
         f"hold mediano: {c.median_hold_hours:.1f}h" if c.median_hold_hours is not None
         else "hold: n/d",
@@ -439,6 +454,26 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     cheap.sort(key=lambda c: -c.roi_30d_pct)
     deep = cheap[: int(col["deep_dive_max"])]
     stats["aprofundados"] = len(deep)
+
+    # v5: varredura ativa — adicionar endereços além do leaderboard
+    if col.get("active_scan_enabled", False):
+        try:
+            active_addrs = client.active_addresses(
+                window_hours=int(col.get("active_scan_window_hours", 48)),
+                max_addresses=int(col.get("active_scan_max_addresses", 200)),
+                min_notional_usd=float(col.get("active_scan_min_notional_usd", 1000)),
+            )
+            # remover endereços já no leaderboard (evita reprocessar)
+            existing_addrs = {c.address for c in candidates}
+            new_addrs = [a for a in active_addrs if a not in existing_addrs]
+            stats["active_scan_novos"] = len(new_addrs)
+            # criar candidates vazios para os novos endereços (sem dados do leaderboard)
+            for addr in new_addrs[:int(col["deep_dive_max"]) - len(deep)]:
+                deep.append(Candidate(address=addr))
+        except Exception as exc:  # noqa: BLE001
+            if logger:
+                logger.warning("discovery.active_scan_failed",
+                               {"error": str(exc)[:200]})
 
     # coorte de controle: perdedores consistentes (espelho invertido, barato)
     rekt = [c for c in candidates
