@@ -102,7 +102,7 @@ Ver [`PLAN.md`](PLAN.md) e o prompt de build. Pastas principais: `engine/`
 
 ```bash
 # discovery de traders p/ copy trade (relatório ranqueado JSON + markdown)
-python -m engine.strategies.copy_trade.discovery --top 10
+python -m engine.strategies.copy_trade.discovery scan   # (tb: inspect/positioning/token/report)
 
 # scanner 24/7: gap do CME, anomalias de funding, baixa liquidez
 python -m engine.strategies.tradingview.scanner

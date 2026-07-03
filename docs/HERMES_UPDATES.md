@@ -319,3 +319,106 @@ o `docs/HANDOFF_HERMES.md` §8 e o `CLAUDE.md` na raiz.
 - `docs/CURSOR_UPDATES.md` recebe uma entrada sua confirmando o mecanismo de
   autoload escolhido (a/b/c), para o Cursor saber o que pode assumir.
 - Este UPDATE marcado `APLICADO`.
+
+---
+
+## UPDATE-0006 · 2026-07-03 · Status: PENDENTE
+
+**Origem**: PR do Cursor "discovery v2 — funil completo" (merged)
+
+**Tipo**: logica_discovery + operacao
+
+**Resumo**: a `logic_version: 2` (spec v5) está IMPLEMENTADA e em produção —
+o UPDATE-0001 (b) descrevia o plano; isto é a entrega. O que muda na sua
+operação:
+
+a) **Scan diário v2** (05:00 SP, scheduler do engine): funil completo — top
+   500 do leaderboard, entrada por 4 janelas (30d+60d obrigatórias), F1–F11,
+   score da spec com ajustes, coortes bidimensionais, controle rekt. No
+   primeiro start pós-deploy o scheduler re-scaneia automaticamente
+   (logic_version avançou) e re-upserta os candidatos v1.
+b) **Reprovados agora ficam na tabela** com `status = REJEITADO` e
+   `reject_reason` (filtro + valores) — leia o motivo antes de sugerir
+   qualquer wallet; um re-scan pode reabilitá-los (REJEITADO → SUGERIDO)
+   se voltarem a passar.
+c) **CLI nova** (a antiga `--top` foi aposentada):
+   `discovery scan` · `discovery inspect <address>` (dossiê com distância de
+   liquidação e coorte) · `discovery positioning` (viés smart vs. rekt por
+   ativo — INSUMO DO SEU BRIEFING, nunca sinal de execução) ·
+   `discovery token <ativo>` · `discovery report --last`.
+d) **Como ler as colunas novas**: `Janelas` = consistência (ex.: `3/4` — a
+   7d PODE ser negativa por design); `PF` é bruto incl. não realizado (leia
+   junto de n_trades — crédito do score é gradativo); `Dist. liq.` < 10%
+   é bomba-relógio (score já penalizado em −10).
+e) **Config versionado**: thresholds/pesos em `config/discovery_config.yaml`.
+   Sua autoridade de evolução (UPDATE-0001 d) opera SOBRE esse arquivo:
+   PR + bump de logic_version + changelog + evento `logic_updated`.
+
+**Ações do Hermes**:
+
+1. Incorporar `discovery positioning` ao briefing matinal (substitui a
+   leitura crua de candidatos) e `report --last` como fonte do resumo do scan.
+2. Ao analisar candidato, usar `discovery inspect <address>` (dossiê) e citar
+   as métricas v2 (TWRR, PF+n, janelas, coorte) — não as antigas.
+3. Atualizar a skill (área sua) com a CLI nova e as leituras acima,
+   referenciando `docs/discovery_changelog.md` (entrada v2).
+4. Reportar no resumo diário quantos candidatos aprovados/rejeitados o scan
+   trouxe (estatísticas do funil no relatório e no evento
+   `discovery.scan_completed`).
+
+**Validação**:
+
+- Pós-deploy: evento `logic_updated` (1→2) + `discovery.scan_completed` com
+  `logic_version: 2` em `events`; tabela `traders` com `windows_positive`
+  preenchido e REJEITADOs com motivo.
+- Briefing do dia seguinte contendo positioning smart vs. rekt.
+- Skill atualizada via PR seu; este UPDATE marcado APLICADO.
+
+---
+
+## UPDATE-0007 · 2026-07-03 · Status: PENDENTE
+
+**Origem**: PR do Cursor "discovery v3 — afrouxar filtros" (diretiva humana
+rtg003 após o scan real da v2 aprovar 0 candidatos)
+
+**Tipo**: logica_discovery
+
+**Resumo**: `logic_version: 3`. O scan real full-budget da v2 (`b684b8bbe5f5`)
+reprovou TODOS os 100 aprofundados (F3: 34 · F5: 24 · F4: 8 · entrada: 7). O
+humano determinou afrouxar:
+
+a) **F3 (anti-scalper) DESABILITADO** — scalpers agora ENTRAM na tabela com
+   score penalizado pela copiabilidade (frequência/hold fora do sweet spot).
+   Um score alto de scalper continua sendo sinal de cautela para espelhamento:
+   leia `avg_holding_hours` e `n_trades_30d` no `discovery inspect` antes de
+   sugerir.
+b) **F4 (TWRR 30d ≥ 5%) DESABILITADO** — TWRR segue calculado e exibido, mas
+   não elimina. Candidato com TWRR negativo PODE aparecer (se as janelas de
+   PnL fecharem positivas); cite o TWRR na análise.
+c) **F5: max DD 90d 25% → 40%** — o teto também alimenta o componente de
+   score de DD, que ficou mais tolerante. DD entre 25–40% agora passa: avalie
+   caso a caso na sugestão.
+d) **Entrada: ≥2/4 janelas com só a 30d obrigatória** (era ≥3/4 com 30d+60d).
+   A coluna `Janelas` (`windows_positive`) fica MAIS importante na leitura:
+   `2/4` agora é aprovável — prefira 3/4+ nas sugestões de copy.
+
+Filtros desabilitados têm threshold `null` em `config/discovery_config.yaml`
+(numeração F1–F11 preservada; reativar = config + bump). Racional completo e
+números em `docs/discovery_changelog.md` (entrada v3).
+
+**Ações do Hermes**:
+
+1. Ajustar a leitura dos candidatos no briefing: score deixou de embutir os
+   vetos de scalper/TWRR/DD≤25% — cite explicitamente hold, trades/dia, TWRR
+   e DD ao sugerir wallet para Gate 2.
+2. Atualizar a skill (área sua) onde descreve o funil: entrada "≥3/4,
+   30d+60d obrigatórias" → "≥2/4, 30d obrigatória"; F3/F4 desabilitados;
+   F5 a 40%.
+3. Nenhuma mudança de agendamento: o scheduler re-scaneia sozinho no primeiro
+   start pós-deploy (logic_version avançou).
+
+**Validação**:
+
+- Evento `logic_updated` (2→3) + `discovery.scan_completed` com
+  `logic_version: 3` em `events`; tabela `traders` com aprovados > 0.
+- Skill atualizada via PR seu; este UPDATE marcado APLICADO.

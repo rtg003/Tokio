@@ -269,6 +269,12 @@ export default async function Dashboard({
                   <th>Status</th>
                   {expanded && (
                     <>
+                      <th className="num">Trades 30d</th>
+                      <th className="num">Hold méd.</th>
+                      <th className="num">Alav. méd.</th>
+                      <th className="num">Equity</th>
+                      <th>Ativos</th>
+                      <th>Últ. atividade</th>
                       <th>Sizing</th>
                       <th className="num">Dist. liq.</th>
                       <th>Origem</th>
@@ -280,7 +286,14 @@ export default async function Dashboard({
               </thead>
               <tbody>
                 {(traders ?? []).map((t, i) => {
-                  const windows = (t.windows ?? {}) as Record<string, number>;
+                  const topAssets: string[] = (() => {
+                    try {
+                      const v = t.top_assets;
+                      return Array.isArray(v) ? v : JSON.parse(v ?? "[]");
+                    } catch {
+                      return [];
+                    }
+                  })();
                   return (
                     <tr key={t.address}>
                       <td className="num">{i + 1}</td>
@@ -303,12 +316,10 @@ export default async function Dashboard({
                       <td className={`num ${pnlClass(t.pnl_30d)}`}>
                         {t.pnl_30d === null ? "—" : fmtSigned(t.pnl_30d, 0)}
                       </td>
-                      <td className="addr">
-                        {Object.keys(windows).length
-                          ? Object.entries(windows)
-                              .map(([k, v]) => `${k.replace("pnl_", "")}: ${fmtNum(v, 0)}`)
-                              .join(" · ")
-                          : "—"}
+                      <td>
+                        {/* Fix 6 / spec col.7: consistência (janelas 7d/30d/60d/90d
+                            positivas) — nunca o despejo de JSON da v1 */}
+                        {t.windows_positive ?? "—"}
                       </td>
                       <td className="num">
                         {t.profit_factor === null ? "—" : fmtNum(t.profit_factor, 2)}
@@ -326,13 +337,33 @@ export default async function Dashboard({
                       </td>
                       {expanded && (
                         <>
+                          <td className="num">{t.n_trades_30d ?? "—"}</td>
+                          <td className="num">
+                            {t.avg_holding_hours === null || t.avg_holding_hours === undefined
+                              ? "—"
+                              : `${fmtNum(t.avg_holding_hours, 1)}h`}
+                          </td>
+                          <td className="num">
+                            {t.avg_leverage === null || t.avg_leverage === undefined
+                              ? "—"
+                              : `${fmtNum(t.avg_leverage, 1)}x`}
+                          </td>
+                          <td className="num">
+                            {t.equity === null || t.equity === undefined
+                              ? "—"
+                              : fmtNum(t.equity, 0)}
+                          </td>
+                          <td className="addr">
+                            {topAssets.length ? topAssets.join(" ") : "—"}
+                          </td>
+                          <td className="addr">{fmtDateTime(t.last_activity)}</td>
                           <td>
                             {t.mode === "percent"
                               ? `${t.value}× prop.`
                               : `${fmtNum(t.value, 0)} USDC fixo`}
                           </td>
                           <td className="num">
-                            {t.liq_distance === null ? "—" : fmtNum(t.liq_distance, 1)}
+                            {t.liq_distance === null ? "—" : `${fmtNum(t.liq_distance, 1)}%`}
                           </td>
                           <td>{t.origin}</td>
                           <td className="num">v{t.logic_version}</td>
