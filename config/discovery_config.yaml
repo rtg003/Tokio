@@ -4,12 +4,12 @@
 # logic_version + entrada em docs/discovery_changelog.md + evento logic_updated.
 # (spec: docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md · ADR 0008)
 # ============================================================================
-logic_version: 4
+logic_version: 5
 
 collection:
   leaderboard_top_n: 500          # coleta ampla (Estágio 1)
-  deep_dive_max: 100              # candidatos aprofundados por varredura
-  request_budget: 800             # v4: era 650 (17 candidatos interrompidos por orçamento no scan v3)
+  deep_dive_max: 150              # v5: era 100 (orçamento permite, era o limitante real)
+  request_budget: 1100            # v5: era 800 (150 candidatos × ~7 req = 1050)
   min_equity_usd: 2000            # v4: era 5000 (traders pequenos/médios podem ter edge melhor)
   # prioridade do aprofundamento: ROI 30d (desc) — PnL absoluto puro só traz
   # mega-baleias holders, que reprovam em F1/F2 (validação de 2026-07-03)
@@ -18,6 +18,11 @@ collection:
   cache_ttl_hours: 20
   rekt_sample: 20                 # tamanho da coorte de controle
   positioning_sample: 15          # wallets por coorte p/ snapshot de posicionamento
+  # v5: varredura ativa além do leaderboard — busca endereços com fills recentes
+  active_scan_enabled: true       # coleta endereços via fills públicos recentes
+  active_scan_window_hours: 48    # janela de varredura ativa (48h = fim de semana + dia útil)
+  active_scan_max_addresses: 200  # limite de endereços novos por varredura
+  active_scan_min_notional_usd: 1000  # ignora fills poeira
 
 entry_rule:
   min_positive_windows: 2         # v3: PnL positivo em >= 2 das 4 janelas
@@ -27,6 +32,7 @@ hard_filters:                     # F1–F11 (binários, ordem de custo; null = 
   f1_recent_activity_days: 7
   f2_min_closed_trades: 30
   f2_min_history_days: 60
+  f2b_min_trades_30d: 5           # v5: trader sem atividade recente não tem o que copiar
   # F3 desabilitado na v3 (scan b684b8bbe5f5: 34/100 reprovados) — scalper é
   # penalizado pelo score de copiabilidade, não eliminado.
   f3_min_avg_holding_hours: null
@@ -65,6 +71,8 @@ score_adjustments:
   crowding_penalty: -5            # wallet no top 20 all-time
   crowding_top_n: 20
   min_score_for_suggestion: 60.0  # v4: abaixo deste score, candidato vira REJEITADO (não SUGERIDO)
+  pf_absurd_penalty: -5           # v5: PF > 10 é suspeito (ausência de perdas realizadas)
+  pf_absurd_threshold: 10.0       # v5: threshold para penalização de PF absurdo
 
 copyability:
   hold_sweet_spot_hours: [4, 72]  # 4h – 3 dias

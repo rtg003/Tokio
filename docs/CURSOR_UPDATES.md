@@ -98,3 +98,41 @@ Se for evoluir o discovery no futuro, trabalhar sobre a v4.
 
 Validação: scan v4 dispara automaticamente no próximo start do engine
 (logic_version avançou). Verificar events por logic_updated (3→4).
+
+## UPDATE-0004 · 2026-07-03 · Status: PENDENTE
+
+Origem: PR do Hermes "discovery v5 — refinamento profundo + varredura ativa"
+Tipo: logica_discovery + operacao
+
+Resumo: logic_version 5 implementada pelo Hermes (exceção autorizada pelo
+humano ao desempate AGENTS.md §4). Mudanças em CÓDIGO (área normalmente do
+Cursor) + config. O Cursor deve tomar ciência e adaptar sessões futuras:
+
+Mudanças em código (engine/strategies/copy_trade/):
+1. funnel.py: F2b (min_trades_30d) — novo filtro binário após F2
+2. funnel.py: penalização de PF absurdo (>10 → -5 no score) + cap de PF
+   exibido em 10.0
+3. funnel.py: varredura ativa integrada no run_scan (active_addresses)
+4. funnel.py: DataClient Protocol atualizado com active_addresses()
+5. hl_data.py: método active_addresses() — coleta endereços além do
+   leaderboard (expandido + conhecidos na tabela traders)
+
+Mudanças em config (config/discovery_config.yaml):
+- logic_version: 4 → 5
+- deep_dive_max: 100 → 150
+- request_budget: 800 → 1100
+- f2b_min_trades_30d: 5 (novo)
+- pf_absurd_penalty: -5, pf_absurd_threshold: 10.0 (novo)
+- active_scan_enabled: true, active_scan_window_hours: 48,
+  active_scan_max_addresses: 200, active_scan_min_notional_usd: 1000
+
+Ações do Cursor:
+1. Tomar ciência das mudanças em funnel.py e hl_data.py.
+2. Se for evoluir o discovery, trabalhar sobre a v5.
+3. O método active_addresses() é um esboço — expande o leaderboard + conhecidos.
+   Para uma varredura ativa real (fills públicos recentes), seria necessário
+   um endpoint da HL que retorne endereços ativos (não existe público hoje).
+   Considerar implementar via webhook de fills ou scraping de trades públicos.
+
+Validação: scan v5 dispara automaticamente no próximo start do engine
+(logic_version avançou). Verificar events por logic_updated (4→5).

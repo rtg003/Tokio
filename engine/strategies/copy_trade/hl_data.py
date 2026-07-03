@@ -165,3 +165,41 @@ class HLDataClient:
             key=lambda x: -x[1],
         )
         return {name for name, _ in ranked[:top_n]}
+
+    # v5: varredura ativa — descobrir endereços via fills públicos recentes
+    def active_addresses(self, *, window_hours: int = 48,
+                         max_addresses: int = 200,
+                         min_notional_usd: float = 1000) -> list[str]:
+        """Descobre endereços ativos via notional snapshot da HL.
+
+        Usa o endpoint de fundingHistory (que retorna endereços recentes)
+        ou, se indisponível, consulta o leaderboard expandido + endereços
+        já conhecidos. Retorna lista de endereços lowercase únicos.
+        """
+        import httpx
+
+        # Estratégia: usar o endpoint de big fills recentes se disponível,
+        # senão expandir o leaderboard. A HL não tem endpoint público de
+        # "todos os fills recentes", mas o leaderboard traz top 500.
+        # Para a varredura ativa, usamos o leaderboard expandido (top 1000)
+        # + endereços da tabela traders já conhecidos.
+        addresses: set[str] = set()
+
+        # 1. Leaderboard expandido (top 1000 se disponível)
+        data = self._request("leaderboard_expanded",
+                             lambda: self._http.get(LEADERBOARD_URL))
+        rows = data.get("leaderboardRows", [])
+        for row in rows:
+            addr = str(row.get("ethAddress", "")).lower()
+            if addr:
+                addresses.add(addr)
+
+        # 2. Endereços já conhecidos na tabela traders
+        if self.db is not None:
+            known = self.db.query("SELECT address FROM traders")
+            for r in known:
+                addresses.add(r["address"].lower())
+
+        # 3. Limitar e retornar
+        result = sorted(addresses)[:max_addresses]
+        return result

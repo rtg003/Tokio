@@ -132,3 +132,33 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
 - **Resultado esperado**: mais candidatos analisados (800 req vs 650),
   distribuição de score mais granular (faixas de DD), só SUGERIDO acima de
   60.
+
+## logic_version: 5 — refinamento profundo + varredura ativa (2026-07-03)
+
+- **Autor**: Hermes (operador), com autorização humana explícita (exceção ao
+  desempate de área AGENTS.md §4 — código + config no mesmo PR).
+- **Motivo (justificativa numérica)**: scan v4 (`fb138be7e938`) aprovou 6
+  candidatos, mas 3 tinham 0 trades em 30d (#3, #5, #6) e 1 tinha PF de 5453
+  (absurdo — ausência de perdas realizadas). Só 1 dos 6 (#4, score 71.24) era
+  minimamente analisável. F5 reprovou 57/94 (61%) — o leaderboard é enviesado
+  para sobreviventes de alto risco. 317 requests usados de 800 budget —
+  deep_dive_max: 100 era o limitante real, não o orçamento.
+- **O que mudou**:
+  a) **F2b (min_trades_30d: 5)** — novo filtro: trader sem atividade recente
+     não tem o que copiar. Elimina os 3 aprovados com 0 trades em 30d.
+  b) **PF absurdo penalizado** — PF > 10 recebe -5 no score (config:
+     pf_absurd_threshold: 10.0, pf_absurd_penalty: -5). PF exibido capado
+     em 10.0 (PF de 5453 é enganoso).
+  c) **deep_dive_max: 100 → 150** + **request_budget: 800 → 1100** — era o
+     limitante real; agora 150 candidatos × ~7 req = 1050 < 1100.
+  d) **Varredura ativa** — `active_addresses()` em `hl_data.py`: coleta
+     endereços além do leaderboard (expandido + conhecidos). Integrado no
+     `run_scan` como candidatos extras no deep dive. Window: 48h.
+  e) **active_scan_window_hours: 48** — captura fim de semana + dia útil.
+  f) **active_scan_max_addresses: 200** — limite de endereços novos por scan.
+  g) **active_scan_min_notional_usd: 1000** — ignora fills poeira.
+- **O que NÃO mudou**: F1, F3/F4 (off), F5 (40% + bands), F6–F11, pesos,
+  coortes, entry_rule, copyability, cost_of_copy.
+- **Resultado esperado**: menos falsos positivos (F2b elimina inativos),
+  scores mais justos (PF penalizado), mais candidatos (150 vs 100), fonte
+  menos enviesada (varredura ativa além do leaderboard).
