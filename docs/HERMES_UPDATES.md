@@ -373,3 +373,52 @@ e) **Config versionado**: thresholds/pesos em `config/discovery_config.yaml`.
   preenchido e REJEITADOs com motivo.
 - Briefing do dia seguinte contendo positioning smart vs. rekt.
 - Skill atualizada via PR seu; este UPDATE marcado APLICADO.
+
+---
+
+## UPDATE-0007 · 2026-07-03 · Status: PENDENTE
+
+**Origem**: PR do Cursor "discovery v3 — afrouxar filtros" (diretiva humana
+rtg003 após o scan real da v2 aprovar 0 candidatos)
+
+**Tipo**: logica_discovery
+
+**Resumo**: `logic_version: 3`. O scan real full-budget da v2 (`b684b8bbe5f5`)
+reprovou TODOS os 100 aprofundados (F3: 34 · F5: 24 · F4: 8 · entrada: 7). O
+humano determinou afrouxar:
+
+a) **F3 (anti-scalper) DESABILITADO** — scalpers agora ENTRAM na tabela com
+   score penalizado pela copiabilidade (frequência/hold fora do sweet spot).
+   Um score alto de scalper continua sendo sinal de cautela para espelhamento:
+   leia `avg_holding_hours` e `n_trades_30d` no `discovery inspect` antes de
+   sugerir.
+b) **F4 (TWRR 30d ≥ 5%) DESABILITADO** — TWRR segue calculado e exibido, mas
+   não elimina. Candidato com TWRR negativo PODE aparecer (se as janelas de
+   PnL fecharem positivas); cite o TWRR na análise.
+c) **F5: max DD 90d 25% → 40%** — o teto também alimenta o componente de
+   score de DD, que ficou mais tolerante. DD entre 25–40% agora passa: avalie
+   caso a caso na sugestão.
+d) **Entrada: ≥2/4 janelas com só a 30d obrigatória** (era ≥3/4 com 30d+60d).
+   A coluna `Janelas` (`windows_positive`) fica MAIS importante na leitura:
+   `2/4` agora é aprovável — prefira 3/4+ nas sugestões de copy.
+
+Filtros desabilitados têm threshold `null` em `config/discovery_config.yaml`
+(numeração F1–F11 preservada; reativar = config + bump). Racional completo e
+números em `docs/discovery_changelog.md` (entrada v3).
+
+**Ações do Hermes**:
+
+1. Ajustar a leitura dos candidatos no briefing: score deixou de embutir os
+   vetos de scalper/TWRR/DD≤25% — cite explicitamente hold, trades/dia, TWRR
+   e DD ao sugerir wallet para Gate 2.
+2. Atualizar a skill (área sua) onde descreve o funil: entrada "≥3/4,
+   30d+60d obrigatórias" → "≥2/4, 30d obrigatória"; F3/F4 desabilitados;
+   F5 a 40%.
+3. Nenhuma mudança de agendamento: o scheduler re-scaneia sozinho no primeiro
+   start pós-deploy (logic_version avançou).
+
+**Validação**:
+
+- Evento `logic_updated` (2→3) + `discovery.scan_completed` com
+  `logic_version: 3` em `events`; tabela `traders` com aprovados > 0.
+- Skill atualizada via PR seu; este UPDATE marcado APLICADO.

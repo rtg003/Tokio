@@ -4,7 +4,7 @@
 # logic_version + entrada em docs/discovery_changelog.md + evento logic_updated.
 # (spec: docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md · ADR 0008)
 # ============================================================================
-logic_version: 2
+logic_version: 3
 
 collection:
   leaderboard_top_n: 500          # coleta ampla (Estágio 1)
@@ -20,17 +20,20 @@ collection:
   positioning_sample: 15          # wallets por coorte p/ snapshot de posicionamento
 
 entry_rule:
-  min_positive_windows: 3         # PnL positivo em >= 3 das 4 janelas
-  required_windows: ["30d", "60d"]  # obrigatórias; 7d PODE ser negativa
+  min_positive_windows: 2         # v3: PnL positivo em >= 2 das 4 janelas
+  required_windows: ["30d"]       # v3: só a 30d é obrigatória (60d/7d podem ser negativas)
 
-hard_filters:                     # F1–F11 (binários, ordem de custo)
+hard_filters:                     # F1–F11 (binários, ordem de custo; null = desabilitado)
   f1_recent_activity_days: 7
   f2_min_closed_trades: 30
   f2_min_history_days: 60
-  f3_min_avg_holding_hours: 2.0
-  f3_max_trades_per_day: 20.0
-  f4_min_twrr_30d_pct: 5.0
-  f5_max_drawdown_90d_pct: 25.0
+  # F3 desabilitado na v3 (scan b684b8bbe5f5: 34/100 reprovados) — scalper é
+  # penalizado pelo score de copiabilidade, não eliminado.
+  f3_min_avg_holding_hours: null
+  f3_max_trades_per_day: null
+  # F4 desabilitado na v3 — TWRR segue calculado/exibido, não é mais eliminatório.
+  f4_min_twrr_30d_pct: null
+  f5_max_drawdown_90d_pct: 40.0   # v3: era 25.0 (teto também alimenta o score de DD)
   f6_max_top3_pnl_concentration: 0.50
   f7_max_avg_leverage: 15.0
   f8_min_liquid_volume_share: 0.80

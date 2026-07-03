@@ -6,6 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from engine.core.logger import EventLogger
+from engine.strategies.copy_trade.funnel import load_config
 from engine.strategies.copy_trade.discovery_scheduler import (
     DiscoveryScheduler,
     SCAN_TZ,
@@ -15,6 +16,7 @@ from engine.strategies.copy_trade.discovery_scheduler import (
 from engine.strategies.copy_trade.traders_store import upsert_candidate
 
 SP = ZoneInfo("America/Sao_Paulo")
+CURRENT_LV = int(load_config()["logic_version"])   # dinâmico: não quebra em bumps
 
 
 def test_next_scan_at_today_and_tomorrow() -> None:
@@ -36,16 +38,17 @@ def test_bootstrap_scan_runs_only_when_table_empty(settings, db) -> None:
     assert sched.bootstrap_if_empty() is True
     assert calls == ["bootstrap_tabela_vazia"]
 
-    upsert_candidate(db, address="0x" + "aa" * 20, score=50.0, logic_version=2)
+    upsert_candidate(db, address="0x" + "aa" * 20, score=50.0, logic_version=CURRENT_LV)
     assert sched.bootstrap_if_empty() is False        # tabela populada e lógica atual
     assert calls == ["bootstrap_tabela_vazia"]
 
 
 def test_bootstrap_rescans_when_logic_version_advances(settings, db) -> None:
-    """Tabela populada pela v1 + config na v2 → re-scan automático no start."""
+    """Tabela populada pela lógica anterior + config nova → re-scan no start."""
     logger = EventLogger("sched-test", settings.logs_dir, db=db)
     calls: list[str] = []
-    upsert_candidate(db, address="0x" + "aa" * 20, score=50.0, logic_version=1)
+    upsert_candidate(db, address="0x" + "aa" * 20, score=50.0,
+                     logic_version=CURRENT_LV - 1)
     sched = DiscoveryScheduler(db, logger,
                                scan_fn=lambda reason: calls.append(reason) or True)
     assert sched.bootstrap_if_empty() is True
@@ -54,7 +57,7 @@ def test_bootstrap_rescans_when_logic_version_advances(settings, db) -> None:
 
 def test_daily_trigger_fires_when_time_reached(settings, db) -> None:
     logger = EventLogger("sched-test", settings.logs_dir, db=db)
-    upsert_candidate(db, address="0x" + "aa" * 20, logic_version=2)  # evita o bootstrap
+    upsert_candidate(db, address="0x" + "aa" * 20, logic_version=CURRENT_LV)  # evita o bootstrap
     calls: list[str] = []
     fake_now = {"t": datetime(2026, 7, 3, 4, 59, 50, tzinfo=SP)}
     sched = DiscoveryScheduler(
@@ -82,7 +85,8 @@ def test_bootstrap_retries_while_table_empty(settings, db) -> None:
     def failing_then_ok(reason: str) -> bool:
         calls.append(reason)
         if len(calls) >= 2:   # 2ª tentativa "funciona": popula a tabela
-            upsert_candidate(db, address="0x" + "cc" * 20, score=10.0, logic_version=2)
+            upsert_candidate(db, address="0x" + "cc" * 20, score=10.0,
+                             logic_version=CURRENT_LV)
             return True
         return False          # 1ª tentativa falha (ex.: 429)
 
