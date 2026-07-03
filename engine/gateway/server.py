@@ -357,6 +357,30 @@ def build_app(state: GatewayState) -> FastAPI:
         state.logger.info("strategy.activated", {"by": "control_api"}, strategy_id=strategy_id)
         return {"ok": True}
 
+    # -- traders (fonte única = tabela; ADR 0008). Gate 2 (SUGERIDO->operação)
+    # é recusado aqui por construção: só a CLI humana passa human_gate=True.
+    @app.get("/traders")
+    def traders() -> list[dict[str, Any]]:
+        from engine.strategies.copy_trade.traders_store import list_traders
+
+        return list_traders(state.db)
+
+    @app.post("/control/trader/{address}/status", dependencies=[Depends(_control_auth)])
+    def trader_status(address: str, new_status: str) -> dict[str, Any]:
+        from engine.strategies.copy_trade.traders_store import set_status
+
+        return set_status(state.db, address, new_status, by="control_api",
+                          logger=state.logger)
+
+    @app.post("/control/trader/{address}/config", dependencies=[Depends(_control_auth)])
+    def trader_config(address: str, fields: dict[str, Any]) -> dict[str, Any]:
+        from engine.strategies.copy_trade.traders_store import update_exec_config
+
+        # dry_run=False jamais entra por aqui — é parte do Gate 2 (CLI humana)
+        fields.pop("dry_run", None)
+        return update_exec_config(state.db, address, by="control_api",
+                                  logger=state.logger, **fields)
+
     @app.post("/control/kill", dependencies=[Depends(_control_auth)])
     def kill(reason: str = "control_api") -> dict[str, Any]:
         state.enforcer.engage_kill_switch(reason)

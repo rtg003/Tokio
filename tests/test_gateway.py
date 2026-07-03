@@ -88,6 +88,33 @@ def test_control_api_cannot_promote_dry_run(client, gateway_state) -> None:
     assert r.status_code == 409  # dry_run -> active is a human gate
 
 
+def test_trader_control_api_respects_gate2(client, gateway_state) -> None:
+    from engine.strategies.copy_trade.traders_store import upsert_candidate
+
+    addr = "0x" + "ab" * 20
+    upsert_candidate(gateway_state.db, address=addr, score=70.0)
+    # Gate 2 recusado pela API de controle
+    r = client.post(f"/control/trader/{addr}/status?new_status=DRY_RUN",
+                    headers={"X-Control-Token": "test-token"}).json()
+    assert r["ok"] is False and r["reason"] == "gate2_requer_autorizacao_humana"
+    # rejeitar é operacional — permitido
+    r = client.post(f"/control/trader/{addr}/status?new_status=REJEITADO",
+                    headers={"X-Control-Token": "test-token"}).json()
+    assert r["ok"] is True
+    # config nunca aceita dry_run=false por aqui
+    addr2 = "0x" + "cd" * 20
+    upsert_candidate(gateway_state.db, address=addr2)
+    r = client.post(f"/control/trader/{addr2}/config",
+                    json={"value": 75.0, "dry_run": False},
+                    headers={"X-Control-Token": "test-token"}).json()
+    assert r["ok"] is True
+    row = gateway_state.db.query("SELECT value, dry_run FROM traders WHERE address = ?",
+                                 (addr2,))[0]
+    assert row["value"] == 75.0 and row["dry_run"] == 1
+    # listagem pública interna
+    assert any(t["address"] == addr2 for t in client.get("/traders").json())
+
+
 def test_kill_switch_cancels_open_orders(client, gateway_state) -> None:
     from engine.core.db import utcnow
 

@@ -1,12 +1,12 @@
 """Phase 2 acceptance: target fills mirrored through the gateway with fixed and
-percent sizing; drift check and latency logged; ledger attributes via cloid."""
+percent sizing; drift check and latency logged; ledger attributes via cloid.
+Fonte de traders: tabela `traders` (ADR 0008)."""
 from __future__ import annotations
 
-from pathlib import Path
+import json
 from typing import Any, Callable
 
 import pytest
-import yaml
 
 from engine.core.config import Settings
 from engine.core.db import Database
@@ -53,25 +53,23 @@ class RecordingGateway:
         return {"ok": True}
 
 
-def write_trader(tmp_path: Path, **overrides: Any) -> Path:
-    tdir = tmp_path / "traders"
-    tdir.mkdir(exist_ok=True)
-    cfg = {
-        "name": "whale01", "address": TARGET, "mode": "fixed_usdc", "value": 100.0,
-        "max_leverage": 3.0, "blocked_assets": [], "active": True, "dry_run": True,
-        **overrides,
+def seed_trader(db: Database, **overrides: Any) -> None:
+    row = {
+        "address": TARGET, "name": "whale01", "status": "DRY_RUN",
+        "mode": "fixed_usdc", "value": 100.0, "max_leverage": 3.0,
+        "blocked_assets": "[]", "dry_run": 1, "thresholds": "{}",
+        **{k: (json.dumps(v) if k in ("blocked_assets", "thresholds")
+               and not isinstance(v, str) else v) for k, v in overrides.items()},
     }
-    (tdir / "whale01.yaml").write_text(yaml.safe_dump(cfg))
-    return tdir
+    db.upsert("traders", row, ("address",))
 
 
-def make_executor(settings: Settings, db: Database, tmp_path: Path,
+def make_executor(settings: Settings, db: Database,
                   **overrides: Any) -> tuple[CopyTradeExecutor, FakeWatcher, RecordingGateway]:
     watcher = FakeWatcher()
     gw = RecordingGateway()
-    tdir = write_trader(tmp_path, **overrides)
+    seed_trader(db, **overrides)
     ex = CopyTradeExecutor(settings=settings, db=db, gateway=gw, watcher=watcher,
-                           traders_dir=tdir,
                            my_equity_fn=lambda: 1_000.0,
                            target_equity_fn=lambda _a: 100_000.0)
     return ex, watcher, gw
@@ -83,14 +81,33 @@ def fill(coin: str, side: str, sz: float, px: float, start_pos: float,
             "startPosition": str(start_pos), "time": time_ms}
 
 
-def test_registers_trader_as_dry_run_strategy(settings, db, tmp_path) -> None:
-    make_executor(settings, db, tmp_path)
+def test_registers_trader_as_dry_run_strategy(settings, db) -> None:
+    make_executor(settings, db)
     rows = db.query("SELECT module, status FROM strategies WHERE id = 'ct_whale01'")
     assert rows and rows[0]["module"] == "copy_trade" and rows[0]["status"] == "dry_run"
 
 
-def test_open_from_flat_fixed_usdc(settings, db, tmp_path) -> None:
-    ex, watcher, gw = make_executor(settings, db, tmp_path)
+def test_reload_picks_up_new_table_trader(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db)
+    other = "0x00000000000000000000000000000000000000bb"
+    db.upsert("traders", {"address": other, "name": "novo", "status": "DRY_RUN",
+                          "mode": "fixed_usdc", "value": 50.0, "max_leverage": 2.0,
+                          "blocked_assets": "[]", "dry_run": 1, "thresholds": "{}"},
+              ("address",))
+    ex.reload_traders()   # mudanças via API de controle entram sem restart
+    assert other in watcher.subs
+    assert "ct_novo" in ex.traders
+
+
+def test_paused_trader_is_not_mirrored(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db)
+    db.execute("UPDATE traders SET status = 'PAUSADO' WHERE address = ?", (TARGET,))
+    watcher.emit(TARGET, fill("BTC", "B", 1.0, 50_000.0, start_pos=0.0))
+    assert gw.intents == []
+
+
+def test_open_from_flat_fixed_usdc(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db)
     watcher.emit(TARGET, fill("BTC", "B", 2.0, 50_000.0, start_pos=0.0))
     assert len(gw.intents) == 1
     intent = gw.intents[0]
@@ -101,8 +118,8 @@ def test_open_from_flat_fixed_usdc(settings, db, tmp_path) -> None:
     assert intent["strategy_id"] == "ct_whale01"
 
 
-def test_percent_mode_proportional_to_equity(settings, db, tmp_path) -> None:
-    ex, watcher, gw = make_executor(settings, db, tmp_path,
+def test_percent_mode_proportional_to_equity(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db,
                                     mode="percent", value=1.0)
     # whale (100k equity) buys 2 BTC @50k (100k notional) -> us (1k equity):
     # notional = 100k * 1.0 * (1000/100000) = 1000 USD -> 0.02 BTC
@@ -110,8 +127,8 @@ def test_percent_mode_proportional_to_equity(settings, db, tmp_path) -> None:
     assert gw.intents[0]["size"] == pytest.approx(0.02)
 
 
-def test_partial_reduction_mirrors_proportionally(settings, db, tmp_path) -> None:
-    ex, watcher, gw = make_executor(settings, db, tmp_path, value=1000.0)
+def test_partial_reduction_mirrors_proportionally(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=1000.0)
     watcher.emit(TARGET, fill("ETH", "B", 10.0, 2_000.0, start_pos=0.0))   # open
     watcher.emit(TARGET, fill("ETH", "A", 5.0, 2_100.0, start_pos=10.0))   # -50%
     assert len(gw.intents) == 2
@@ -122,8 +139,8 @@ def test_partial_reduction_mirrors_proportionally(settings, db, tmp_path) -> Non
     assert reduce["size"] == pytest.approx(open_size * 0.5)
 
 
-def test_full_close_mirrors_flat(settings, db, tmp_path) -> None:
-    ex, watcher, gw = make_executor(settings, db, tmp_path, value=1000.0)
+def test_full_close_mirrors_flat(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=1000.0)
     watcher.emit(TARGET, fill("ETH", "B", 10.0, 2_000.0, start_pos=0.0))
     watcher.emit(TARGET, fill("ETH", "A", 10.0, 2_050.0, start_pos=10.0))
     close = gw.intents[1]
@@ -132,8 +149,8 @@ def test_full_close_mirrors_flat(settings, db, tmp_path) -> None:
     assert ex._my_pos[("ct_whale01", "ETH")] == 0.0
 
 
-def test_below_min_notional_skipped_and_logged(settings, db, tmp_path) -> None:
-    ex, watcher, gw = make_executor(settings, db, tmp_path, value=20.0)
+def test_below_min_notional_skipped_and_logged(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=20.0)
     watcher.emit(TARGET, fill("BTC", "B", 1.0, 50_000.0, start_pos=0.0))   # 20 USD open ok
     # whale trims 2% -> our delta ~0.4 USD < 10 USD minimum -> skip
     watcher.emit(TARGET, fill("BTC", "A", 0.02, 50_000.0, start_pos=1.0))
@@ -142,16 +159,16 @@ def test_below_min_notional_skipped_and_logged(settings, db, tmp_path) -> None:
     assert logs
 
 
-def test_blocked_asset_skipped(settings, db, tmp_path) -> None:
-    ex, watcher, gw = make_executor(settings, db, tmp_path, blocked_assets=["DOGE"])
+def test_blocked_asset_skipped(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, blocked_assets=["DOGE"])
     watcher.emit(TARGET, fill("DOGE", "B", 1000.0, 0.5, start_pos=0.0))
     assert gw.intents == []
 
 
-def test_latency_logged_on_every_mirror(settings, db, tmp_path) -> None:
+def test_latency_logged_on_every_mirror(settings, db) -> None:
     import json as _json
 
-    ex, watcher, gw = make_executor(settings, db, tmp_path)
+    ex, watcher, gw = make_executor(settings, db)
     watcher.emit(TARGET, fill("BTC", "B", 1.0, 50_000.0, start_pos=0.0, time_ms=1.0))
     rows = db.query("SELECT payload FROM events WHERE event_type = 'decision.mirrored'")
     assert rows
@@ -163,8 +180,8 @@ def test_latency_logged_on_every_mirror(settings, db, tmp_path) -> None:
     assert mirrored and mirrored[0]["latency_ms"] >= 0
 
 
-def test_drift_check_alerts_above_tolerance(settings, db, tmp_path) -> None:
-    ex, watcher, gw = make_executor(settings, db, tmp_path, value=1000.0)
+def test_drift_check_alerts_above_tolerance(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=1000.0)
     watcher.emit(TARGET, fill("ETH", "B", 10.0, 2_000.0, start_pos=0.0))
     expected = ex._my_pos[("ct_whale01", "ETH")]
     gw.ledger_response = {"ct_whale01": {"positions": {"ETH": {"size": expected * 0.5}}}}

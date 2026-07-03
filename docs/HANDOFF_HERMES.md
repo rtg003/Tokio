@@ -186,9 +186,13 @@ para interpretar o resultado e notificar o humano por exceção.
 
 **Gates (exigem humano; o Hermes prepara a evidência e pergunta):**
 
-- **Trader novo (copy trade)**: relatório do discovery + YAML em `traders/`
-  com `dry_run: true`. Ativação (`dry_run→active`) só com evidência de
-  expectância positiva líquida registrada em `docs/` e aprovação humana.
+- **Trader novo (copy trade) — Gate 2 (ADR 0008)**: o discovery popula a
+  tabela `traders` (fonte única; não existem mais YAMLs) com candidatos
+  `SUGERIDO`. A aprovação é humana e via CLI:
+  `python -m engine.cli trader approve <address>` (→ DRY_RUN) e, com evidência
+  de expectância positiva do dry-run registrada em `docs/`,
+  `trader approve <address> --live --evidence docs/<arquivo>` (→ COPIANDO).
+  A API de controle (web) só pausa/retoma/rejeita — nunca aprova.
 - **Promoção dry_run→active**: mesmo gate. A API de controle da web só
   reativa `paused/auto_paused` — nunca promove dry-run.
 - **MAINNET**: gate permanente (config + `.env` + checklist + aprovação

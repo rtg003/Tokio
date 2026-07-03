@@ -5,8 +5,12 @@ import { createClient, supabaseConfigured } from "@/lib/supabase/server";
 // internal compose network; the web is its single authenticated client. The
 // browser never sees GATEWAY_CONTROL_TOKEN. The web can never send orders and
 // can never switch accounts to mainnet — those routes simply don't exist here.
-const ALLOWED_GET = new Set(["health", "ledger", "positions", "balance"]);
-const ALLOWED_POST_PATTERNS = [/^control\/strategy\/[\w-]+\/(pause|activate)$/];
+const ALLOWED_GET = new Set(["health", "ledger", "positions", "balance", "traders"]);
+const ALLOWED_POST_PATTERNS = [
+  /^control\/strategy\/[\w-]+\/(pause|activate)$/,
+  // trader status/config: operacional apenas — o gateway recusa Gate 2
+  /^control\/trader\/0x[0-9a-fA-F]{40}\/(status|config)$/,
+];
 
 function gatewayBase(): string {
   const host = process.env.GATEWAY_HOST ?? "gateway";
@@ -47,7 +51,7 @@ export async function GET(
 }
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
   if (!(await requireSession())) {
@@ -59,9 +63,15 @@ export async function POST(
     return NextResponse.json({ ok: false, reason: "not_allowed" }, { status: 403 });
   }
   try {
-    const r = await fetch(`${gatewayBase()}/${joined}`, {
+    const search = req.nextUrl.search ?? "";
+    const body = await req.text();
+    const r = await fetch(`${gatewayBase()}/${joined}${search}`, {
       method: "POST",
-      headers: { "X-Control-Token": process.env.GATEWAY_CONTROL_TOKEN ?? "" },
+      headers: {
+        "X-Control-Token": process.env.GATEWAY_CONTROL_TOKEN ?? "",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body } : {}),
       cache: "no-store",
       signal: AbortSignal.timeout(5000),
     });

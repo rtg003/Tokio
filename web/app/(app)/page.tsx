@@ -1,5 +1,6 @@
 import DashboardControls, { AccountOption } from "@/components/DashboardControls";
 import StrategyActions from "@/components/StrategyActions";
+import TraderActions from "@/components/TraderActions";
 import { createClient } from "@/lib/supabase/server";
 import {
   fmtDateTime,
@@ -57,12 +58,27 @@ const PERIOD_LABEL: Record<string, string> = {
   custom: "período personalizado",
 };
 
+const traderChip: Record<string, string> = {
+  COPIANDO: "live",
+  DRY_RUN: "dry",
+  SUGERIDO: "sug",
+  PAUSADO: "ack",
+  REJEITADO: "rej",
+  ARQUIVADO: "dry",
+};
+
 export default async function Dashboard({
   searchParams,
 }: {
-  searchParams: Promise<{ period?: string; from?: string; to?: string; account?: string }>;
+  searchParams: Promise<{
+    period?: string; from?: string; to?: string; account?: string; cols?: string;
+  }>;
 }) {
   const params = await searchParams;
+  const expanded = params.cols === "all";
+  const baseQuery = new URLSearchParams(
+    Object.entries(params).filter(([k, v]) => k !== "cols" && v) as [string, string][],
+  ).toString();
   const period = ["today", "7d", "30d", "custom"].includes(params.period ?? "")
     ? (params.period as string)
     : "30d";
@@ -84,11 +100,16 @@ export default async function Dashboard({
   const supabase = await createClient();
 
   // KPIs come from strategy_metrics_daily — dashboards never scan `events`.
-  const [balance, { data: exchanges }, { data: metrics }, { data: strategies },
-         { data: orders }, { data: fills }] =
+  const [balance, { data: exchanges }, { data: traders }, { data: metrics },
+         { data: strategies }, { data: orders }, { data: fills }] =
     await Promise.all([
       fetchBalance(),
       supabase.from("exchanges").select("name, network, status").order("id"),
+      supabase
+        .from("traders")
+        .select("*")
+        .not("status", "in", "(ARQUIVADO,REJEITADO)")
+        .order("score", { ascending: false, nullsFirst: false }),
       supabase
         .from("strategy_metrics_daily")
         .select("net_pnl, win_rate, n_trades, fees, profit_factor, max_drawdown")
@@ -205,55 +226,109 @@ export default async function Dashboard({
         <div className="cardhead">
           <h2>Traders</h2>
           <span className="cardnote">
-            descoberta via `strategy list` (banco) · discovery CLI ranqueia candidatos ·
-            ativação de dry-run é gate humano
+            fonte: tabela traders · ordenado por score · aprovação (Gate 2) via CLI humana
           </span>
+          <a
+            className="btn btn-ghost btn-sm"
+            href={expanded ? "?" + baseQuery : "?" + baseQuery + "&cols=all"}
+          >
+            {expanded ? "Colunas núcleo" : "Modo expandido"}
+          </a>
         </div>
         <div className="tablewrap">
-          {copyStrategies.length === 0 ? (
+          {(traders ?? []).length === 0 ? (
             <div className="empty">
-              nenhum trader registrado — rode o discovery e adicione YAMLs em
-              engine/strategies/copy_trade/traders/
+              nenhum trader na tabela — rode o discovery (os candidatos aprovados
+              entram aqui; YAMLs não existem mais)
             </div>
           ) : (
             <table>
               <thead>
                 <tr>
+                  <th className="num">#</th>
                   <th>Trader</th>
-                  <th>Endereço</th>
-                  <th>Sizing</th>
+                  <th>Score</th>
+                  <th>Coorte</th>
+                  <th className="num">TWRR 30d</th>
+                  <th className="num">PnL 30d</th>
+                  <th>Janelas</th>
+                  <th className="num">PF</th>
+                  <th className="num">Win rate</th>
+                  <th className="num">Max DD</th>
                   <th>Status</th>
-                  <th>Criado em</th>
+                  {expanded && (
+                    <>
+                      <th>Sizing</th>
+                      <th className="num">Dist. liq.</th>
+                      <th>Origem</th>
+                      <th className="num">Lógica</th>
+                    </>
+                  )}
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {copyStrategies.map((s) => {
-                  const cfg = (s.config_snapshot ?? {}) as Record<string, unknown>;
-                  const mode = cfg["mode"] as string | undefined;
-                  const value = cfg["value"] as number | undefined;
+                {(traders ?? []).map((t, i) => {
+                  const windows = (t.windows ?? {}) as Record<string, number>;
                   return (
-                    <tr key={s.id}>
+                    <tr key={t.address}>
+                      <td className="num">{i + 1}</td>
                       <td>
-                        {s.name}
-                        <span className="sub addr">{s.id}</span>
-                      </td>
-                      <td className="addr">{shortAddr(cfg["address"] as string)}</td>
-                      <td>
-                        {mode === "percent"
-                          ? `${value ?? "—"}× prop.`
-                          : mode === "fixed_usdc"
-                            ? `${value ?? "—"} USDC fixo`
-                            : "—"}
+                        {t.name ?? shortAddr(t.address)}
+                        <span className="sub addr">{shortAddr(t.address)}</span>
                       </td>
                       <td>
-                        <span className={`chip ${statusChip[s.status] ?? "dry"}`}>
-                          {s.status === "active" ? "COPIANDO" : s.status.toUpperCase()}
+                        <span className="score">
+                          {t.score === null ? "—" : Math.round(t.score)}
+                          <span className="scorebar">
+                            <i style={{ width: `${Math.min(100, t.score ?? 0)}%` }} />
+                          </span>
                         </span>
                       </td>
-                      <td className="addr">{fmtTime(s.created_at)}</td>
+                      <td>{t.cohort ?? "—"}</td>
+                      <td className={`num ${pnlClass(t.twrr_30d)}`}>
+                        {t.twrr_30d === null ? "—" : `${fmtNum(t.twrr_30d, 1)}%`}
+                      </td>
+                      <td className={`num ${pnlClass(t.pnl_30d)}`}>
+                        {t.pnl_30d === null ? "—" : fmtSigned(t.pnl_30d, 0)}
+                      </td>
+                      <td className="addr">
+                        {Object.keys(windows).length
+                          ? Object.entries(windows)
+                              .map(([k, v]) => `${k.replace("pnl_", "")}: ${fmtNum(v, 0)}`)
+                              .join(" · ")
+                          : "—"}
+                      </td>
+                      <td className="num">
+                        {t.profit_factor === null ? "—" : fmtNum(t.profit_factor, 2)}
+                      </td>
+                      <td className="num">
+                        {t.win_rate === null ? "—" : `${fmtNum(t.win_rate * 100, 0)}%`}
+                      </td>
+                      <td className="num">
+                        {t.max_drawdown === null ? "—" : `−${fmtNum(t.max_drawdown, 1)}%`}
+                      </td>
                       <td>
-                        <StrategyActions strategyId={s.id} status={s.status} />
+                        <span className={`chip ${traderChip[t.status] ?? "dry"}`}>
+                          {t.status}
+                        </span>
+                      </td>
+                      {expanded && (
+                        <>
+                          <td>
+                            {t.mode === "percent"
+                              ? `${t.value}× prop.`
+                              : `${fmtNum(t.value, 0)} USDC fixo`}
+                          </td>
+                          <td className="num">
+                            {t.liq_distance === null ? "—" : fmtNum(t.liq_distance, 1)}
+                          </td>
+                          <td>{t.origin}</td>
+                          <td className="num">v{t.logic_version}</td>
+                        </>
+                      )}
+                      <td>
+                        <TraderActions address={t.address} status={t.status} />
                       </td>
                     </tr>
                   );
@@ -263,6 +338,45 @@ export default async function Dashboard({
           )}
         </div>
       </div>
+
+      {copyStrategies.length > 0 && (
+        <div className="card">
+          <div className="cardhead">
+            <h2>Estratégias de espelhamento</h2>
+            <span className="cardnote">
+              1 estratégia por trader espelhado (atribuição via cloid) · fonte: strategies
+            </span>
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Status</th>
+                  <th>Criada em</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {copyStrategies.map((s) => (
+                  <tr key={s.id}>
+                    <td>{s.id}</td>
+                    <td>
+                      <span className={`chip ${statusChip[s.status] ?? "dry"}`}>
+                        {s.status.toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="addr">{fmtTime(s.created_at)}</td>
+                    <td>
+                      <StrategyActions strategyId={s.id} status={s.status} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <div className="cardhead">

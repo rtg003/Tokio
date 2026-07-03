@@ -1,6 +1,6 @@
 # copy_trade (módulo)
 
-- id: ct_* (uma estratégia por trader copiado — ver `traders/*.yaml`)
+- id: ct_* (uma estratégia por trader copiado — fonte única: tabela `traders`, ADR 0008)
 - module: copy_trade
 - status: por trader (default: dry_run — sem exceção)
 - hipótese: traders com histórico auditável de expectância positiva em swing/
@@ -9,12 +9,14 @@
   discovery os filtra).
 - edge esperado: definido por trader no relatório do discovery (PnL 30/90d,
   consistência, drawdown) — a decisão de copiar é sempre humana.
-- parâmetros-chave (por trader, em `traders/<nome>.yaml`):
-  - `address`: endereço-alvo na Hyperliquid
+- parâmetros-chave (colunas da tabela `traders`; mudanças só via API de
+  controle/CLI, logadas em `events`):
+  - `address`: endereço-alvo na Hyperliquid (chave de upsert)
+  - `status`: SUGERIDO → DRY_RUN → COPIANDO (Gate 2 humano) · PAUSADO/REJEITADO/ARQUIVADO
   - `mode`: `fixed_usdc` (notional fixo por posição) | `percent`
     (proporcional: equity do alvo vs. a sua)
   - `value`: USDC (fixed) ou fração (percent)
-  - `max_leverage`, `blocked_assets`, `active`, `dry_run`
+  - `max_leverage`, `blocked_assets`, `dry_run` (default true)
 - thresholds: por trader (`min_net_pnl`, `min_trades`, `eval_window_days`)
 
 ## Regras de decisão (100% determinísticas)

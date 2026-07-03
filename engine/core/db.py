@@ -19,7 +19,8 @@ from typing import Any, Iterable
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
 
 _REPLICATED_TABLES = {
-    "exchanges", "strategies", "orders", "fills", "events", "strategy_metrics_daily",
+    "exchanges", "strategies", "orders", "fills", "events",
+    "strategy_metrics_daily", "traders", "cohort_snapshots",
 }
 
 
