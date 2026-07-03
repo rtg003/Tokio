@@ -17,6 +17,12 @@ Documentos principais: [`PLAN.md`](PLAN.md) · ADRs em
 [`docs/decisions/`](docs/decisions/) · handoff operacional em
 [`docs/HANDOFF_HERMES.md`](docs/HANDOFF_HERMES.md) (Fase 8).
 
+> **Agentes (Cursor ⇄ Hermes)**: este repo é trabalhado por dois agentes em
+> paralelo. O protocolo bilateral de coordenação — inboxes
+> `docs/HERMES_UPDATES.md`/`docs/CURSOR_UPDATES.md`, ritual pré-alteração,
+> regra do mesmo PR e desempate de área — está em [`AGENTS.md`](AGENTS.md)
+> (ADR 0009) e é de leitura/execução OBRIGATÓRIA no início de toda sessão.
+
 ## Arquitetura (resumo)
 
 ```
