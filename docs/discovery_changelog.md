@@ -80,6 +80,12 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
 - **Resultado esperado**: tabela `traders` populada com aprovados reais; perfis
   de maior frequência/DD aparecem com score proporcionalmente menor em vez de
   sumirem do funil.
+- **Validação real (scan `4439dbfd5038`, 2026-07-03, full budget 650 req)**:
+  **5 aprovados** (era 0 na v2), scores 57.6–91.3, janelas 3/4–4/4, nenhum
+  aprovado com DD > 40%. Funil: F5 48 (maior gargalo mesmo a 40%), F8 13,
+  F1/F6/F7 4 cada, F9 3, F2 1, entrada 1, interrompidos por orçamento 17.
+  Ex-reprovados por F3/F4 foram triados pelos filtros seguintes e pelo score,
+  como projetado.
 
 ## Registro histórico da implementação
 
