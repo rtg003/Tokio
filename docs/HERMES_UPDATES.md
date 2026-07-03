@@ -33,7 +33,7 @@ Validação: como confirmar que aplicou corretamente
 
 ---
 
-## UPDATE-0001 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0001 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 **Origem**: PR #6 (protocolo do inbox), consolidando PRs #4 e #5 (merged)
 
@@ -135,7 +135,7 @@ f) **Rotinas**: `discovery scan` diário às **05:00 America/Sao_Paulo**;
 
 ---
 
-## UPDATE-0002 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0002 · 2026-07-03 · Status: APLICADO em 2026-07-03
 
 **Origem**: PR #6 (protocolo bilateral — evolução do inbox instaurado no
 mesmo PR)

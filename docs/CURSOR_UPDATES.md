@@ -34,3 +34,22 @@ Validação: como confirmar que aplicou corretamente
 ---
 
 *(sem entradas ainda — a primeira será UPDATE-0001)*
+
+## UPDATE-0001 · 2026-07-03 · Status: PENDENTE
+
+Origem: PR #7 (Hermes — skill bilateral protocol)
+Tipo: skill
+
+Resumo: a skill `trade` (SKILL.md) foi atualizada para tornar permanente o
+protocolo bilateral de coordenação (ADR 0009). As seções adicionadas cobrem:
+ritual pré-alteração (fetch+pull, ler inbox, gh pr list, draft PR imediato);
+inboxes bilaterais (HERMES_UPDATES.md / CURSOR_UPDATES.md); desempate de área;
+e referência ao funil do discovery logic_version 2 (gate, janelas, PF, rotinas).
+Além disso, UPDATE-0001 e UPDATE-0002 em HERMES_UPDATES.md foram marcados
+como APLICADO.
+
+Ações do Cursor: nenhuma ação de código necessária — apenas tomar ciência de
+que a skill agora referencia o protocolo bilateral e o funil do discovery v2.
+
+Validação: `grep -c "Protocolo bilateral" skill/SKILL.md` retorna 1;
+`grep "APLICADO" docs/HERMES_UPDATES.md` retorna 2 (UPDATE-0001 e UPDATE-0002).
