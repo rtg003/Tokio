@@ -146,6 +146,7 @@ th.num { text-align: right; }
 .chip.dry { background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
 .chip.live { background: var(--pos-soft); color: var(--pos); }
 .chip.sug { background: var(--amber-soft); color: var(--amber); }
+.chip.pinned { background: var(--pos-soft); color: var(--pos); border: 1px solid var(--pos); margin-left: 4px; }
 .btn { padding: 7px 14px; border-radius: var(--r-ctl); font: 600 12px var(--sans); transition: background 0.12s, color 0.12s; }
 .btn-amber { background: var(--amber); color: var(--ink); }
 .btn-amber:hover { background: var(--amber-hi); }

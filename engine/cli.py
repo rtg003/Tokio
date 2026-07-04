@@ -5,6 +5,7 @@
     python -m engine.cli strategy archive <id> [--close-positions] [--yes]
     python -m engine.cli report --daily
     python -m engine.cli report --strategy <id>
+    python -m engine.cli trader unpin <addr> [--yes]   # remove copy_pinned (human gate)
     python -m engine.cli kill [--reason txt] / unkill
     python -m engine.cli replicate once
 """
@@ -219,6 +220,29 @@ def cmd_trader_reject(args: argparse.Namespace) -> int:
     return 0 if res.get("ok") else 1
 
 
+def cmd_trader_unpin(args: argparse.Namespace) -> int:
+    """Remove a flag copy_pinned (Bloco 3). Exige human_gate + cópia pausada."""
+    db = _db()
+    settings = get_settings()
+    logger = EventLogger("cli", settings.logs_dir, db=db)
+    from engine.strategies.copy_trade.traders_store import unpin_trader
+
+    if not args.yes:
+        print(f"UNPIN — remover copy_pinned de {args.address}?")
+        print("Requer que o trader esteja PAUSADO/REJEITADO/ARQUIVADO (não em cópia).")
+        if input("confirmar? [y/N] ").strip().lower() != "y":
+            print("abortado")
+            return 1
+    try:
+        res = unpin_trader(db, args.address, by="hermes", human_gate=True,
+                           logger=logger)
+    except ValueError as exc:
+        print(f"ERRO: {exc}", file=sys.stderr)
+        return 1
+    print(res)
+    return 0 if res.get("ok") else 1
+
+
 def cmd_strategy_activate(args: argparse.Namespace) -> int:
     """HUMAN GATE tool: promotes dry_run -> active (the control API refuses this
     on purpose). Requires --evidence pointing to the docs/ file with net
@@ -373,6 +397,11 @@ def build_parser() -> argparse.ArgumentParser:
     rej = tr_sub.add_parser("reject")
     rej.add_argument("address")
     rej.set_defaults(func=cmd_trader_reject)
+    unp = tr_sub.add_parser("unpin")
+    unp.add_argument("address")
+    unp.add_argument("--yes", action="store_true",
+                    help="pula a confirmação interativa")
+    unp.set_defaults(func=cmd_trader_unpin)
 
     rep = sub.add_parser("report")
     rep.add_argument("--daily", action="store_true")
