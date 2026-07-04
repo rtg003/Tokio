@@ -243,3 +243,451 @@ notificadas via CURSOR_UPDATES (UPDATE-0003, 0004, 0005, 0006).
 
 Validação: `curl http://127.0.0.1:8700/health` → queue baixa, lag < 60s.
 Dashboard tokio.bz carregando dados de traders v6.
+
+## UPDATE-0007 · 2026-07-04 · Status: PENDENTE
+
+Origem: Dossiê profundo do Hermes — análise dos 2 melhores traders do scan v6
+Tipo: logica_discovery + operacao
+
+Resumo: o Hermes fez um deep dive completo nos 2 melhores candidatos do
+scan v6 (dossiê com posições abertas, fills 48h, consistência 7d) e
+concluiu que **NENHUM dos 2 é copiável**. O score mede desempenho histórico
+mas NÃO mede copiabilidade real. O Cursor precisa implementar 5 mudanças
+para resolver o problema estrutural. **LEIA COM ATENÇÃO — o humano vai
+pedir para você executar isto.**
+
+### Dossiê #1: 0x1aa5...95cb (score 91.84) — NÃO COPIÁVEL
+
+Posições abertas:
+- BTC LONG 20x ($580K, PnL +$28K, liq $18,745)
+- HYPE LONG 7x ($494K, PnL +$31K)
+- SOL LONG 20x ($82K)
+- LIT LONG 5x ($61K)
+- Available margin: $0 (100% comprometido)
+
+48h: 179 fills, só 7 fechados, PnL $345
+7d: 660 trades fechados, win rate 42%, PnL $10,932
+- Dia 01/07: -$16,125 (perda severa)
+- Dia 29/06: +$18,007 (ganho extremo)
+- PnL concentrado em não-realizado ($63K)
+
+Veredito: apostador de 20x com sorte no mês. Score 91.84 é enganoso.
+
+### Dossiê #6: 0x5d8f...7927 (score 77.91) — MELHOR MAS NÃO COPIÁVEL
+
+Posições abertas:
+- NEAR LONG 10x ($137K, PnL +$12K, liq $0.60)
+- HYPE LONG 6x ($181K, PnL +$5.9K)
+- SOL LONG 10x ($76K, liq $75.47 — só 7.5% de distância!)
+- Available margin: $0
+
+48h: 300 fills, 86 fechados, PnL $8,432, 100% win rate
+7d: 211 trades fechados, win rate 88%, PnL $13,631
+- 5 de 6 dias positivos, perda máxima -$640
+- Consistente e diversificado (6 ativos)
+
+Veredito: melhor trader que o discovery já trouxe, mas:
+- 100% em margem, zero disponível
+- SOL a 7.5% da liquidação (10% de queda = liquidação)
+- DD 34.4% histórico
+- Equity $56K → cópia com $1K gera trades de ~$1.80 (abaixo do mínimo $10)
+
+### PROBLEMA ESTRUTURAL: o score não mede copiabilidade
+
+O score atual (consistência 25% + PF 20% + ROI 15% + DD 15% + copiabilidade
+15% + expectância 10%) mede desempenho histórico, não mede se copiar este
+trader geraria lucro. Um trader com 20x de alavancagem e sorte no mês
+pontua 91.84.
+
+### 5 MUDANÇAS NECESSÁRIAS (o humano vai pedir para você implementar)
+
+#### 1. F7b: alavancagem ATUAL (não média histórica) — CONFIG
+
+O F7 mede alavancagem média do histórico. O trader pode estar com 20x agora
+mesmo com média de 13x. Precisa de um filtro que olhe a alavancagem das
+posições ABERTAS no momento do scan.
+
+Config: `f7b_max_current_leverage: 10.0` — se qualquer posição aberta tiver
+leverage > 10x, rejeitar com "F7b: lev atual Xx > 10.0x".
+
+Implementação: no deep_dive(), já temos `positions` do clearinghouse. Para
+cada posição, `p.get("leverage", {}).get("value", 0)`. Pegar o max e
+comparar com o threshold. Adicionar no hard_filters() após F7.
+
+Arquivo: engine/strategies/copy_trade/funnel.py (função hard_filters)
+Arquivo: config/discovery_config.yaml (adicionar f7b_max_current_leverage)
+
+#### 2. F12: margem disponível mínima — CONFIG
+
+Se available = $0, o trader está totalmente comprometido. Qualquer movimento
+contra liquidaria.
+
+Config: `f12_min_available_margin_pct: 10.0` — se available < 10% do
+accountValue, rejeitar com "F12: margem disponível X% < 10%".
+
+Implementação: no deep_dive(), já temos `ch = client.clearinghouse(addr)` e
+`marginSummary`. Calcular `available / accountValue * 100`. Adicionar no
+hard_filters().
+
+Arquivo: engine/strategies/copy_trade/funnel.py
+Arquivo: config/discovery_config.yaml
+
+#### 3. F13: distância de liquidação mínima — CONFIG
+
+O #6 tem SOL a 7.5% da liquidação. A penalização atual (-10 se < 10%) existe
+no score, mas não REJEITA.
+
+Config: `f13_min_liq_distance_pct: 15.0` — se a posição mais próxima estiver
+a < 15% da liquidação, rejeitar com "F13: dist liq X% < 15%".
+
+Implementação: no deep_dive(), já calculamos `c.liq_distance_pct` (min das
+distâncias). Adicionar no hard_filters() após F5.
+
+Arquivo: engine/strategies/copy_trade/funnel.py
+Arquivo: config/discovery_config.yaml
+
+#### 4. Simulação retroativa de cópia — CÓDIGO (mais complexo, mais importante)
+
+Em vez de só pontuar métricas, simular: "se tivéssemos copiado este trader
+com $1K nos últimos 30d, qual seria nosso PnL líquido de taxas e slippage?"
+
+Para cada fill do trader:
+- Calcular o size proporcional (mirror_capital / trader_equity * fill_size)
+- Deduzir 0.045% taker fee + 0.02% slippage por perna
+- Se PnL líquido simulado < 0, rejeitar
+- Se trades com $1K têm notional < $10, rejeitar (não copiável)
+
+Isso eliminaria traders que parecem bons nas métricas mas que não geram
+lucro quando copiados com capital pequeno.
+
+Implementação: nova função no funnel.py ou metrics.py que recebe os fills do
+trader, o equity dele, o mirror_capital configurado, e simula o espelhamento.
+Adicionar como componente do score ou como filtro (F15).
+
+Arquivo: engine/strategies/copy_trade/funnel.py ou metrics.py
+Arquivo: config/discovery_config.yaml (cost_of_copy já existe)
+
+#### 5. F14: notional mínimo por trade com capital configurado — CONFIG
+
+O F11 já existe mas o cálculo pode estar errado. O #6 tem equity $56K,
+copiando com $1K (0.0179x), cada trade seria ~$1.80 — abaixo do mínimo $10.
+
+Config: `f14_min_copy_notional_usd: 10.0` (já existe como f11, mas
+verificar se o cálculo está correto).
+
+Implementação: verificar o cálculo no hard_filters() F11. O notional médio
+por trade = trader_avg_notional * (mirror_capital / trader_equity). Se
+< $10, rejeitar.
+
+Arquivo: engine/strategies/copy_trade/funnel.py (revisar F11)
+
+### PRIORIDADE SUGERIDA
+
+1. F7b (lev atual) + F12 (margem) + F13 (dist liq) — rápidos, config + pouco
+   código, eliminam os 2 falsos positivos imediatamente
+2. F14 (notional mínimo) — revisar F11 existente
+3. Simulação retroativa de cópia — mais complexa, maior impacto
+
+### Bump de logic_version
+
+Todas as mudanças devem ser agrupadas em um único bump de logic_version (7).
+Changelog em docs/discovery_changelog.md. UPDATE no HERMES_UPDATES.md
+notificando o Hermes das novas leituras e filtros.
+
+### Estado atual do discovery (para contexto do Cursor)
+
+- logic_version: 6 (em produção)
+- 7 aprovados no scan v6, mas só 2 analisáveis e NENHUM copiável
+- O score não mede copiabilidade real
+- Filtros atuais não olham posições abertas no momento do scan
+- A simulação retroativa é a mudança de maior impacto estrutural
+
+## UPDATE-0007 · 2026-07-04 · Status: PENDENTE
+
+Origem: Dossiê profundo do Hermes — análise dos 2 melhores traders do scan v6
+Tipo: logica_discovery + operacao
+
+Resumo: o Hermes fez um deep dive completo nos 2 melhores candidatos do
+scan v6 (dossiê com posições abertas, fills 48h, consistência 7d) e
+concluiu que NENHUM dos 2 é copiável. O score mede desempenho histórico
+mas NÃO mede copiabilidade real. O Cursor precisa implementar 5 mudanças
+para resolver o problema estrutural. **LEIA COM ATENÇÃO — o humano vai
+pedir para você executar isto.**
+
+### Dossiê #1: 0x1aa5...95cb (score 91.84) — NÃO COPIÁVEL
+
+Posições abertas:
+- BTC LONG 20x ($580K, PnL +$28K, liq $18,745)
+- HYPE LONG 7x ($494K, PnL +$31K)
+- SOL LONG 20x ($82K)
+- LIT LONG 5x ($61K)
+- Available margin: $0 (100% comprometido)
+
+48h: 179 fills, só 7 fechados, PnL $345
+7d: 660 trades fechados, win rate 42%, PnL $10,932
+- Dia 01/07: -$16,125 (perda severa)
+- Dia 29/06: +$18,007 (ganho extremo)
+- PnL concentrado em não-realizado ($63K)
+
+Veredito: apostador de 20x com sorte no mês. Score 91.84 é enganoso.
+
+### Dossiê #6: 0x5d8f...7927 (score 77.91) — MELHOR MAS NÃO COPIÁVEL
+
+Posições abertas:
+- NEAR LONG 10x ($137K, PnL +$12K, liq $0.60)
+- HYPE LONG 6x ($181K, PnL +$5.9K)
+- SOL LONG 10x ($76K, liq $75.47 — só 7.5% de distância!)
+- Available margin: $0
+
+48h: 300 fills, 86 fechados, PnL $8,432, 100% win rate
+7d: 211 trades fechados, win rate 88%, PnL $13,631
+- 5 de 6 dias positivos, perda máxima -$640
+- Consistente e diversificado (6 ativos)
+
+Veredito: melhor trader que o discovery já trouxe, mas:
+- 100% em margem, zero disponível
+- SOL a 7.5% da liquidação (10% de queda = liquidação)
+- DD 34.4% histórico
+- Equity $56K -> cópia com $1K gera trades de ~$1.80 (abaixo do mínimo $10)
+
+### PROBLEMA ESTRUTURAL: o score não mede copiabilidade
+
+O score atual (consistência 25% + PF 20% + ROI 15% + DD 15% + copiabilidade
+15% + expectância 10%) mede desempenho histórico, não mede se copiar este
+trader geraria lucro. Um trader com 20x de alavancagem e sorte no mês
+pontua 91.84.
+
+### 5 MUDANÇAS NECESSÁRIAS (o humano vai pedir para você implementar)
+
+#### 1. F7b: alavancagem ATUAL (não média histórica) — CONFIG + CÓDIGO
+
+O F7 mede alavancagem média do histórico. O trader pode estar com 20x agora
+mesmo com média de 13x. Precisa de um filtro que olhe a alavancagem das
+posições ABERTAS no momento do scan.
+
+Config: f7b_max_current_leverage: 10.0
+Implementação: no deep_dive(), já temos positions do clearinghouse. Para
+cada posição, p.get("leverage", {}).get("value", 0). Pegar o max e comparar
+com o threshold. Adicionar no hard_filters() após F7.
+
+Arquivos: engine/strategies/copy_trade/funnel.py, config/discovery_config.yaml
+
+#### 2. F12: margem disponível mínima — CONFIG + CÓDIGO
+
+Se available = $0, o trader está totalmente comprometido. Qualquer movimento
+contra liquidaria.
+
+Config: f12_min_available_margin_pct: 10.0
+Implementação: no deep_dive(), já temos ch = client.clearinghouse(addr) e
+marginSummary. Calcular available / accountValue * 100. Adicionar no
+hard_filters().
+
+Arquivos: engine/strategies/copy_trade/funnel.py, config/discovery_config.yaml
+
+#### 3. F13: distância de liquidação mínima — CONFIG + CÓDIGO
+
+O #6 tem SOL a 7.5% da liquidação. A penalização atual (-10 se < 10%) existe
+no score, mas não REJEITA.
+
+Config: f13_min_liq_distance_pct: 15.0
+Implementação: no deep_dive(), já calculamos c.liq_distance_pct (min das
+distâncias). Adicionar no hard_filters() após F5.
+
+Arquivos: engine/strategies/copy_trade/funnel.py, config/discovery_config.yaml
+
+#### 4. Simulação retroativa de cópia — CÓDIGO (mais complexo, mais importante)
+
+Em vez de só pontuar métricas, simular: "se tivéssemos copiado este trader
+com $1K nos últimos 30d, qual seria nosso PnL líquido de taxas e slippage?"
+
+Para cada fill do trader:
+- Calcular o size proporcional (mirror_capital / trader_equity * fill_size)
+- Deduzir 0.045% taker fee + 0.02% slippage por perna
+- Se PnL líquido simulado < 0, rejeitar
+- Se trades com $1K têm notional < $10, rejeitar (não copiável)
+
+Isso eliminaria traders que parecem bons nas métricas mas que não geram
+lucro quando copiados com capital pequeno.
+
+Implementação: nova função no funnel.py ou metrics.py que recebe os fills do
+trader, o equity dele, o mirror_capital configurado, e simula o
+espelhamento. Adicionar como componente do score ou como filtro (F15).
+
+Arquivos: engine/strategies/copy_trade/funnel.py ou metrics.py,
+config/discovery_config.yaml (cost_of_copy já existe)
+
+#### 5. F14: notional mínimo por trade com capital configurado — REVISAR F11
+
+O F11 já existe mas o cálculo pode estar errado. O #6 tem equity $56K,
+copiando com $1K (0.0179x), cada trade seria ~$1.80 — abaixo do mínimo $10.
+
+Verificar o cálculo no hard_filters() F11. O notional médio por trade =
+trader_avg_notional * (mirror_capital / trader_equity). Se < $10, rejeitar.
+
+Arquivo: engine/strategies/copy_trade/funnel.py (revisar F11)
+
+### PRIORIDADE SUGERIDA
+
+1. F7b (lev atual) + F12 (margem) + F13 (dist liq) — rápidos, eliminam os
+   2 falsos positivos imediatamente
+2. F14 (notional mínimo) — revisar F11 existente
+3. Simulação retroativa de cópia — mais complexa, maior impacto estrutural
+
+### Bump de logic_version
+
+Todas as mudanças devem ser agrupadas em um único bump de logic_version (7).
+Changelog em docs/discovery_changelog.md. UPDATE no HERMES_UPDATES.md
+notificando o Hermes das novas leituras e filtros.
+
+### Estado atual do discovery (para contexto do Cursor)
+
+- logic_version: 6 (em produção)
+- 7 aprovados no scan v6, mas só 2 analisáveis e NENHUM copiável
+- O score não mede copiabilidade real
+- Filtros atuais não olham posições abertas no momento do scan
+- A simulação retroativa é a mudança de maior impacto estrutural
+
+## UPDATE-0007 · 2026-07-04 · Status: PENDENTE
+
+Origem: Dossiê profundo do Hermes — análise dos 2 melhores traders do scan v6
+Tipo: logica_discovery + operacao
+
+Resumo: o Hermes fez um deep dive completo nos 2 melhores candidatos do
+scan v6 (dossiê com posições abertas, fills 48h, consistência 7d) e
+concluiu que NENHUM dos 2 é copiável. O score mede desempenho histórico
+mas NÃO mede copiabilidade real. O Cursor precisa implementar 5 mudanças
+para resolver o problema estrutural. **LEIA COM ATENÇÃO — o humano vai
+pedir para você executar isto.**
+
+### Dossiê #1: 0x1aa5abfd850012297428b509fb84fcd9f9f995cb (score 91.84) — NÃO COPIÁVEL
+
+Posições abertas:
+- BTC LONG 20x ($580K, PnL +$28K, liq $18,745)
+- HYPE LONG 7x ($494K, PnL +$31K)
+- SOL LONG 20x ($82K)
+- LIT LONG 5x ($61K)
+- Available margin: $0 (100% comprometido)
+
+48h: 179 fills, só 7 fechados, PnL $345
+7d: 660 trades fechados, win rate 42%, PnL $10,932
+- Dia 01/07: -$16,125 (perda severa)
+- Dia 29/06: +$18,007 (ganho extremo)
+- PnL concentrado em não-realizado ($63K)
+
+Veredito: apostador de 20x com sorte no mês. Score 91.84 é enganoso.
+
+### Dossiê #6: 0x5d8f65942e5ace94c2f3c119970d502fcc6e7927 (score 77.91) — MELHOR MAS NÃO COPIÁVEL
+
+Posições abertas:
+- NEAR LONG 10x ($137K, PnL +$12K, liq $0.60)
+- HYPE LONG 6x ($181K, PnL +$5.9K)
+- SOL LONG 10x ($76K, liq $75.47 — só 7.5% de distância!)
+- Available margin: $0
+
+48h: 300 fills, 86 fechados, PnL $8,432, 100% win rate
+7d: 211 trades fechados, win rate 88%, PnL $13,631
+- 5 de 6 dias positivos, perda máxima -$640
+- Consistente e diversificado (6 ativos)
+
+Veredito: melhor trader que o discovery já trouxe, mas:
+- 100% em margem, zero disponível
+- SOL a 7.5% da liquidação (10% de queda = liquidação)
+- DD 34.4% histórico
+- Equity $56K → cópia com $1K gera trades de ~$1.80 (abaixo do mínimo $10)
+
+### PROBLEMA ESTRUTURAL: o score não mede copiabilidade
+
+O score atual (consistência 25% + PF 20% + ROI 15% + DD 15% + copiabilidade
+15% + expectância 10%) mede desempenho histórico, não mede se copiar este
+trader geraria lucro. Um trader com 20x de alavancagem e sorte no mês
+pontua 91.84.
+
+### 5 MUDANÇAS NECESSÁRIAS (o humano vai pedir para você implementar)
+
+#### 1. F7b: alavancagem ATUAL (não média histórica) — CONFIG + CÓDIGO
+
+O F7 mede alavancagem média do histórico. O trader pode estar com 20x agora
+mesmo com média de 13x. Precisa de um filtro que olhe a alavancagem das
+posições ABERTAS no momento do scan.
+
+Config: `f7b_max_current_leverage: 10.0`
+Implementação: no `deep_dive()`, já temos `positions` do clearinghouse. Para
+cada posição, `p.get("leverage", {}).get("value", 0)`. Pegar o max e comparar
+com o threshold. Adicionar no `hard_filters()` após F7.
+
+Arquivos: `engine/strategies/copy_trade/funnel.py`, `config/discovery_config.yaml`
+
+#### 2. F12: margem disponível mínima — CONFIG + CÓDIGO
+
+Se available = $0, o trader está totalmente comprometido. Qualquer movimento
+contra liquidaria.
+
+Config: `f12_min_available_margin_pct: 10.0`
+Implementação: no `deep_dive()`, já temos `ch = client.clearinghouse(addr)` e
+`marginSummary`. Calcular `available / accountValue * 100`. Adicionar no
+`hard_filters()`.
+
+Arquivos: `engine/strategies/copy_trade/funnel.py`, `config/discovery_config.yaml`
+
+#### 3. F13: distância de liquidação mínima — CONFIG + CÓDIGO
+
+O #6 tem SOL a 7.5% da liquidação. A penalização atual (-10 se < 10%) existe
+no score, mas não REJEITA.
+
+Config: `f13_min_liq_distance_pct: 15.0`
+Implementação: no `deep_dive()`, já calculamos `c.liq_distance_pct` (min das
+distâncias). Adicionar no `hard_filters()` após F5.
+
+Arquivos: `engine/strategies/copy_trade/funnel.py`, `config/discovery_config.yaml`
+
+#### 4. Simulação retroativa de cópia — CÓDIGO (mais complexo, mais importante)
+
+Em vez de só pontuar métricas, simular: "se tivéssemos copiado este trader
+com $1K nos últimos 30d, qual seria nosso PnL líquido de taxas e slippage?"
+
+Para cada fill do trader:
+- Calcular o size proporcional (mirror_capital / trader_equity * fill_size)
+- Deduzir 0.045% taker fee + 0.02% slippage por perna
+- Se PnL líquido simulado < 0, rejeitar
+- Se trades com $1K têm notional < $10, rejeitar (não copiável)
+
+Isso eliminaria traders que parecem bons nas métricas mas que não geram
+lucro quando copiados com capital pequeno.
+
+Implementação: nova função no `funnel.py` ou `metrics.py` que recebe os fills
+do trader, o equity dele, o mirror_capital configurado, e simula o
+espelhamento. Adicionar como componente do score ou como filtro (F15).
+
+Arquivos: `engine/strategies/copy_trade/funnel.py` ou `metrics.py`,
+`config/discovery_config.yaml` (cost_of_copy já existe)
+
+#### 5. F14: notional mínimo por trade com capital configurado — REVISAR F11
+
+O F11 já existe mas o cálculo pode estar errado. O #6 tem equity $56K,
+copiando com $1K (0.0179x), cada trade seria ~$1.80 — abaixo do mínimo $10.
+
+Verificar o cálculo no `hard_filters()` F11. O notional médio por trade =
+trader_avg_notional * (mirror_capital / trader_equity). Se < $10, rejeitar.
+
+Arquivo: `engine/strategies/copy_trade/funnel.py` (revisar F11)
+
+### PRIORIDADE SUGERIDA
+
+1. F7b (lev atual) + F12 (margem) + F13 (dist liq) — rápidos, eliminam os
+   2 falsos positivos imediatamente
+2. F14 (notional mínimo) — revisar F11 existente
+3. Simulação retroativa de cópia — mais complexa, maior impacto estrutural
+
+### Bump de logic_version
+
+Todas as mudanças devem ser agrupadas em um único bump de logic_version (7).
+Changelog em `docs/discovery_changelog.md`. UPDATE no `HERMES_UPDATES.md`
+notificando o Hermes das novas leituras e filtros.
+
+### Estado atual do discovery (para contexto do Cursor)
+
+- logic_version: 6 (em produção)
+- 7 aprovados no scan v6, mas só 2 analisáveis e NENHUM copiável
+- O score não mede copiabilidade real
+- Filtros atuais não olham posições abertas no momento do scan
+- A simulação retroativa é a mudança de maior impacto estrutural
