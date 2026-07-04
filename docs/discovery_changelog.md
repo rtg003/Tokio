@@ -312,3 +312,30 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
   baselines em mediana/soma. Seleção atual: 10 aprovados com cobertura ≥30d,
   metades positivas e cópia capada a 3x. Go controlado: PR draft e recomendação
   de 1–2 semanas em sombra antes de qualquer Gate 2.
+
+## logic_version: 10 — filtros de atividade + win_rate realista + F20 ajustado (2026-07-04)
+
+- **Autor**: Hermes (operador), com autorização humana explícita.
+- **Motivo**: dossiê do top 1 do scan v9 revelou que o trader PAROU de operar
+  há 7+ dias mas ainda era SUGERIDO. Win rate na tabela era 100% mas a
+  realidade é 64% (calculado sobre janela de 60d, não 30d). F20 a $150K
+  deixava passar traders grandes demais para copiar com $1K.
+
+### Mudanças:
+
+a) **F1: 21d → 7d** — voltou para 7 dias (v9 tinha afrouxado para 21).
+   Trader sem fill em 7 dias = inativo.
+b) **F2c (NOVO)**: min_trades_7d: 5 — trader sem 5 trades fechados nos
+   últimos 7 dias é rejeitado como inativo. O F2b (30d) continua, mas
+   não captura quem parou recentemente.
+c) **win_rate_30d (NOVO)**: win rate calculado só sobre closing fills dos
+   últimos 30 dias, não 60d. O win_rate original (60d) permanece mas
+   win_rate_30d é a métrica correta para exibir/analisar.
+d) **F20: $150K → $50K** — análise: com $1K de capital, ratio de cópia
+   é 0.02x. Trader de $50K gera notional de ~$15-50 (acima do mínimo $10).
+   Trader de $150K gera notional de ~$5-15 (no limite ou abaixo). Sweet
+   spot para copiabilidade real é equity ≤ $50K.
+e) **n_trades_7d (NOVO)**: calculado no deep_dive, persistido na tabela.
+f) **Migration 0008**: ALTER TABLE traders ADD n_trades_7d, win_rate_30d.
+
+### O que NÃO mudou: F2-F20 (exceto F1 e F20), simulação, score, entry_rule.

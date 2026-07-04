@@ -8,7 +8,7 @@
 # porquê, evidência, efeito de mudar): docs/discovery_logic_v9.md.
 # tests/test_docs_coverage.py QUEBRA se uma chave nova não estiver lá.
 # ============================================================================
-logic_version: 9
+logic_version: 10
 
 collection:
   leaderboard_top_n: 5000           # v6: era 500 (leaderboard tem 40k+ rows; 500 pegava só baleias)
@@ -60,10 +60,11 @@ entry_rule:
   required_windows: []
 
 hard_filters:                     # F1–F20 (binários, ordem de custo; null = desabilitado)
-  f1_recent_activity_days: 21     # v9: era 7 — atividade agora é julgada pela simulação (F17/F18); 21d só corta abandono
+  f1_recent_activity_days: 7      # v10: voltou para 7 (era 21 na v9 — 21 deixava passar traders parados há 3 semanas)
   f2_min_closed_trades: 15        # v9: era 30 — amostra mínima p/ a SIMULAÇÃO ter significado
   f2_min_history_days: 60
   f2b_min_trades_30d: 3           # v9: era 5 — idem f2 (a simulação decide)
+  f2c_min_trades_7d: 5            # v10: NOVO — trader sem 5 trades fechados nos últimos 7d = inativo
   # F3 desabilitado na v3 (scan b684b8bbe5f5: 34/100 reprovados) — scalper é
   # penalizado pelo score de copiabilidade, não eliminado.
   f3_min_avg_holding_hours: null
@@ -106,7 +107,7 @@ hard_filters:                     # F1–F20 (binários, ordem de custo; null = 
   f17_min_sim_net_usd: 10.0            # cópia precisa RENDER > $10 na janela (quintil top: +71 fora da amostra)
   f18_sim_positive_halves: true        # edge nas 2 metades da janela (mata sortudo de uma perna)
   f19_max_sim_dd_pct: 25.0             # DD máximo da CURVA DA CÓPIA (perdedores tinham 56-75% já visível)
-  f20_max_trader_equity_usd: 150000    # preditor nº1 do lab (ρ -0.227): conta menor copia melhor
+  f20_max_trader_equity_usd: 50000     # v10: era 150k — análise: $50k é o sweet spot para cópia com $1k (ratio 0.02x, notional ~$15-50, acima do mínimo $10); traders com $50-150k geram cópias de $3-10 (limite) e slippage proporcional maior
 
 # v8/v9: SIMULAÇÃO DE CÓPIA — replay dos fills com nosso sizing, taxas taker,
 # custo de latência e TETO DE ALAVANCAGEM. v9: o RANKING FINAL é o net desta
