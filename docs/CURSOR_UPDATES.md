@@ -165,3 +165,81 @@ paginação ou cache.
 
 Validação: scan v6 dispara automaticamente no próximo start do engine.
 Verificar events por logic_updated (5→6) e comparar aprovados com v5.
+
+## UPDATE-0006 · 2026-07-03 · Status: PENDENTE
+
+Origem: operação do Hermes (setup de produção + 6 logic_versions em um dia)
+Tipo: infra + operacao
+
+Resumo: três incidentes de replicação descobertos e corrigidos pelo Hermes
+durante o onboarding e evolução do discovery. O Cursor precisa entender o
+estado atual do Supabase e o que foi corrigido manualmente.
+
+### Incidente 1: Migration 0004 não aplicada no Supabase (CORRIGIDO)
+
+A migration `db/migrations/supabase/0004_discovery_v2.sql` (ALTER TABLE
+traders ADD COLUMN n_trades_30d, avg_holding_hours, etc.) **nunca foi
+aplicada no Supabase**. O engine aplica migrations apenas no SQLite local.
+O Supabase precisa de passo manual (psql). Resultado: o replicator tentava
+upsertar traders com colunas que não existiam no PostgREST → erro
+PGRST204 "Could not find the 'avg_holding_hours' column".
+
+**Correção aplicada**: `psql "$DATABASE_URL" -f db/migrations/supabase/0004_discovery_v2.sql`
+— 14 ALTER TABLE executados com sucesso.
+
+**Ação do Cursor**: o autodeploy (deploy/autodeploy.sh) NÃO aplica
+migrations Supabase automaticamente. Considerar adicionar um hook que
+detecte novas migrations em db/migrations/supabase/ e as aplique via psql
+após o git pull. Ou documentar no HANDOFF que migrations Supabase são
+passo manual pós-deploy.
+
+### Incidente 2: PGRST102 "Empty or invalid json" em batches de traders
+
+Após aplicar a migration, batches de 104 traders falhavam com PGRST102.
+A normalização de keys (correção do PR #3) funciona para schemas iguais,
+mas 6 traders tinham payloads com caracteres que o PostgREST rejeitava
+(possivelmente valores numéricos extremos ou strings com caracteres de
+controle). Corrigido enviando traders individualmente (1 por request) e
+removendo os 6 problemáticos da fila.
+
+**Ação do Cursor**: investigar quais campos nos 6 traders problemáticos
+causam PGRST102. Endereços: 0xaeaab54bbf65bf, 0x8b253448c776ba,
+0x8f78cb4c11dd66, 0x80bcb08c54bbd5, 0x383c452252b4b3, 0x3d4510e14071d8,
+0x0a6b80da9b3080. Considerar sanitização de payloads no upsert_rows
+(filtrar caracteres de controle, clamping de valores extremos).
+
+### Incidente 3: PGRST102 "All object keys must match" (CORRIGIDO no PR #3)
+
+Já corrigido pelo Hermes no PR #3 (dedup PK + normalize keys + coalesce
+enqueue). Mas a correção da normalização de keys precisa ser aplicada
+também quando há campos None em colunas NOT NULL — o PostgREST rejeita
+null em colunas com constraint NOT NULL.
+
+**Ação do Cursor**: verificar se há colunas NOT NULL na tabela traders
+que podem receber None do engine. Se sim, ou alterar para nullable ou
+garantir default values no código de upsert.
+
+### Estado atual do Supabase
+
+- Migration 0001 (initial): ✅ aplicada
+- Migration 0002 (traders): ✅ aplicada
+- Migration 0004 (discovery v2 columns): ✅ aplicada (manualmente pelo Hermes)
+- Migration 0003 (cleanup unattributed fills): ✅ aplicada
+- Replication queue: drenando (297 → 0 em andamento)
+- Dashboard tokio.bz: funcionando, lendo do Supabase
+
+### Resumo das logic_versions (v1→v6 em um dia)
+
+O Hermes evoluiu o discovery de v1 para v6 em uma sessão, com autorização
+humana explícita (exceção ao desempate de área). Mudanças em código:
+- metrics.py: drawdown_quality piecewise por faixas (v4)
+- funnel.py: F2b (min_trades_30d), PF penalty, score min, active scan (v5)
+- funnel.py: sort por PnL 7d + leaderboard 5000 (v6)
+- hl_data.py: active_addresses() (v5)
+- config/discovery_config.yaml: 6 bumps de logic_version
+
+Todas as mudanças estão documentadas em docs/discovery_changelog.md e
+notificadas via CURSOR_UPDATES (UPDATE-0003, 0004, 0005, 0006).
+
+Validação: `curl http://127.0.0.1:8700/health` → queue baixa, lag < 60s.
+Dashboard tokio.bz carregando dados de traders v6.
