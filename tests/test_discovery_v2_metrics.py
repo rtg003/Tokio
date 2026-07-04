@@ -16,6 +16,7 @@ from engine.strategies.copy_trade.metrics import (
     pnl_cohort,
     position_episodes,
     roi_log_score,
+    simulate_copy,
     size_cohort,
     top_n_concentration,
     twrr,
@@ -167,6 +168,62 @@ def test_bidimensional_cohorts() -> None:
     assert pnl_cohort(-5_000, pnl_bands) == "Rekt"
     assert pnl_cohort(500, pnl_bands) == "Flat"
     assert pnl_cohort(2_000_000, pnl_bands) == "Printer"
+
+
+# --- Simulação retroativa de cópia (v7 — F15) --------------------------------------
+def sim_fill(t_ms: float, sz: float, px: float, closed_pnl: float = 0.0) -> dict:
+    return {"coin": "BTC", "time": t_ms, "sz": sz, "px": px,
+            "closedPnl": closed_pnl}
+
+
+NOW = 100 * 86_400_000.0  # dia 100 em ms
+
+
+def test_simulate_copy_profitable_trader_nets_positive() -> None:
+    # trader $100k, 2 trades de $10k com $500 de lucro cada — custo não come o edge
+    fills = [sim_fill(NOW - 5 * 86_400_000.0, 1, 10_000),
+             sim_fill(NOW - 4 * 86_400_000.0, 1, 10_000, closed_pnl=500),
+             sim_fill(NOW - 3 * 86_400_000.0, 1, 10_000),
+             sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=500)]
+    sim = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
+    assert sim is not None
+    # ratio 0.01: gross = 1000×0.01 = 10; custo = 4×100×0.00065 = 0.26
+    assert sim.gross_pnl_usd == pytest.approx(10.0)
+    assert sim.cost_usd == pytest.approx(0.26)
+    assert sim.net_pnl_usd == pytest.approx(9.74)
+    assert sim.median_copy_notional_usd == pytest.approx(100.0)
+    assert sim.n_fills == 4
+
+
+def test_simulate_copy_thin_edge_eaten_by_costs() -> None:
+    # PnL magro sobre volume alto: custo de cópia vira o sinal (net < 0)
+    fills = [sim_fill(NOW - i * 3_600_000.0, 1, 50_000,
+                      closed_pnl=(10 if i % 2 else 0)) for i in range(40)]
+    sim = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
+    assert sim is not None
+    assert sim.gross_pnl_usd > 0
+    assert sim.net_pnl_usd < 0    # 200×0.01=2 de gross vs 40×500×0.00065=13 de custo
+
+
+def test_simulate_copy_respects_window_and_guards() -> None:
+    old = sim_fill(NOW - 40 * 86_400_000.0, 1, 10_000, closed_pnl=999_999)
+    recent = sim_fill(NOW - 1 * 86_400_000.0, 1, 10_000, closed_pnl=100)
+    sim = simulate_copy([old, recent], 100_000, 1_000,
+                        window_days=30, now_ms=NOW)
+    assert sim is not None and sim.n_fills == 1          # fill velho fora da janela
+    assert sim.gross_pnl_usd == pytest.approx(1.0)
+    assert simulate_copy([recent], 0.0, 1_000, now_ms=NOW) is None    # sem equity
+    assert simulate_copy([old], 100_000, 1_000, window_days=30,
+                         now_ms=NOW) is None             # janela vazia
+
+
+def test_simulate_copy_sign_is_capital_invariant() -> None:
+    # o net escala linearmente com o capital — sinal nunca muda com $1k vs $100k
+    fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 20_000, closed_pnl=50)]
+    small = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
+    big = simulate_copy(fills, 100_000, 100_000, now_ms=NOW)
+    assert small is not None and big is not None
+    assert small.net_pnl_usd * 100 == pytest.approx(big.net_pnl_usd)
 
 
 # --- Score composto: régua inteira -------------------------------------------------
