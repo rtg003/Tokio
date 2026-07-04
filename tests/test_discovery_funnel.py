@@ -40,9 +40,13 @@ def lb_row(address: str, *, pnl_7d: float, pnl_30d: float, roi_30d: float,
             ]}
 
 
-def swing_fills(n: int = 40, *, hold_h: float = 24.0, pnl_each: float = 120.0,
-                start_ms: float | None = None) -> list[dict[str, Any]]:
-    """n trades fechados, hold configurável, PnL distribuído — trader saudável."""
+def swing_fills(n: int = 55, *, hold_h: float = 24.0, pnl_each: float = 120.0,
+                start_ms: float | None = None,
+                interval_h: float = 24.0) -> list[dict[str, Any]]:
+    """n trades fechados, hold configurável, PnL distribuído — trader saudável.
+
+    v10: intervalo padrão de 24h (era 30h) + n=55 garante ≥5 closes nos
+    últimos 7d (F2c) mantendo cobertura ≥30d (F16)."""
     start_ms = start_ms or (NOW_MS - 55 * DAY_MS)
     fills = []
     t = start_ms
@@ -52,7 +56,7 @@ def swing_fills(n: int = 40, *, hold_h: float = 24.0, pnl_each: float = 120.0,
         fills.append({"coin": "BTC", "time": t + hold_h * H_MS, "side": "A",
                       "sz": 0.5, "startPosition": 0.5, "px": 100_500,
                       "closedPnl": pnl_each + (i % 5)})
-        t += 30 * H_MS
+        t += interval_h * H_MS
     return fills
 
 
@@ -140,11 +144,11 @@ def make_client() -> FakeClient:
     rows = [
         lb_row(GOOD, pnl_7d=800, pnl_30d=9_000, roi_30d=0.18, equity=50_000),
         lb_row(SCALP, pnl_7d=2_000, pnl_30d=25_000, roi_30d=0.40, equity=80_000),
-        lb_row(DEPOSIT, pnl_7d=100, pnl_30d=5_000, roi_30d=0.08, equity=200_000),
+        lb_row(DEPOSIT, pnl_7d=100, pnl_30d=5_000, roi_30d=0.08, equity=49_000),
         lb_row(REKT1, pnl_7d=-500, pnl_30d=-8_000, roi_30d=-0.20, equity=30_000),
         lb_row(REKT2, pnl_7d=-100, pnl_30d=-2_000, roi_30d=-0.05, equity=5_000),
     ]
-    flat_curve = [[NOW_MS - (90 - d) * DAY_MS, 200_000.0 + d * 550] for d in range(91)]
+    flat_curve = [[NOW_MS - (90 - d) * DAY_MS, 49_000.0 + d * 135] for d in range(91)]
     scalper_fills = []
     t = NOW_MS - 20 * DAY_MS
     for i in range(900):
@@ -158,8 +162,8 @@ def make_client() -> FakeClient:
         GOOD: {"fills": swing_fills(),
                "clearinghouse": healthy_clearinghouse()},
         SCALP: {"fills": scalper_fills},
-        # início há 45d → último trade recente (passa F1) e cai no F10
-        DEPOSIT: {"fills": swing_fills(n=35, pnl_each=20.0,
+        # início há 45d → último trade recente (passa F1/F2c) e cai no F10
+        DEPOSIT: {"fills": swing_fills(n=45, pnl_each=20.0,
                                        start_ms=NOW_MS - 45 * DAY_MS),
                   "curve": flat_curve,
                   "ledger": [{"time": NOW_MS - 15 * DAY_MS,
@@ -289,7 +293,7 @@ def test_null_thresholds_disable_f3_f4() -> None:
 
     c = Candidate(
         address="0x5", windows_pnl={"7d": 1, "30d": 1, "60d": 1, "90d": 1},
-        last_activity=utcnow(), n_trades=50, n_trades_30d=20,  # F2b (v5) exige
+        last_activity=utcnow(), n_trades=50, n_trades_30d=20, n_trades_7d=5,  # F2b/F2c (v5/v10) exigem
         trades_per_day=300.0,
         median_hold_hours=0.1, twrr_30d_pct=-50.0, max_dd_90d_pct=10.0,
         top3_concentration=0.1, avg_leverage=5.0, liquid_volume_share=1.0,
@@ -308,7 +312,7 @@ def v7_base_candidate(**overrides: Any) -> Candidate:
 
     base = dict(
         address="0x7", windows_pnl={"7d": 1, "30d": 1, "60d": 1, "90d": 1},
-        last_activity=utcnow(), n_trades=50, n_trades_30d=20,
+        last_activity=utcnow(), n_trades=50, n_trades_30d=20, n_trades_7d=5,
         trades_per_day=2.0, median_hold_hours=24.0, twrr_30d_pct=15.0,
         max_dd_90d_pct=10.0, top3_concentration=0.1, avg_leverage=5.0,
         liquid_volume_share=1.0, fills_per_day=4.0, pnl_over_volume=0.01,
@@ -335,8 +339,8 @@ def test_v7_baseline_passes_all_filters() -> None:
     ({"max_current_leverage": 20.0}, "F7b"),
     # dossiê #6: SOL a 7.5% da liquidação (F12 desabilitado no config de produção)
     ({"liq_distance_pct": 7.5}, "F13"),
-    # dossiê #6: equity $56k, fills de ~$100 → cópia de $1.79 com $1k
-    ({"equity": 56_000.0, "median_fill_notional": 100.0}, "F11"),
+    # dossiê #6: equity $50k, fills de ~$100 → cópia de $2.00 com $1k
+    ({"equity": 50_000.0, "median_fill_notional": 100.0}, "F11"),
     # cópia simulada não paga o custo
     ({"sim_net_pnl_usd": -3.2}, "F15"),
 ])
@@ -367,7 +371,7 @@ def test_v7_null_thresholds_disable_new_filters() -> None:
     from engine.strategies.copy_trade.funnel import hard_filters
 
     cfg = copy.deepcopy(CFG)
-    for key in ("f7b_max_current_leverage", "f12_min_available_margin_pct",
+    for key in ("f2c_min_trades_7d", "f7b_max_current_leverage", "f12_min_available_margin_pct",
                 "f13_min_liq_distance_pct", "f15_sim_window_days",
                 "f16_min_coverage_days", "f17_min_sim_net_usd",
                 "f19_max_sim_dd_pct", "f20_max_trader_equity_usd"):

@@ -1,6 +1,5 @@
--- 0008_discovery_v10 (Supabase/Postgres) — espelho das colunas v10 (F2c, win_rate_30d).
--- Passo MANUAL pós-deploy:
---   psql "$DATABASE_URL" -f db/migrations/supabase/0008_discovery_v10.sql
+-- 0008_discovery_v10 — filtros de atividade recente e win rate 30d.
+-- Referência canônica das variáveis: docs/discovery_logic_v9.md
 
-ALTER TABLE traders ADD COLUMN IF NOT EXISTS n_trades_7d INTEGER;
-ALTER TABLE traders ADD COLUMN IF NOT EXISTS win_rate_30d DOUBLE PRECISION;
+ALTER TABLE traders ADD COLUMN n_trades_7d INTEGER;      -- v10: F2c trades fechados nos últimos 7d
+ALTER TABLE traders ADD COLUMN win_rate_30d REAL;        -- v10: win rate só dos últimos 30d (não 60d)
