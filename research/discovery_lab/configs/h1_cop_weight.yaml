@@ -1,0 +1,9 @@
+# H1 — copiabilidade promovida no score: 15% → 30%
+# (redistribui: consistência 25→20, PF 20→15, ROI 15→10; DD e expectância mantidos)
+score_weights:
+  consistency: 0.20
+  profit_factor: 0.15
+  roi_log: 0.10
+  drawdown_quality: 0.15
+  copyability: 0.30
+  net_expectancy: 0.10

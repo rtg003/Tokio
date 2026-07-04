@@ -1,0 +1,28 @@
+# ============================================================================
+# CONFIG v9 CANDIDATA — vencedora do laboratório walk-forward (2026-07-04)
+# NÃO está em produção. Overrides sobre a config v8; a integração exigirá
+# bump de logic_version + migração dos gates `lab` p/ o funil real.
+#
+# Evidência (4 cortes semanais, carteira top-10, cópia $1k, 30d fora da
+# amostra): medianas +54.54 / +220.95 / +770.08 / -57.12*, hit 1.0/1.0/0.67/
+# 0.33*, vs baseline aleatório ~+0.6-18 e rekt ~0.
+# *corte 3 é data-limitado (fills 90d → só 39d de cobertura de qualificação).
+# Racional completo: RESULTADOS.md
+# ============================================================================
+entry_rule:
+  min_positive_windows: 0      # PnL de janela NÃO decide mais a entrada —
+  required_windows: []         # a simulação de cópia decide (Spearman maior)
+hard_filters:
+  f1_recent_activity_days: 30  # era 7 — atividade é medida pela SIMULAÇÃO
+  f2_min_closed_trades: 12     # era 30 — amostra mínima p/ a simulação valer
+  f2b_min_trades_30d: 3
+  f5_max_drawdown_90d_pct: 100.0  # DD do TRADER solto; o DD que importa é o
+                                  # da CÓPIA (max_sim_dd_pct abaixo)
+score_adjustments:
+  min_score_for_suggestion: 0.0   # score vira informativo; gates são de cópia
+lab:
+  rank_by: stage4_net          # ranking = net da cópia simulada em A
+  min_stage4_net: 10.0         # cópia precisa RENDER (>$10 em 60d com $1k)
+  max_equity_usd: 150000       # preditor mais forte: equity menor copia melhor
+  sim_positive_halves: true    # edge nas DUAS metades de A (mata sortudo)
+  max_sim_dd_pct: 25.0         # DD máximo da curva da CÓPIA em A

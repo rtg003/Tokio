@@ -1,0 +1,5 @@
+# H8 — ranking pelo net do Estágio 4 em A (quintil superior: mediana +71 em B)
+# com piso positivo.
+lab:
+  rank_by: stage4_net
+  min_stage4_net: 5.0

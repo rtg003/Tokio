@@ -1,0 +1,3 @@
+# H5 — copiabilidade como GATE binário (>= 0.55) além do peso no score
+lab:
+  min_copyability: 0.55
