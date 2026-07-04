@@ -2,3 +2,7 @@ lab.db
 cache.db
 *.db-journal
 runs/
+cache.db-shm
+cache.db-wal
+lab.db-shm
+lab.db-wal
