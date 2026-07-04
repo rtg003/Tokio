@@ -823,3 +823,113 @@ imports do teste.
 + 8 do Bloco 3). Nota: `tests/test_discovery_funnel.py` tem 19 falhas
 pré-existentes (não relacionadas ao Bloco 3 — falham no commit `f19c54c`
 original; são ligadas ao schema/config de discovery v10).
+
+## UPDATE-0010 · 2026-07-04 · Status: PENDENTE
+
+Origem: PR #27 do Hermes "operacionalizar copy trade (Blocos 1-9)"
+Tipo: operacao + logica_discovery + infra + skill
+
+Resumo executivo: o Hermes implementou a operacionalização completa do copy
+trade sobre o discovery v10. Oito blocos de mudança (código + config + infra
++ rotina), com autorização humana explícita (exceção ao desempate AGENTS.md
+§4). O Cursor precisa tomar ciência de todas as semânticas novas.
+
+### Bloco 1 — Acoplamento v10 à tabela traders
+- Verificado: scan v10 em produção, colunas v9/v10 preenchidas, migrations
+  Supabase 0007+0008 aplicadas.
+- `discovery inspect <addr> --persist --origin {manual,hermes,copin,hyperx}`:
+  roda a régua completa (deep_dive → F1-F20 → score → simulação) e grava na
+  tabela traders. Reprovado persiste como REJEITADO. Pinned: só atualiza
+  métricas, não rebaixa.
+- Arquivo: `engine/strategies/copy_trade/discovery.py` (cmd_inspect)
+
+### Bloco 2 — Migrations Supabase automáticas no deploy
+- Criado `deploy/apply_supabase_migrations.sh`: lê DATABASE_URL do .env,
+  cria tabela `schema_migrations_supabase(filename PK, applied_at)`, aplica
+  em ordem todo `db/migrations/supabase/*.sql` não registrado. Falha não
+  derruba o deploy (exit 0).
+- `deploy/autodeploy.sh`: chama o script após `engine.cli db migrate`.
+- Migration de teste `0009_test_tracking.sql` criada e validada.
+- **ESTE RESOLVE O BUG RECORRENTE** de migrations Supabase não aplicadas
+  (incidentes 1 do UPDATE-0006 do Hermes). O Cursor não precisa mais pedir
+  `psql -f` manual pós-deploy.
+
+### Bloco 3 — Flag inviolável copy_pinned
+- Migration 0009: `ALTER TABLE traders ADD COLUMN copy_pinned INTEGER NOT NULL DEFAULT 0`
+- `traders_store.py`: `set_status` para DRY_RUN/COPIANDO seta `copy_pinned=1`
+  automaticamente. Nova função `unpin_trader(db, addr, *, by, human_gate)`
+  que SÓ funciona com `human_gate=True` E status fora de DRY_RUN/COPIANDO.
+- `funnel.py::persist_scan`: traders com `copy_pinned=1` têm métricas
+  atualizadas mas NUNCA são rebaixados — nem que reprovem em todos os
+  filtros. O funil registra no report que "pinned reprovaria" como
+  INFORMAÇÃO, não como ação.
+- CLI: `trader unpin <addr> --yes` (exige human_gate)
+- Dashboard: chip "pinned" na tabela de traders
+- Testes: (i) pinned sobrevive re-scan; (ii) unpin recusado em COPIANDO;
+  (iii) unpin ok após PAUSADO; (iv) set_status DRY_RUN seta pinned
+- Arquivos: `traders_store.py`, `funnel.py`, `engine/cli.py`,
+  `web/app/(app)/page.tsx`, `tests/test_traders_store.py`,
+  `db/migrations/0009_copy_pinned.sql` + espelho Supabase
+
+### Bloco 4-5 — Relatório diário + Recomendação profissional
+- Cron do briefing (12:00 SP) atualizado para incluir:
+  - Tabela v10 ordenada por `sim_net_pnl_usd` (não score)
+  - Estatísticas do funil (mortes por filtro)
+  - Novos SUGERIDOS vs ontem
+  - Estado dos COPIANDO/pinned
+  - Seção "RECOMENDAÇÃO DO DIA" (até 2 traders, pode ser 0) com análise
+    de mesa proprietária: net simulado → expectância → DD cópia → cobertura
+    → metades → executabilidade → risco atual → diversificação → config
+    sugerida (teto 3x)
+
+### Bloco 6 — Cópia por comando humano
+- Fluxo interativo: quando o humano disser "copia o trader X", o Hermes
+  conduz diálogo sobre parâmetros (capital, max_leverage, blocked_assets,
+  DRY_RUN vs live) e executa via `trader approve` (que seta copy_pinned=1).
+
+### Bloco 7 — Monitoramento de trades
+- Novo cron "Tokio Copy Trade Monitor" (a cada 15 min): verifica traders
+  em DRY_RUN/COPIANDO, consulta fills de `ct_*` das últimas 15 min,
+  notifica o humano de cada novo trade espelhado.
+
+### Semânticas novas que o Cursor DEVE preservar:
+1. **copy_pinned**: setada em DRY_RUN/COPIANDO via gate humano. Re-scans
+   NUNCA rebaixam pinned. Remoção exige dois atos humanos: pausar/desativar
+   primeiro, depois unpin.
+2. **apply_supabase_migrations.sh**: migrations Supabase agora são
+   automáticas no autodeploy. Novas migrations em `db/migrations/supabase/`
+   são aplicadas sem intervenção manual.
+3. **inspect --persist**: roda a régua e grava na tabela. Pinned: só
+   atualiza métricas. Reprovado: REJEITADO com motivo.
+4. **Relatório/recomendação**: ranking por net simulado, não score.
+
+### Migrations novas:
+- 0009_copy_pinned (local + Supabase): `copy_pinned INTEGER NOT NULL DEFAULT 0`
+- 0009_test_tracking (Supabase): tabela de teste do Bloco 2
+
+### Arquivos alterados/criados (lista completa):
+- `deploy/apply_supabase_migrations.sh` (NOVO)
+- `deploy/autodeploy.sh` (modificado)
+- `db/migrations/0009_copy_pinned.sql` (NOVO)
+- `db/migrations/supabase/0009_copy_pinned.sql` (NOVO)
+- `db/migrations/supabase/0009_test_tracking.sql` (NOVO)
+- `engine/strategies/copy_trade/discovery.py` (inspect --persist --origin)
+- `engine/strategies/copy_trade/funnel.py` (persist_scan respeita pinned)
+- `engine/strategies/copy_trade/traders_store.py` (set_status pinned, unpin_trader)
+- `engine/cli.py` (trader unpin)
+- `web/app/(app)/page.tsx` (chip pinned)
+- `web/app/globals.css` (estilo do chip)
+- `tests/test_traders_store.py` (testes do pinned)
+- `docs/CURSOR_UPDATES.md` (esta entrada)
+
+### Validação:
+- `cd /home/tokio/Tokio && .venv/bin/python -m pytest tests/ -q` (testes
+  sendo corrigidos por subagent — 133 passed, 20 being fixed)
+- `bash deploy/apply_supabase_migrations.sh` → applied=8 skipped=0 (1ª run)
+- `python -m engine.cli trader list` → mostra coluna pinned
+- Cron de monitoramento ativo (a cada 15 min)
+- Skill atualizada (área do Hermes)
+
+### Skill:
+- `skill/SKILL.md` atualizada com: inspect --persist, copy_pinned, fluxo
+  de cópia por comando humano, formato do relatório/recomendação.
