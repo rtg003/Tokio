@@ -275,6 +275,8 @@ export default async function Dashboard({
                       <th className="num">Alav. atual</th>
                       <th className="num">Margem disp.</th>
                       <th className="num">Cópia sim.</th>
+                      <th className="num">Cobertura</th>
+                      <th className="num">Metades A</th>
                       <th className="num">Equity</th>
                       <th>Ativos</th>
                       <th>Últ. atividade</th>
@@ -366,6 +368,17 @@ export default async function Dashboard({
                             {t.sim_net_pnl_usd === null || t.sim_net_pnl_usd === undefined
                               ? "—"
                               : fmtSigned(t.sim_net_pnl_usd, 2)}
+                          </td>
+                          {/* v9: cobertura (F16) e metades da cópia (F18) */}
+                          <td className="num">
+                            {t.coverage_days === null || t.coverage_days === undefined
+                              ? "—"
+                              : `${fmtNum(t.coverage_days, 0)}d`}
+                          </td>
+                          <td className="num">
+                            {t.sim_half_new_net === null || t.sim_half_new_net === undefined
+                              ? "—"
+                              : `${t.sim_half_old_net === null || t.sim_half_old_net === undefined ? "n/d" : fmtSigned(t.sim_half_old_net, 0)} / ${fmtSigned(t.sim_half_new_net, 0)}`}
                           </td>
                           <td className="num">
                             {t.equity === null || t.equity === undefined
