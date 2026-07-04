@@ -8,6 +8,7 @@ from engine.strategies.copy_trade.traders_store import (
     list_traders,
     operable_traders,
     set_status,
+    unpin_trader,
     update_exec_config,
     upsert_candidate,
     write_cohort_snapshot,
@@ -108,3 +109,91 @@ def test_cohort_snapshot_written(db) -> None:
     rows = db.query("SELECT * FROM cohort_snapshots ORDER BY cohort")
     assert [r["cohort"] for r in rows] == ["position", "swing"]
     assert rows[1]["n_traders"] == 3 and rows[1]["logic_version"] == 1
+
+
+# -- Bloco 3: flag inviolável copy_pinned -------------------------------------
+
+def test_set_status_dry_run_sets_copy_pinned(db) -> None:
+    """(iv) entrar em DRY_RUN via gate humano fixa copy_pinned = 1."""
+    upsert_candidate(db, address=ADDR, score=80.0)
+    set_status(db, ADDR, "DRY_RUN", by="cli_gate2_humano", human_gate=True)
+    r = list_traders(db)[0]
+    assert r["copy_pinned"] == 1
+
+
+def test_set_status_copiando_via_human_by_pins(db) -> None:
+    """by contendo 'human' também fixa o pin ao ir para COPIANDO."""
+    upsert_candidate(db, address=ADDR, score=80.0)
+    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
+    set_status(db, ADDR, "COPIANDO", by="human_operator", human_gate=True)
+    r = list_traders(db)[0]
+    assert r["status"] == "COPIANDO"
+    assert r["copy_pinned"] == 1
+
+
+def test_unpin_refused_while_copiando(db) -> None:
+    """(ii) unpin recusado enquanto COPIANDO levanta ValueError."""
+    upsert_candidate(db, address=ADDR, score=80.0)
+    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
+    set_status(db, ADDR, "COPIANDO", by="human", human_gate=True)
+    try:
+        unpin_trader(db, ADDR, by="hermes", human_gate=True)
+        assert False, "devia ter levantado ValueError"
+    except ValueError as exc:
+        assert "pause" in str(exc).lower() or "desative" in str(exc).lower()
+
+
+def test_unpin_without_human_gate_raises(db) -> None:
+    """unpin sem human_gate levanta ValueError."""
+    upsert_candidate(db, address=ADDR, score=80.0)
+    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
+    set_status(db, ADDR, "PAUSADO", by="control_api")
+    try:
+        unpin_trader(db, ADDR, by="hermes", human_gate=False)
+        assert False, "devia ter levantado ValueError"
+    except ValueError as exc:
+        assert "human_gate" in str(exc)
+
+
+def test_unpin_accepted_after_paused(db) -> None:
+    """(iii) unpin aceito após PAUSADO com human_gate=True."""
+    upsert_candidate(db, address=ADDR, score=80.0)
+    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
+    set_status(db, ADDR, "PAUSADO", by="control_api")
+    res = unpin_trader(db, ADDR, by="hermes", human_gate=True)
+    assert res["ok"]
+    r = list_traders(db)[0]
+    assert r["copy_pinned"] == 0
+    # evento logado
+    ev = db.query("SELECT payload FROM events WHERE event_type = 'trader.unpinned'")
+    assert ev and "hermes" in ev[-1]["payload"]
+
+
+def test_rescan_pinned_rejecting_keeps_status_and_reason(db) -> None:
+    """(i) re-scan com pinned reprovando em F17 → status e reject_reason
+    intactos. Simula o caminho do funnel.persist_scan para um trader pinned
+    que o re-scan marcaria como rejeitado."""
+    from engine.strategies.copy_trade.funnel import Candidate, ScanResult, persist_scan
+
+    upsert_candidate(db, address=ADDR, score=80.0)
+    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
+    # trader está pinned e em DRY_RUN
+
+    # cria um candidato reprovado pelo re-scan (reject_reason preenchido)
+    c = Candidate(address=ADDR, name="whale", score=42.0)
+    c.reject_reason = "F17: reprovação simulada do re-scan"
+    c.cohort = "smart"
+    result = ScanResult(scan_id="t1", approved=[], rejected=[c],
+                        funnel_stats={}, rekt_sample=[])
+    cfg = {"logic_version": 9}
+    persist_scan(db, result, cfg)
+
+    r = list_traders(db)[0]
+    # status e reject_reason intactos — o re-scan NÃO rebaixa pinned
+    assert r["status"] == "DRY_RUN"
+    # reject_reason não foi sobrescrito pela reprovação do re-scan
+    assert r["reject_reason"] is None or "F17" not in (r["reject_reason"] or "")
+    # copy_pinned permanece 1
+    assert r["copy_pinned"] == 1
+    # métricas foram atualizadas
+    assert r["score"] == 42.0

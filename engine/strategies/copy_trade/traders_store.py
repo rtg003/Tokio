@@ -125,6 +125,16 @@ def set_status(db: Database, address: str, new_status: str, *, by: str,
 
     db.execute("UPDATE traders SET status = ?, updated_at = ? WHERE address = ?",
                (new_status, utcnow(), address))
+
+    # Bloco 3 — flag inviolável: ao entrar em DRY_RUN/COPIANDO via gate humano
+    # (by contém 'human' ou 'gate'), fixa copy_pinned = 1. O re-scan passa a
+    # atualizar métricas sem jamais rebaixar/rejeitar o trader. Só removido
+    # por unpin_trader(human_gate=True) com a cópia pausada.
+    if new_status in ("DRY_RUN", "COPIANDO") and (
+            "human" in by.lower() or "gate" in by.lower() or human_gate):
+        db.execute("UPDATE traders SET copy_pinned = 1 WHERE address = ?",
+                   (address,))
+
     updated = db.query("SELECT * FROM traders WHERE address = ?", (address,))[0]
     db.upsert("traders", updated, ("address",))
     if logger:
@@ -136,6 +146,35 @@ def set_status(db: Database, address: str, new_status: str, *, by: str,
                         payload={"address": address, "from": current,
                                  "to": new_status, "by": by})
     return {"ok": True, "from": current, "status": new_status}
+
+
+def unpin_trader(db: Database, address: str, *, by: str,
+                 human_gate: bool = False,
+                 logger: Any | None = None) -> dict[str, Any]:
+    """Remove a flag copy_pinned (Bloco 3). Inviolável: exige human_gate=True
+    E que o trader NÃO esteja em DRY_RUN/COPIANDO (cópia precisa ser pausada
+    ou desativada antes). Levanta ValueError em caso de violação."""
+    address = address.lower()
+    if not human_gate:
+        raise ValueError("unpin exige human_gate=True")
+    rows = db.query("SELECT status, copy_pinned FROM traders WHERE address = ?",
+                    (address,))
+    if not rows:
+        raise ValueError(f"trader desconhecido: {address}")
+    current_status = rows[0]["status"]
+    if current_status in ("DRY_RUN", "COPIANDO"):
+        raise ValueError("pause/desative a cópia antes de unpin")
+    db.execute("UPDATE traders SET copy_pinned = 0, updated_at = ? WHERE address = ?",
+               (utcnow(), address))
+    updated = db.query("SELECT * FROM traders WHERE address = ?", (address,))[0]
+    db.upsert("traders", updated, ("address",))
+    payload = {"address": address, "by": by}
+    if logger:
+        logger.info("trader.unpinned", payload)
+    else:
+        db.insert_event(ts=utcnow(), strategy_id=strategy_id_for(address),
+                        event_type="trader.unpinned", level="info", payload=payload)
+    return {"ok": True, "status": current_status, "copy_pinned": 0}
 
 
 def update_exec_config(db: Database, address: str, *, by: str,

@@ -803,6 +803,47 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
     opera) e snapshots de posicionamento por coorte/ativo."""
     lv = int(cfg["logic_version"])
     for c in result.approved + result.rejected:
+        # Bloco 3 — flag inviolável: trader com copy_pinned = 1 (em cópia) é
+        # protegido pelo gate humano. O re-scan ATUALIZA métricas (score,
+        # janelas, simulações) mas NUNCA escreve reject_reason, nunca chama
+        # set_status e nunca rebaixa. Apenas registramos no report que o
+        # pinned reprovaria nos filtros (informativo, sem efeito colateral).
+        pin_rows = db.query("SELECT copy_pinned FROM traders WHERE address = ?",
+                            (c.address.lower(),))
+        is_pinned = bool(pin_rows and pin_rows[0]["copy_pinned"] == 1)
+
+        if is_pinned and c.reject_reason:
+            # métricas continuam sendo upsertadas abaixo, mas reject_reason
+            # não persiste; o status/reject_reason anteriores ficam intactos.
+            pinned_would_reject = c.reject_reason
+            c.reject_reason = None
+        else:
+            pinned_would_reject = None
+
+        extras = {
+            "n_trades_30d": c.n_trades_30d,
+            "n_trades_7d": c.n_trades_7d,
+            "win_rate_30d": c.win_rate_30d,
+            "avg_holding_hours": c.median_hold_hours,
+            "avg_leverage": c.avg_leverage,
+            "equity": c.equity,
+            "top_assets": json.dumps(c.top_assets, ensure_ascii=False),
+            "last_activity": c.last_activity,
+            "windows_positive": c.windows_positive,
+            "history_truncated": 1 if c.history_truncated else 0,
+            "max_current_leverage": c.max_current_leverage,
+            "available_margin_pct": c.available_margin_pct,
+            "sim_net_pnl_usd": c.sim_net_pnl_usd,
+            "sim_expectancy_usd": c.sim_expectancy_usd,
+            "sim_max_dd_pct": c.sim_max_dd_pct,
+            "sim_factor": c.sim_factor,
+            "coverage_days": c.coverage_days,
+            "sim_half_old_net": c.sim_half_old_net,
+            "sim_half_new_net": c.sim_half_new_net,
+        }
+        # pinned: NUNCA escreve reject_reason — o valor anterior fica intacto.
+        if not is_pinned:
+            extras["reject_reason"] = c.reject_reason
         upsert_candidate(
             db, address=c.address, name=c.name, score=c.score if not c.reject_reason else None,
             cohort=c.cohort or None, twrr_30d=c.twrr_30d_pct,
@@ -810,29 +851,15 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             windows=c.windows_pnl, profit_factor=c.pf, win_rate=c.win_rate,
             max_drawdown=c.max_dd_90d_pct, liq_distance=c.liq_distance_pct,
             logic_version=lv,
-            extras={
-                "n_trades_30d": c.n_trades_30d,
-                "n_trades_7d": c.n_trades_7d,
-                "win_rate_30d": c.win_rate_30d,
-                "avg_holding_hours": c.median_hold_hours,
-                "avg_leverage": c.avg_leverage,
-                "equity": c.equity,
-                "top_assets": json.dumps(c.top_assets, ensure_ascii=False),
-                "last_activity": c.last_activity,
-                "windows_positive": c.windows_positive,
-                "reject_reason": c.reject_reason,
-                "history_truncated": 1 if c.history_truncated else 0,
-                "max_current_leverage": c.max_current_leverage,
-                "available_margin_pct": c.available_margin_pct,
-                "sim_net_pnl_usd": c.sim_net_pnl_usd,
-                "sim_expectancy_usd": c.sim_expectancy_usd,
-                "sim_max_dd_pct": c.sim_max_dd_pct,
-                "sim_factor": c.sim_factor,
-                "coverage_days": c.coverage_days,
-                "sim_half_old_net": c.sim_half_old_net,
-                "sim_half_new_net": c.sim_half_new_net,
-            },
+            extras=extras,
         )
+        if is_pinned:
+            # NUNCA chama set_status em pinned — status e reject_reason
+            # anteriores permanecem intactos. Apenas log informativo.
+            if pinned_would_reject and logger:
+                logger.info("discovery.pinned_would_reject",
+                            {"address": c.address, "reason": pinned_would_reject})
+            continue
         if c.reject_reason:
             set_status(db, c.address, "REJEITADO", by=f"discovery_v{lv}", logger=logger)
         else:

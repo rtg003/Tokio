@@ -35,7 +35,7 @@ flowchart LR
 
 | Chave | Significado | Valor | Por quê | Evidência/efeito |
 |---|---|---|---|---|
-| `logic_version` | versão da lógica de discovery que produziu as métricas | 9 | bump após laboratório offline e correção do modelo de cópia | go/no-go v9: medianas +54/+368/+336 nos 3 cortes válidos |
+| `logic_version` | versão da lógica de discovery que produziu as métricas | 10 | bump após laboratório offline e correção do modelo de cópia | go/no-go v9: medianas +54/+368/+336 nos 3 cortes válidos |
 | `collection.leaderboard_top_n` | parâmetro de coleta/custo do scan | 5000 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.deep_dive_max` | parâmetro de coleta/custo do scan | 150 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.request_budget` | parâmetro de coleta/custo do scan | 1100 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
@@ -63,10 +63,11 @@ flowchart LR
 | `sources.apify_hl_scraper.max_addresses` | fonte externa opcional de endereços candidatos | 100 | terceiros só alimentam wallets; métricas são nossas | sem dependência dura; flags off exceto HyperTracker |
 | `entry_rule.min_positive_windows` | mínimo de janelas PnL positivas | 0 janelas | desativado: janelas de PnL quase não predizem lucro da cópia | Spearman windows_pos +0.075 |
 | `entry_rule.required_windows` | janelas obrigatórias de PnL positivo | nenhuma | desativado; a entrada agora é por simulação da cópia | v9: F16-F19 substituem regra de entrada |
-| `hard_filters.f1_recent_activity_days` | atividade recente máxima para não considerar abandonado | 21 dias | atividade é julgada pela simulação; 21d só corta abandono real | h11/h12: afrouxar atividade aumentou pool sem quebrar direção |
+| `hard_filters.f1_recent_activity_days` | atividade recente máxima para não considerar abandonado | 7 dias | v10: voltou para 7 (era 21 na v9 — 21 deixava passar traders parados há 3 semanas) | h11/h12: afrouxar atividade aumentou pool sem quebrar direção |
 | `hard_filters.f2_min_closed_trades` | amostra mínima de trades fechados | 15 trades | amostra suficiente para simulação sem matar demais o pool | lab: F2=30 matava candidatos antes do ranking |
 | `hard_filters.f2_min_history_days` | filtro binário do funil | 60 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f2b_min_trades_30d` | atividade mínima nos 30d | 3 trades | mantém sinal recente mínimo | lab: simulação decide a qualidade |
+| `hard_filters.f2c_min_trades_7d` | atividade mínima nos 7d | 5 trades | v10: trader sem 5 trades fechados nos últimos 7d = inativo, não tem o que copiar AGORA | corta trader que passou F1 mas está parado nesta semana |
 | `hard_filters.f3_min_avg_holding_hours` | filtro binário do funil | null | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f3_max_trades_per_day` | filtro binário do funil | null | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f4_min_twrr_30d_pct` | filtro binário do funil | null | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
@@ -90,7 +91,7 @@ flowchart LR
 | `hard_filters.f17_min_sim_net_usd` | lucro líquido mínimo da cópia simulada | $10 | a cópia precisa pagar mais que ruído/custos | quintil superior de sim A: mediana +$71 em B |
 | `hard_filters.f18_sim_positive_halves` | exigir edge nas metades da janela | true | mata sortudo de uma perna só | corte 2: mediana foi de -$94 para +$770 |
 | `hard_filters.f19_max_sim_dd_pct` | drawdown máximo da curva da cópia simulada | 25% | risco que importa é o da cópia | perdedores tinham DD 56–75% já visível em A |
-| `hard_filters.f20_max_trader_equity_usd` | teto de equity do trader para copiar com $1k | $150k | conta menor transfere mais edge para $1k | maior preditor: Spearman equity_log -0.227 |
+| `hard_filters.f20_max_trader_equity_usd` | teto de equity do trader para copiar com $1k | $50k | v10: era $150k — $50k é o sweet spot para cópia com $1k (ratio 0.02x, notional ~$15-50, acima do mínimo $10); traders com $50-150k geram cópias de $3-10 e slippage proporcional maior | maior preditor: Spearman equity_log -0.227 |
 | `copy_simulation.window_days` | janela de replay da cópia | 60 dias | usa histórico cheio de fills; metades de 30d | h13/h15: duas metades foram preditivas |
 | `copy_simulation.latency_slippage_pct` | custo estimado de latência por perna | 0.03% | modelo simples para 200ms–2s sem tick data | laboratório desconta esse custo em todo replay |
 | `copy_simulation.max_copy_leverage` | teto de alavancagem da nossa cópia | 3x | equilíbrio entre executabilidade e sobrevivência | corrige top 1: fill virava 128x sem teto |

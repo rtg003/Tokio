@@ -339,6 +339,11 @@ export default async function Dashboard({
                         <span className={`chip ${traderChip[t.status] ?? "dry"}`}>
                           {t.status}
                         </span>
+                        {t.copy_pinned === 1 && (
+                          <span className="chip pinned" title="copy_pinned — protegido do re-scan">
+                            📌
+                          </span>
+                        )}
                       </td>
                       {expanded && (
                         <>
