@@ -313,7 +313,7 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
   metades positivas e cópia capada a 3x. Go controlado: PR draft e recomendação
   de 1–2 semanas em sombra antes de qualquer Gate 2.
 
-### Validação real v9 (workspace, scan full-budget `v9-full-scan`, 2026-07-04)
+### Validação real v9 adicional (workspace, scan full-budget `v9-full-scan`, 2026-07-04)
 
 - 5000 coletados, 150 aprofundados, 148 novos via fontes externas (HyperTracker),
   841 requests, 1115.8s.
@@ -325,5 +325,5 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
   2. `0x482954976e…` — net simulado +$960.00, score 82.03, cobertura 59.9d,
      metades +$307.42 / +$652.58, DD da cópia 4.83%, equity $34.6k.
 - Leitura: validação real confirma que os filtros F16-F20 cortam agressivamente e
-  só deixam passar cópias simuladas fortes. Como há apenas 2 aprovados, o PR deve
-  permanecer draft/sombra; não promover para execução real sem observação e Gate 2.
+  só deixam passar cópias simuladas fortes. Como há apenas 2 aprovados, manter em
+  modo sombra/draft; não promover para execução real sem observação e Gate 2.
