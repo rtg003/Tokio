@@ -184,3 +184,45 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
 - **Resultado esperado**: candidatos aprofundados são majoritariamente
   ativos nesta semana, não baleias inativas. Mais traders copiáveis
   (equity $5k-$500k) entram no funil.
+
+## logic_version: 7 — copiabilidade real (2026-07-04)
+
+- **Autor**: Cursor (construtor), por diretiva humana; spec no UPDATE-0007 do
+  Hermes (`docs/CURSOR_UPDATES.md`) — dossiê profundo dos 2 melhores do scan v6.
+- **Motivo (justificativa numérica)**: o scan v6 aprovou 7, mas o dossiê do
+  Hermes concluiu que NENHUM era copiável. O #1 (score 91.84): BTC LONG 20x,
+  $0 de margem disponível, PnL concentrado em não-realizado ($63K), dia de
+  −$16K na semana. O #6 (77.91, o melhor): 100% em margem, SOL a 7.5% da
+  liquidação, equity $56K → cópia com $1K geraria trades de ~$1.80. O score
+  media desempenho histórico; nenhum filtro olhava as posições ABERTAS no
+  momento do scan, e o F11 tinha bug (assumia trade = 5% do equity em vez de
+  medir os fills — estimava $50 de cópia onde o real era $1.80).
+- **O que mudou (antes → depois)**:
+  - **F7b (novo)**: alavancagem ATUAL — max da lev das posições abertas
+    ≤ 10x (o F7 mede a média histórica; o trader pode estar 20x agora com
+    média 13x). Sem posição aberta = sem evidência, passa.
+  - **F12 (novo)**: margem disponível ≥ 10% do accountValue
+    (`totalMarginUsed` do clearinghouse). Available $0 = qualquer movimento
+    contra liquida — os DOIS dossiês tinham $0.
+  - **F13 (novo)**: distância de liquidação ≥ 15%, medida do **MARK price**
+    (`positionValue/|szi|`, fallback entry). Correção embutida: o cálculo
+    antigo usava a ENTRADA como referência — posição que já andou muito
+    escondia o risco real. A penalidade de score (−10) subiu de <10% para
+    <20% (abaixo de 15% o F13 já rejeita; a penalidade cobre a faixa 15–20%).
+  - **F15 (novo)**: simulação retroativa de cópia — "copiando este trader
+    com $1K nos últimos 30d, qual o PnL líquido de taxa (0.045%) + slippage
+    (0.02%) por perna?" Se ≤ 0, rejeita. Nota matemática: o net escala
+    linearmente com o capital, então o SINAL independe do valor copiado —
+    o capital afeta a executabilidade (F11). Usa só PnL REALIZADO: rejeitar
+    lucro 100% não-realizado é intencional (perfil do dossiê #1).
+  - **F11 corrigido** (o "F14" do UPDATE-0007): notional mediano REAL dos
+    fills × (mirror_capital/equity) ≥ $10. Antes: placeholder `equity × 5%`
+    nos dois ramos de um if — bug desde a v2.
+  - Novas colunas persistidas (migration 0005): `max_current_leverage`,
+    `available_margin_pct`, `sim_net_pnl_usd` — visíveis no dashboard
+    (modo expandido) e no rationale/report dos aprovados.
+- **O que NÃO mudou**: coleta (v6), entry_rule, pesos do score, F1–F10,
+  orçamento. Filtros novos usam dados já buscados — zero requests extras.
+- **Resultado esperado**: aprovado = copiável por construção (margem livre,
+  lev sã, longe da liquidação, cópia simulada lucrativa e executável).
+  Fixture de teste: os perfis dos 2 dossiês são rejeitados (F7b/F12/F13/F11).
