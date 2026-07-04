@@ -39,6 +39,9 @@ sudo -u "$APP_USER" env GIT_SSH_COMMAND="$GIT_SSH" git pull --ff-only origin "$B
 # engine
 sudo -u "$APP_USER" bash -c "cd $APP_DIR && .venv/bin/pip install -q -e . && .venv/bin/python -m engine.cli db migrate"
 
+# migrations Supabase (Postgres) — falha NÃO derruba o deploy
+bash /home/tokio/Tokio/deploy/apply_supabase_migrations.sh || true
+
 # web (NEXT_PUBLIC_* é build-time: exporta o .env antes)
 sudo -u "$APP_USER" bash -c "$NVM_SH cd $APP_DIR/web \
   && set -a && . ../.env && set +a \

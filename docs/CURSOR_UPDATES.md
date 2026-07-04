@@ -729,3 +729,45 @@ Ações do Cursor:
 
 Validação: scan v10 dispara automaticamente no próximo start do engine.
 Verificar events por logic_updated (9→10).
+
+## UPDATE-0009 · 2026-07-04 · Status: PENDENTE
+
+Origem: PR do Hermes "feat(deploy): migrations Supabase automáticas no
+autodeploy (Bloco 2)"
+Tipo: infra + operacao
+
+Resumo: Migrations Supabase (Postgres) agora são aplicadas 100%
+automaticamente pelo autodeploy, sem passo manual pós-deploy. Antes cada
+migration Supabase exigia `psql ... -f` manual na VPS após deploy — isso
+quebrava quando esquecido (replicator sem colunas, dashboard sem dados).
+
+Mudanças:
+1. deploy/apply_supabase_migrations.sh (NOVO):
+   - Lê DATABASE_URL do .env (/home/tokio/Tokio/.env)
+   - Cria tabela de controle schema_migrations_supabase(filename PK,
+     applied_at) se não existir
+   - Aplica em ordem alfabética todo db/migrations/supabase/*.sql não
+     registrado no tracking
+   - Falha de UM arquivo: loga no stderr, NÃO derruba o deploy (exit 0)
+2. deploy/autodeploy.sh: chamada ao apply_supabase_migrations.sh logo APÓS
+   `engine.cli db migrate` (migrations SQLite locais). Falha Supabase não
+   derruba o deploy (|| true).
+3. db/migrations/supabase/0009_test_tracking.sql (NOVO): migration de teste
+   (CREATE TABLE IF NOT EXISTS _migration_test (id int)) para validar o
+   tracking automático.
+
+Ações do Cursor:
+1. Tomar ciência: a partir do próximo deploy, migrations Supabase novas em
+   db/migrations/supabase/ são aplicadas automaticamente — NÃO é mais
+   necessário pedir ao Hermes para rodar `psql -f` manual.
+2. Ao criar nova migration Supabase, basta commitar o arquivo .sql em
+   db/migrations/supabase/ com prefixo numérico (ordem alfabética). O script
+   aplica na próxima execução do autodeploy.
+3. Convenção mantida: cada migration .sql deve ser idempotente
+   (IF NOT EXISTS) — o tracking evita re-execução, mas idempotência é
+   defensiva.
+
+Validação: após próximo deploy, verificar
+`SELECT * FROM schema_migrations_supabase ORDER BY filename;` — deve listar
+0001..0009 com applied_at preenchido. A tabela _migration_test deve existir
+em Postgres.
