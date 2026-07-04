@@ -174,8 +174,6 @@ def test_rescan_pinned_rejecting_keeps_status_and_reason(db) -> None:
     intactos. Simula o caminho do funnel.persist_scan para um trader pinned
     que o re-scan marcaria como rejeitado."""
     from engine.strategies.copy_trade.funnel import Candidate, ScanResult, persist_scan
-    import yaml as _yaml
-    from pathlib import Path
 
     upsert_candidate(db, address=ADDR, score=80.0)
     set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
