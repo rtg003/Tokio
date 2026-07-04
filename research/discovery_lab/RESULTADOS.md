@@ -139,3 +139,33 @@ Lista completa: `.venv/bin/python -m research.discovery_lab.select_now --config 
 2. Ativar `sources.hypertracker` em produção (feed, flag ON, budget 5 req/scan).
 3. Rodar v8 e v9 em paralelo (v9 dry) por 1-2 semanas e comparar os aprovados.
 4. Gate 2 humano continua obrigatório para qualquer cópia real.
+
+---
+
+## 10. Revalidação pós-correções exigidas antes da integração v9
+
+Correções aplicadas antes da integração:
+
+1. **Teto de alavancagem da cópia: 3x** — `simulate_copy` agora limita o notional espelhado por fill a `mirror_capital × 3` e escala o PnL pelo mesmo fator. O caso auditado do top 1 (fill de $1,47M, cópia proporcional de $128k sobre $1k) deixa de inflar a simulação.
+2. **Cobertura mínima: 30 dias** — wallets com menos de 30 dias entre primeiro e último fill são rejeitadas por F16; o top 1 de 5 dias reprova.
+
+Resultado do walk-forward com a lógica corrigida (`v9_final`, 4 cortes):
+
+| Corte | Aprovados | Mediana net B | Soma net B | Hit-rate | Aleatório | Rekt | Veredito |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 0 | 3 | +$54,54 | +$540,92 | 100% | +$8,70 | -$0,91 | GO |
+| 1 | 1 | +$367,66 | +$367,66 | 100% | +$6,05 | -$0,11 | GO, mas amostra pequena |
+| 2 | 2 | +$335,59 | +$671,19 | 50% | ~$0 | +$0,36 | GO parcial (mediana/soma batem; hit < 60%) |
+| 3 | 2 | -$140,58 | -$281,17 | 0% | +$6,52 | +$1,05 | NO-GO temporal, data-limitado |
+
+Decisão de engenharia: **GO CONTROLADO** para integração como PR draft/sombra, não para cópia real imediata. Os cortes 0-2 continuam positivos e batem baselines; o corte 2 fica no limite de hit-rate e aprovados, e o corte 3 permanece inválido/limitado pela cobertura de 90d do dataset. Por isso o PR v9 deve recomendar 1-2 semanas em sombra antes de qualquer Gate 2.
+
+Seleção atual com a v9 corrigida: **10 aprovados**, todos com cobertura >= 30d, metades positivas e cópia capada a 3x. Top atual pós-correção:
+
+1. `0x0e708a906c47925d07ab25ca55f57be55bf56842` — net sim A +$576, DD cópia 3,6%, cobertura ok.
+2. `0x337189f12dccb10013de352f56ba34dc91b580d3` — net sim A +$142, DD 2,5%.
+3. `0x6ce22b51c9b4d72a12f692a02d9571945eb59114` — net sim A +$311, DD 6,7%.
+4. `0x046737c782c6f22ae96f52d5856ed2dbd0535201` — net sim A +$62, DD 1,8%.
+5. `0xc05ce9ac536088d25d253f4c60c79ef4122239e4` — net sim A +$1.003, DD 12,6%.
+
+Conclusão: a correção removeu o falso top 1 e preservou sinal positivo nos cortes válidos. Integração permitida como **logic_version 9 em sombra**, com Gate 2 humano mantido.

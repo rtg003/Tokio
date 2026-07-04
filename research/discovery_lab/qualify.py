@@ -22,6 +22,7 @@ from engine.strategies.copy_trade import metrics as M
 from engine.strategies.copy_trade.funnel import (
     Candidate,
     classify_style,
+    compute_copy_sims,
     entry_rule_ok,
     hard_filters,
     score_candidate,
@@ -32,21 +33,6 @@ from research.discovery_lab import store
 
 DAY_MS = 86_400_000.0
 WINDOWS = {"7d": 7, "30d": 30, "60d": 60, "90d": 90}
-
-
-def effective_latency_pct(cfg: dict[str, Any],
-                          median_hold_h: float | None) -> float:
-    """Custo de latência por perna — hipótese do lab `latency_hold_scaling`:
-    scalper de hold curto sofre MUITO mais com 200ms-2s do que swing.
-    fator = clamp(4h / hold, 0.5, 4.0); sem evidência de hold → 1.0."""
-    stage4 = cfg.get("copy_simulation") or {}
-    base = float(stage4.get("latency_slippage_pct", 0))
-    lab = cfg.get("lab") or {}
-    if not lab.get("latency_hold_scaling"):
-        return base
-    if median_hold_h is None or median_hold_h <= 0:
-        return base
-    return base * max(0.5, min(4.0, 4.0 / median_hold_h))
 
 
 def positive_weeks_30d(curve: list[tuple[float, float, float]],
@@ -189,43 +175,9 @@ def build_candidate_pit(conn: sqlite3.Connection, address: str, t_qual: float,
                   for i in range(0, len(pnl_hist) - 1, step)]
         c.weekly_stability = M.weekly_stability(weekly)
 
-    # F15 (sem latência) + Estágio 4 (com latência) DENTRO da janela A
-    cost = cfg["cost_of_copy"]
-    if fills and hf.get("f15_sim_window_days") is not None:
-        sim = M.simulate_copy(fills, c.equity, float(hf["f11_mirror_capital_usd"]),
-                              taker_fee_pct=float(cost["taker_fee_pct"]),
-                              slippage_pct=float(cost["slippage_pct"]),
-                              window_days=float(hf["f15_sim_window_days"]),
-                              now_ms=t_qual)
-        if sim is not None:
-            c.sim_net_pnl_usd = sim.net_pnl_usd
-            c.sim_copy_notional_usd = sim.median_copy_notional_usd
-    stage4 = cfg.get("copy_simulation")
-    if fills and stage4:
-        lat = effective_latency_pct(cfg, c.median_hold_hours)
-        sim4 = M.simulate_copy(
-            fills, c.equity, float(hf["f11_mirror_capital_usd"]),
-            taker_fee_pct=float(cost["taker_fee_pct"]),
-            slippage_pct=float(cost["slippage_pct"]),
-            latency_slippage_pct=lat,
-            window_days=float(stage4.get("window_days", 60)), now_ms=t_qual)
-        if sim4 is not None:
-            c.sim_stage4_net_usd = sim4.net_pnl_usd
-            c.sim_expectancy_usd = sim4.expectancy_usd
-            c.sim_max_dd_pct = sim4.max_dd_pct
-        # consistência da CÓPIA: net das duas metades de A (30d antigas + 30d
-        # recentes) — o edge copiável precisa aparecer nas DUAS.
-        # NB: simulate_copy só corta o limite INFERIOR da janela; o superior
-        # é garantido aqui filtrando os fills (bug pego na validação do lab).
-        for attr, now in (("sim_half_old_net", t_qual - 30 * DAY_MS),
-                          ("sim_half_new_net", t_qual)):
-            half_fills = [f for f in fills if f["time"] <= now]
-            h = M.simulate_copy(
-                half_fills, c.equity, float(hf["f11_mirror_capital_usd"]),
-                taker_fee_pct=float(cost["taker_fee_pct"]),
-                slippage_pct=float(cost["slippage_pct"]),
-                latency_slippage_pct=lat, window_days=30.0, now_ms=now)
-            setattr(c, attr, h.net_pnl_usd if h is not None else None)
+    # v9: simulações de cópia — IMPLEMENTAÇÃO ÚNICA do funil de produção
+    # (F15, Estágio 4 com teto de alavancagem, F16 cobertura, F18 metades)
+    compute_copy_sims(c, fills, cfg, t_qual)
 
     c.style = classify_style(c.median_hold_hours)
     c.positive_weeks = positive_weeks_30d(curve, t_qual)  # type: ignore[attr-defined]
@@ -244,43 +196,17 @@ def qualify(conn: sqlite3.Connection, address: str, t_qual: float,
     if reason:
         return c, reason
     score_candidate(c, cfg)
+    # v9: os gates de cópia (F16–F20) já rodam dentro de hard_filters acima —
+    # os hooks lab.* antigos foram promovidos a filtros reais do funil.
     lab = cfg.get("lab") or {}
-    # hipótese (análise 2026-07-04): equity menor prediz cópia melhor (ratio
-    # $1k/equity maior transfere mais do edge) — teto opcional de equity
-    max_eq = lab.get("max_equity_usd")
-    if max_eq is not None and c.equity > float(max_eq):
-        return c, f"lab_equity: {c.equity:.0f} > {max_eq}"
-    # hipótese: consistência temporal — semanas positivas nas 4 semanas de A
+    # hipótese remanescente do lab: consistência temporal por semanas
     min_weeks = lab.get("min_positive_weeks")
     if min_weeks is not None and getattr(c, "positive_weeks", 0) < int(min_weeks):
         return c, f"lab_semanas: {getattr(c, 'positive_weeks', 0)}/4 < {min_weeks}"
-    # hipótese: copiabilidade como gate binário
-    min_cop = lab.get("min_copyability")
-    if min_cop is not None and c.components is not None and \
-            c.components.copyability < float(min_cop):
-        return c, f"lab_copiabilidade: {c.components.copyability:.2f} < {min_cop}"
     min_score = float(cfg.get("score_adjustments", {}).get("min_score_for_suggestion", 0))
     if min_score > 0 and c.score < min_score:
         return c, f"score {c.score:.1f} < mínimo {min_score:.0f}"
     stage4 = cfg.get("copy_simulation")
-    # hipótese: estágio 4 como qualificador com piso > 0
-    min_net = float(lab.get("min_stage4_net", 0.0))
-    if stage4 and c.sim_stage4_net_usd is not None and c.sim_stage4_net_usd <= min_net:
-        return c, f"copy_sim_negativa: US$ {c.sim_stage4_net_usd:.2f} <= {min_net}"
-    # hipótese: DD máximo da CÓPIA simulada em A (risco da cópia, não do trader)
-    max_sim_dd = lab.get("max_sim_dd_pct")
-    if max_sim_dd is not None and c.sim_max_dd_pct is not None and \
-            c.sim_max_dd_pct > float(max_sim_dd):
-        return c, f"lab_sim_dd: {c.sim_max_dd_pct:.1f}% > {max_sim_dd}%"
-    # hipótese: cópia consistente — metade recente positiva SEMPRE; metade
-    # antiga positiva QUANDO há cobertura de dados (None = sem evidência,
-    # não reprova — honestidade com o limite de 90d de fills do dataset)
-    if lab.get("sim_positive_halves"):
-        old = getattr(c, "sim_half_old_net", None)
-        new = getattr(c, "sim_half_new_net", None)
-        if new is None or new <= 0 or (old is not None and old <= 0):
-            return c, (f"lab_sim_metades: antiga={old if old is not None else 'n/d'}"
-                       f" recente={new if new is not None else 'n/d'}")
     if stage4:
         c.sim_factor = M.copy_sim_factor(
             c.sim_stage4_net_usd if c.sim_stage4_net_usd is not None else 0.0,
