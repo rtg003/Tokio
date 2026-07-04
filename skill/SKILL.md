@@ -202,24 +202,27 @@ Contrato completo em `AGENTS.md` na raiz do repo.
 | Config operacional, skill/, crons, rotina de produção | Hermes |
 | Conflito genuíno | Ambos PARAM e notificam rtg003 |
 
-### Copy trade — discovery e traders (logic_version 6)
+### Copy trade — discovery e traders (logic_version 7)
 
 - Tabela `traders` é a fonte ÚNICA (ADR 0008). Sem YAMLs.
 - Gate: SUGERIDO → DRY_RUN/COPIANDO só com autorização humana explícita,
   inclusive em testnet. CLI: `trader approve <address>` (→ DRY_RUN),
   `trader approve <address> --live --evidence docs/<arquivo>` (→ COPIANDO).
-- Funil v3 (config: `config/discovery_config.yaml`):
-  - 4 janelas (7d/30d/60d/90d). Entrada: **≥2/4 com 30d obrigatória** (v3 —
-    era ≥3/4 com 30d+60d na v2). A 7d PODE ser negativa.
-  - 11 hard filters (F1–F11), mas na v3: **F3 (anti-scalper) OFF**,
-    **F4 (TWRR≥5%) OFF**, **F5 (max DD) 40%** (era 25%). Filtros desabilitados
-    têm threshold `null` no config — reativar = config + bump de logic_version.
-  - Score 0–100 com ajustes (+5 consistência 4/4, −10 liquidação <10%,
-    −5 crowding top-20).
-  - Scalpers agora ENTRAM com score penalizado pela copiabilidade — cite
-    `avg_holding_hours` e `n_trades_30d` ao sugerir.
+- Funil v7 (config: `config/discovery_config.yaml`):
+  - 4 janelas (7d/30d/60d/90d). Entrada: **≥2/4 com 30d obrigatória**.
+  - 15 hard filters (F1–F15):
+    - F3 (anti-scalper) OFF, F4 (TWRR≥5%) OFF, F5 (max DD) 40%.
+    - **F7b** (v7): alavancagem ATUAL ≤ 10x (max das posições abertas).
+    - **F12** (v7): margem disponível ≥ 10% — **OFF** pós-scan (null), código permanece.
+    - **F13** (v7): distância de liquidação ≥ 15% (do mark price, não entry).
+    - **F15** (v7): simulação retroativa de cópia com $1K — PnL líquido ≤ 0 reprova.
+    - **F11 corrigido** (v7): notional mediano real × (mirror_capital/equity) ≥ $10.
+  - Score 0–100 com ajustes (+5 consistência 4/4, −10 liquidação <15%,
+    −5 crowding top-20, −5 PF absurdo >10).
+  - Scalpers entram com score penalizado pela copiabilidade.
+  - Score mínimo 60 para SUGERIDO (abaixo = REJEITADO).
 - Profit factor: crédito integral até 3.0; meio-crédito 3.0–5.0 só com
-  n≥60; >5.0 não pontua. PF incl. PnL não realizado.
+  n≥60; >5.0 não pontua. PF incl. PnL não realizado. PF exibido capado em 10.0.
 - Scan diário 05:00 SP (engine scheduler, não cron externo). Re-scan
   automático quando logic_version avança.
 - CLI (quando registrada): `discovery scan`, `discovery inspect <address>`,
@@ -227,8 +230,9 @@ Contrato completo em `AGENTS.md` na raiz do repo.
   Alternativa atual: `trader list` + `discovery.py` direto.
 - Reprovados ficam na tabela como REJEITADO com `reject_reason`.
 - Toda exibição de traders ordena por score DECRESCENTE.
-- Ao sugerir wallet para Gate 2, citar explicitamente: score, janelas,
-  TWRR, PF+n, hold médio, trades/dia, DD.
+- **Ao sugerir wallet para Gate 2, citar PRIMEIRO** (v7): margem disponível,
+  alavancagem atual, cópia simulada (sim_net_pnl_usd) — ANTES do score.
+  Score alto sem esses três não existe mais por construção.
 
 Referências: `references/strategy_md_template.md` (template obrigatório de
 `strategy.md`), `references/lessons.md` (lições agregadas de post-mortems) e
