@@ -473,3 +473,68 @@ e no rationale do report. Racional completo: `docs/discovery_changelog.md`
 - Os 2 wallets do seu dossiê (`0x1aa5…95cb`, `0x5d8f…7927`) constam como
   REJEITADO com motivo F7b/F12/F13 (verificado no scan de validação do PR).
 - Skill atualizada via PR seu; este UPDATE marcado APLICADO.
+
+---
+
+## UPDATE-0009 · 2026-07-04 · Status: PENDENTE
+
+**Origem**: PR do Cursor "discovery v8 — Estágio 4 (simulação de cópia)"
+(diretiva humana pós-diagnóstico "poucos bons traders")
+
+**Tipo**: logica_discovery + operacao
+
+**Resumo**: `logic_version: 8`. Racional central: **bom trader ≠ boa cópia**.
+O score continua medindo o trader; o novo ESTÁGIO 4 mede a CÓPIA — e é ele
+o critério final do ranking.
+
+a) **Estágio 4 (novo)**: para quem sobrevive ao score, o funil roda um
+   replay dos fills (60d) com NOSSO sizing ($1K proporcional ao equity),
+   taxas taker + slippage E custo de latência (200ms–2s ≈ slippage extra
+   por perna). Saídas por candidato: PnL líquido simulado, expectância por
+   trade e max DD da curva da cópia.
+b) **Ranking final = score × fator** (fator = 1 + ROI da cópia, clamp
+   [0.5, 1.2]). A ordem da tabela pode divergir do score puro — é
+   intencional: o topo agora é "melhor cópia".
+c) **Cópia simulada negativa = REJEITADO** com motivo `copy_sim_negativa`,
+   MESMO com score alto. Ao ler a tabela, esse motivo significa: o trader
+   pode ser bom, mas espelhá-lo com $1K perde dinheiro após custos.
+d) **Colunas novas** em `traders` (migration 0006): `sim_expectancy_usd`,
+   `sim_max_dd_pct`, `sim_factor`. ATENÇÃO: migration Supabase é passo
+   MANUAL pós-deploy (seu incidente 1 do UPDATE-0006):
+   `psql "$DATABASE_URL" -f db/migrations/supabase/0006_discovery_v8.sql`
+   — sem isso o replicator falha com PGRST204 nas colunas novas.
+e) **Fontes adicionais** (config `sources`, flags OFF): `nansen_leaderboard`
+   e `apify_hl_scraper` podem alimentar ENDEREÇOS candidatos quando o
+   humano ativar (exigem chave no ambiente). A HL pública segue sendo a
+   fonte de verdade de TODAS as métricas — terceiros nunca substituem o
+   nosso funil.
+f) **Diagnóstico que motivou tudo**:
+   `docs/reports/discovery_diagnostico_funil_2026-07-04.md` — leia antes de
+   propor calibração; as recomendações 3/4/5 (F8 top_n, limpeza dos 2
+   SUGERIDOs legado v1, request_budget) aguardam decisão humana.
+
+**Ações do Hermes**:
+
+1. **Sugestões manuais passam pela MESMA régua**: qualquer wallet que você
+   (ou o humano, vinda de Copin/HyperX) queira propor entra via
+   `discovery inspect <address>` e passa pela simulação como qualquer
+   candidato — cite net simulado, expectância e DD da cópia na sugestão.
+   Nenhuma via lateral de aprovação.
+2. No briefing, ao listar candidatos, use o ranking da tabela (já vem
+   ordenado por score × fator) e cite o `sim_factor` — score alto com
+   fator baixo é sinal de cópia medíocre.
+3. Aplicar a migration Supabase 0006 (comando no item d) no pós-deploy e
+   confirmar que o replicator não acusa PGRST204.
+4. Executar a limpeza recomendada no diagnóstico SE o humano aprovar:
+   `trader reject` nos 2 SUGERIDOs legado v1 (`0xe4c6…4048`, `0xeeb5…0464`
+   — score 33.8/17.2, um com DD 99.3%).
+5. Atualizar a skill (área sua): Estágio 4, motivo `copy_sim_negativa`,
+   colunas novas e a regra do item 1.
+
+**Validação**:
+
+- Evento `logic_updated` (7→8) + `discovery.scan_completed` com
+  `logic_version: 8`; aprovados com `sim_factor` preenchido; eventuais
+  `copy_sim_negativa` em `reject_reason`.
+- Replicator sem PGRST204 após a migration 0006 no Supabase.
+- Skill atualizada via PR seu; este UPDATE marcado APLICADO.
