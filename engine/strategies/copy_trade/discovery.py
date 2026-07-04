@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -91,7 +92,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
-    """Dossiê completo de um endereço (fora do leaderboard inclusive)."""
+    """Dossiê completo de um endereço (fora do leaderboard inclusive).
+
+    Com --persist: roda a MESMA régua (deep_dive → hard_filters → score →
+    simulação) e grava via upsert_candidate + set_status SUGERIDO/REJEITADO.
+    Sem via lateral: reprovado persiste como REJEITADO.
+    """
     cfg = funnel.load_config()
     db = _db()
     client = _client(db, cfg)
@@ -125,10 +131,15 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "profit_factor_incl_nao_realizado": c.pf,
         "max_dd_90d_pct": c.max_dd_90d_pct,
         "win_rate": c.win_rate,
+        "win_rate_30d": getattr(c, "win_rate_30d", None),
         "n_trades_fechados": c.n_trades,
+        "n_trades_30d": c.n_trades_30d,
+        "n_trades_7d": getattr(c, "n_trades_7d", 0),
         "hold_mediano_horas": c.median_hold_hours,
         "estilo": c.style,
         "alavancagem_media": c.avg_leverage,
+        "alavancagem_atual_max": getattr(c, "max_current_leverage", None),
+        "margem_disponivel_pct": getattr(c, "available_margin_pct", None),
         "distancia_liquidacao_pct": c.liq_distance_pct,
         "alerta_liquidacao": (c.liq_distance_pct is not None and
                               c.liq_distance_pct < cfg["score_adjustments"]
@@ -141,7 +152,43 @@ def cmd_inspect(args: argparse.Namespace) -> int:
              "entryPx": p.get("entryPx"), "liquidationPx": p.get("liquidationPx"),
              "unrealizedPnl": p.get("unrealizedPnl")} for p in positions],
         "justificativa": c.rationale,
+        "sim_net_pnl_usd": getattr(c, "sim_net_pnl_usd", None),
+        "sim_expectancy_usd": getattr(c, "sim_expectancy_usd", None),
+        "sim_max_dd_pct": getattr(c, "sim_max_dd_pct", None),
+        "sim_factor": getattr(c, "sim_factor", None),
+        "coverage_days": getattr(c, "coverage_days", None),
     }
+
+    # --persist: grava na tabela traders
+    if getattr(args, "persist", False):
+        origin = getattr(args, "origin", "manual")
+        c.reject_reason = reject
+        # Verificar se é copy_pinned (não rebaixar pinned)
+        pinned = db.query(
+            "SELECT copy_pinned FROM traders WHERE address = ?", (address,))
+        is_pinned = bool(pinned and pinned[0].get("copy_pinned"))
+        if not is_pinned:
+            funnel.persist_scan(db, funnel.ScanResult(
+                scan_id=f"inspect_{int(time.time())}",
+                approved=[c] if not reject else [],
+                rejected=[c] if reject else [],
+                funnel_stats={"inspect_manual": 1},
+                rekt_sample=[],
+            ), cfg, client=client)
+            if reject:
+                from engine.strategies.copy_trade.traders_store import set_status
+                set_status(db, address, "REJEITADO", by=f"inspect:{origin}")
+            print(f"[persist] {address} → {'REJEITADO' if reject else 'SUGERIDO'} "
+                  f"(origin={origin})", file=sys.stderr)
+        else:
+            # Pinned: só atualiza métricas, não rebaixa
+            funnel.persist_scan(db, funnel.ScanResult(
+                scan_id=f"inspect_pinned_{int(time.time())}",
+                approved=[c], rejected=[], funnel_stats={},
+                rekt_sample=[]), cfg, client=client)
+            print(f"[persist] {address} → pinned (métricas atualizadas, "
+                  f"status preservado)", file=sys.stderr)
+
     print(json.dumps(dossier, indent=2, ensure_ascii=False, default=str))
     return 0
 
@@ -231,6 +278,10 @@ def main(argv: list[str] | None = None) -> int:
 
     insp = sub.add_parser("inspect")
     insp.add_argument("address")
+    insp.add_argument("--persist", action="store_true",
+                      help="grava resultado na tabela traders (SUGERIDO/REJEITADO)")
+    insp.add_argument("--origin", choices=["manual", "hermes", "copin", "hyperx"],
+                      default="manual", help="origem do candidato (default: manual)")
     insp.set_defaults(func=cmd_inspect)
 
     sub.add_parser("positioning").set_defaults(func=cmd_positioning)
