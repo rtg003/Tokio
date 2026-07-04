@@ -577,30 +577,30 @@ def build_app(state: GatewayState) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"stats: {str(exc)[:200]}")
 
-        # -- /api/exchanges (lista de exchanges configurados) ---------------
-        @app.get("/api/exchanges")
-        def api_exchanges():
-            try:
-                rows = state.db.query("SELECT * FROM exchanges ORDER BY id")
-                return rows
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(500, f"exchanges: {str(exc)[:200]}")
+    # -- /api/exchanges (lista de exchanges configurados) -------------------
+    @app.get("/api/exchanges")
+    def api_exchanges():
+        try:
+            rows = state.db.query("SELECT * FROM exchanges ORDER BY id")
+            return rows
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"exchanges: {str(exc)[:200]}")
 
-        # -- /api/orders (orders com filtro strategy_id, ADR 0010) ---------
-        @app.get("/api/orders")
-        def api_orders(strategy_id: str | None = None, limit: int = 50):
-            try:
-                limit = max(1, min(500, limit))
-                if strategy_id:
-                    rows = state.db.query(
-                        "SELECT * FROM orders WHERE strategy_id = ? "
-                        "ORDER BY id DESC LIMIT ?", (strategy_id, limit))
-                else:
-                    rows = state.db.query(
-                        "SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
-                return rows
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(500, f"orders: {str(exc)[:200]}")
+    # -- /api/orders (orders com filtro strategy_id, ADR 0010) -------------
+    @app.get("/api/orders")
+    def api_orders(strategy_id: str | None = None, limit: int = 50):
+        try:
+            limit = max(1, min(500, limit))
+            if strategy_id:
+                rows = state.db.query(
+                    "SELECT * FROM orders WHERE strategy_id = ? "
+                    "ORDER BY id DESC LIMIT ?", (strategy_id, limit))
+            else:
+                rows = state.db.query(
+                    "SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
+            return rows
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"orders: {str(exc)[:200]}")
 
     return app
 
