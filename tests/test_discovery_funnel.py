@@ -377,6 +377,68 @@ def test_v7_no_open_positions_is_not_rejected() -> None:
     assert hard_filters(c, CFG, now_ms=NOW_MS) is None
 
 
+# ----------------------------------------------------------------------------
+# v8: Estágio 4 — simulação de cópia como critério final de ranking
+# ----------------------------------------------------------------------------
+def test_v8_stage4_demotes_negative_copy_sim(db) -> None:
+    """Score alto + cópia simulada negativa → REJEITADO (copy_sim_negativa)."""
+    import copy
+
+    client = make_client()
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    approved_before = {c.address for c in result.approved}
+    assert GOOD in approved_before                       # baseline: GOOD aprova
+
+    # mesma carteira, mas com replay do estágio 4 muito mais caro (latência
+    # absurda) — o net do GOOD vira negativo SÓ no estágio 4
+    cfg2 = copy.deepcopy(CFG)
+    cfg2["copy_simulation"]["latency_slippage_pct"] = 50.0
+    cfg2["hard_filters"]["f15_sim_window_days"] = None   # isola o estágio 4
+    client2 = make_client()
+    result2 = run_scan(client2, db, cfg2, now_ms=NOW_MS)
+    rejected = {c.address: c.reject_reason for c in result2.rejected}
+    assert GOOD in rejected
+    assert rejected[GOOD].startswith("copy_sim_negativa")
+    assert result2.funnel_stats.get("rebaixados_copy_sim", 0) >= 1
+
+
+def test_v8_final_ranking_uses_sim_factor(db) -> None:
+    """Ranking final = score × fator da simulação (não só score)."""
+    client = make_client()
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    assert result.approved, "esperava ao menos 1 aprovado no fixture"
+    for c in result.approved:
+        assert c.sim_factor is not None and c.sim_factor > 0
+        assert any(r.startswith("estágio 4:") for r in c.rationale)
+    ranks = [c.score * (c.sim_factor or 1.0) for c in result.approved]
+    assert ranks == sorted(ranks, reverse=True)
+
+
+def test_v8_external_sources_disabled_by_default(db) -> None:
+    """Flags de fontes externas desligadas → nenhum request e stats ausente."""
+    client = make_client()   # FakeClient NÃO tem external_candidates: getattr cobre
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    assert "fontes_externas_novos" not in result.funnel_stats
+
+    client2 = make_client()
+    calls: list[dict] = []
+    client2.external_candidates = lambda cfg_sources: calls.append(cfg_sources) or []  # type: ignore[attr-defined]
+    result2 = run_scan(client2, db, CFG, now_ms=NOW_MS)
+    # o hook é chamado, mas com flags off retorna vazio → 0 novos
+    assert result2.funnel_stats.get("fontes_externas_novos") == 0
+    assert calls and calls[0] is CFG["sources"]
+
+
+def test_v8_hl_client_external_candidates_flags_off() -> None:
+    """HLDataClient.external_candidates com flags off não faz request algum."""
+    from engine.strategies.copy_trade.hl_data import HLDataClient
+
+    client = HLDataClient(None, request_budget=0)   # budget 0: request explodiria
+    cfg_sources = CFG["sources"]
+    assert cfg_sources["nansen_leaderboard"]["enabled"] is False
+    assert client.external_candidates(cfg_sources) == []
+
+
 def test_v7_liq_distance_uses_mark_price(db) -> None:
     """F13 mede do MARK price: posição lucrativa longe da entrada mas perto
     da liquidação pelo preço atual deve reprovar."""

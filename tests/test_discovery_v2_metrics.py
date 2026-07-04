@@ -226,6 +226,40 @@ def test_simulate_copy_sign_is_capital_invariant() -> None:
     assert small.net_pnl_usd * 100 == pytest.approx(big.net_pnl_usd)
 
 
+# --- Estágio 4 (v8): latência, expectância, DD da cópia e fator de ranking --------
+def test_simulate_copy_latency_cost_reduces_net() -> None:
+    fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=100)]
+    base = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
+    with_lat = simulate_copy(fills, 100_000, 1_000,
+                             latency_slippage_pct=0.03, now_ms=NOW)
+    assert base is not None and with_lat is not None
+    # custo extra = 100 (copy notional) × 0.0003 = 0.03
+    assert with_lat.latency_cost_usd == pytest.approx(0.03)
+    assert with_lat.net_pnl_usd == pytest.approx(base.net_pnl_usd - 0.03)
+
+
+def test_simulate_copy_expectancy_and_dd_of_copy() -> None:
+    # 2 trades fechados: -500 depois +800 (ratio 0.01 → -5 depois +8)
+    fills = [sim_fill(NOW - 5 * 86_400_000.0, 1, 10_000, closed_pnl=-500),
+             sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=800)]
+    sim = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
+    assert sim is not None
+    assert sim.n_closed == 2
+    assert sim.expectancy_usd == pytest.approx(sim.net_pnl_usd / 2)
+    # equity cai para ~995 antes de recuperar: DD ≈ 0.5% do capital de 1000
+    assert 0.4 < sim.max_dd_pct < 0.7
+
+
+def test_copy_sim_factor_clamped() -> None:
+    from engine.strategies.copy_trade.metrics import copy_sim_factor
+
+    assert copy_sim_factor(100.0, 1_000) == pytest.approx(1.10)   # ROI 10%
+    assert copy_sim_factor(0.0, 1_000) == pytest.approx(1.0)      # neutro
+    assert copy_sim_factor(900.0, 1_000) == pytest.approx(1.2)    # cap
+    assert copy_sim_factor(-800.0, 1_000) == pytest.approx(0.5)   # floor
+    assert copy_sim_factor(50.0, 0.0) == 1.0                      # sem capital
+
+
 # --- Score composto: régua inteira -------------------------------------------------
 WEIGHTS = {"consistency": 0.25, "profit_factor": 0.20, "roi_log": 0.15,
            "drawdown_quality": 0.15, "copyability": 0.15, "net_expectancy": 0.10}
