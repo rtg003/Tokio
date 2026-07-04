@@ -326,9 +326,7 @@ def test_v7_baseline_passes_all_filters() -> None:
 @pytest.mark.parametrize("overrides, expected_prefix", [
     # dossiê #1: 20x AGORA mesmo com média ok
     ({"max_current_leverage": 20.0}, "F7b"),
-    # dossiês #1 e #6: available margin $0 — 100% comprometido
-    ({"available_margin_pct": 0.0}, "F12"),
-    # dossiê #6: SOL a 7.5% da liquidação
+    # dossiê #6: SOL a 7.5% da liquidação (F12 desabilitado no config de produção)
     ({"liq_distance_pct": 7.5}, "F13"),
     # dossiê #6: equity $56k, fills de ~$100 → cópia de $1.79 com $1k
     ({"equity": 56_000.0, "median_fill_notional": 100.0}, "F11"),
@@ -340,6 +338,19 @@ def test_v7_copyability_filters_reject(overrides: dict, expected_prefix: str) ->
 
     reason = hard_filters(v7_base_candidate(**overrides), CFG, now_ms=NOW_MS)
     assert reason is not None and reason.startswith(expected_prefix), reason
+
+
+def test_v7_f12_rejects_when_enabled() -> None:
+    """F12 continua implementado — só desabilitado via null no config de produção."""
+    import copy
+
+    from engine.strategies.copy_trade.funnel import hard_filters
+
+    cfg = copy.deepcopy(CFG)
+    cfg["hard_filters"]["f12_min_available_margin_pct"] = 10.0
+    reason = hard_filters(v7_base_candidate(available_margin_pct=0.0), cfg,
+                          now_ms=NOW_MS)
+    assert reason is not None and reason.startswith("F12")
 
 
 def test_v7_null_thresholds_disable_new_filters() -> None:

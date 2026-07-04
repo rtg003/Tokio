@@ -53,7 +53,7 @@ hard_filters:                     # F1–F11 (binários, ordem de custo; null = 
   # v7 (UPDATE-0007 do Hermes): filtros de posição ABERTA no momento do scan —
   # o score media histórico e deixava passar apostador de 20x 100% em margem.
   f7b_max_current_leverage: 10.0       # max da alavancagem das posições abertas
-  f12_min_available_margin_pct: 10.0   # (accountValue - totalMarginUsed) / accountValue
+  f12_min_available_margin_pct: null    # v7: desabilitado pós-scan 407e8caa996f (7/150 reprovados; 0 aprovados)
   f13_min_liq_distance_pct: 15.0       # distância min à liquidação, medida do MARK price
   f8_min_liquid_volume_share: 0.80
   f8_liquid_assets_top_n: 25      # top N por volume 24h vira a lista de líquidos

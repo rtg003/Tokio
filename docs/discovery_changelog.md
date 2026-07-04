@@ -204,6 +204,8 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
   - **F12 (novo)**: margem disponível ≥ 10% do accountValue
     (`totalMarginUsed` do clearinghouse). Available $0 = qualquer movimento
     contra liquida — os DOIS dossiês tinham $0.
+    **Desabilitado pós-validação** (`null` no config): scan `407e8caa996f`
+    reprovou 7/150 só no F12 com 0 aprovados no total — gate humano.
   - **F13 (novo)**: distância de liquidação ≥ 15%, medida do **MARK price**
     (`positionValue/|szi|`, fallback entry). Correção embutida: o cálculo
     antigo usava a ENTRADA como referência — posição que já andou muito
