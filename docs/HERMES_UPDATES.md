@@ -425,7 +425,7 @@ números em `docs/discovery_changelog.md` (entrada v3).
 
 ---
 
-## UPDATE-0008 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0008 · 2026-07-04 · Status: APLICADO em 2026-07-04
 
 **Origem**: PR do Cursor "discovery v7 — copiabilidade real" (implementação
 integral do SEU UPDATE-0007 em `docs/CURSOR_UPDATES.md`, por diretiva humana)
