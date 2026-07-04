@@ -70,8 +70,16 @@ def selection_metrics(nets: list[float], dds: list[float]) -> dict[str, Any]:
     }
 
 
+def _in_split(address: str, split: str) -> bool:
+    """Holdout transversal: paridade do endereço (even=calibração, odd=validação)."""
+    if split == "all":
+        return True
+    parity = int(address, 16) % 2
+    return parity == (0 if split == "even" else 1)
+
+
 def evaluate_cut(conn, t_end: float, cfg: dict[str, Any], *, top_k: int,
-                 rng: random.Random) -> dict[str, Any]:
+                 rng: random.Random, split: str = "all") -> dict[str, Any]:
     t_qual = t_end - B_WINDOW_DAYS * DAY_MS
     liquid = liquid_assets_pit(
         conn, t_qual - 60 * DAY_MS, t_qual,
@@ -82,6 +90,8 @@ def evaluate_cut(conn, t_end: float, cfg: dict[str, Any], *, top_k: int,
     pool_with_data: list[tuple[str, float]] = []   # (address, equity_at_qual)
 
     for w in store.wallets(conn, kind="candidate"):
+        if not _in_split(w["address"], split):
+            continue
         c, reason = qualify(conn, w["address"], t_qual, cfg, liquid)
         if c is not None and c.equity > 0:
             pool_with_data.append((w["address"], c.equity))
@@ -89,7 +99,13 @@ def evaluate_cut(conn, t_end: float, cfg: dict[str, Any], *, top_k: int,
             key = reason.split(":")[0]
             deaths[key] = deaths.get(key, 0) + 1
             continue
-        rank = c.score * (c.sim_factor or 1.0)
+        rank_by = (cfg.get("lab") or {}).get("rank_by", "score_factor")
+        if rank_by == "expectancy":
+            rank = c.sim_expectancy_usd if c.sim_expectancy_usd is not None else -1e9
+        elif rank_by == "stage4_net":
+            rank = c.sim_stage4_net_usd if c.sim_stage4_net_usd is not None else -1e9
+        else:
+            rank = c.score * (c.sim_factor or 1.0)
         approved.append((c, rank))
 
     approved.sort(key=lambda x: -x[1])
@@ -121,7 +137,7 @@ def evaluate_cut(conn, t_end: float, cfg: dict[str, Any], *, top_k: int,
     for w in store.wallets(conn, kind="rekt"):
         curve = store.wallet_curve(conn, w["address"], t_to=t_qual)
         eq = curve[-1][1] if curve else 0
-        if eq and eq > 0:
+        if eq and eq >= 2000:   # piso: equity ínfimo explode o ratio da cópia
             rekt_items.append((w["address"], eq))
     rekt_sims = run_group(rekt_items)
     rekt_nets = [s.net_pnl_usd for s in rekt_sims.values()]
@@ -139,6 +155,7 @@ def evaluate_cut(conn, t_end: float, cfg: dict[str, Any], *, top_k: int,
     return {
         "t_end": t_end,
         "aprovados_total": len(approved),
+        "sem_dados_B": len(picked) - len(sel),   # aprovados sem fills na janela B
         "carteira": selection_metrics(sel_nets, sel_dds),
         "baseline_aleatorio_mediana_das_medianas":
             round(statistics.median(rand_medians), 2) if rand_medians else None,
@@ -161,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cuts", type=int, default=3)
     ap.add_argument("--top-k", type=int, default=10)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--split", choices=["all", "even", "odd"], default="all")
     args = ap.parse_args(argv)
 
     conn = store.connect()
@@ -173,7 +191,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     cuts = [t0 - i * 7 * DAY_MS for i in range(args.cuts)]
 
-    results = [evaluate_cut(conn, t, cfg, top_k=args.top_k, rng=rng)
+    results = [evaluate_cut(conn, t, cfg, top_k=args.top_k, rng=rng,
+                            split=args.split)
                for t in cuts]
     medians = [r["carteira"]["mediana_net"] for r in results]
     summary = {

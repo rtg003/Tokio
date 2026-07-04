@@ -1,0 +1,11 @@
+# H10 — combo informado pela análise: equity baixa + ranking por sim A +
+# consistência semanal + gates relaxados onde o holdout mandou.
+hard_filters:
+  f5_max_drawdown_90d_pct: 60.0
+score_adjustments:
+  min_score_for_suggestion: 40.0
+lab:
+  max_equity_usd: 150000
+  rank_by: stage4_net
+  min_stage4_net: 5.0
+  min_positive_weeks: 2

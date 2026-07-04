@@ -1,0 +1,17 @@
+# H11 — funil aberto + simulação no comando: os gates herdados (entrada 2/4,
+# F1 7d, F2 30, min_score 60) matam o pool antes do ranking; a análise mostrou
+# que o preditor forte é a própria simulação em A (quintil top: +71 em B).
+entry_rule:
+  min_positive_windows: 1
+  required_windows: ["30d"]
+hard_filters:
+  f1_recent_activity_days: 14
+  f2_min_closed_trades: 15
+  f2b_min_trades_30d: 3
+  f5_max_drawdown_90d_pct: 60.0
+score_adjustments:
+  min_score_for_suggestion: 0.0
+lab:
+  rank_by: stage4_net
+  min_stage4_net: 5.0
+  max_equity_usd: 150000

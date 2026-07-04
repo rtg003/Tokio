@@ -1,0 +1,4 @@
+# H3 — consistência temporal: >= 3 das 4 semanas de A com PnL positivo
+# (mata o "sortudo do mês" que concentra tudo numa semana)
+lab:
+  min_positive_weeks: 3

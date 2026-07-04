@@ -1,0 +1,6 @@
+# H9 — F5 relaxado p/ 60%: max_dd_90d teve correlação POSITIVA com o net em B
+# (+0.105) — o filtro de DD pode estar cortando exatamente quem copia bem.
+hard_filters:
+  f5_max_drawdown_90d_pct: 60.0
+score_adjustments:
+  min_score_for_suggestion: 40.0
