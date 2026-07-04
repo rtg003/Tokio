@@ -933,3 +933,86 @@ trade sobre o discovery v10. Oito blocos de mudança (código + config + infra
 ### Skill:
 - `skill/SKILL.md` atualizada com: inspect --persist, copy_pinned, fluxo
   de cópia por comando humano, formato do relatório/recomendação.
+
+## UPDATE-0012 · 2026-07-04 · Status: PENDENTE
+
+Origem: PR do Hermes "dashboard lê direto do SQLite (sem Supabase)"
+Tipo: arquitetura + infra + web
+
+Resumo executivo: o dashboard Next.js agora lê direto do gateway do engine
+(FastAPI porta 8700) em vez do Supabase. Isto elimina a fila de replicação
+que vinha travando recorrentemente (migrations desalinhadas, payloads
+inválidos, PGRST102/204). O Supabase NÃO foi removido — pode ser reativado
+com uma flag.
+
+### Motivação (dados)
+- Fila de replicação travou 3x em 2 dias (3029+ itens, lag 12.000s+)
+- Causa raiz: migrations SQLite aplicadas mas Supabase não (PGRST204)
+- Payloads inválidos em alguns traders (PGRST102) bloqueavam o batch FIFO
+- O Supabase hoje é apenas cache de leitura — não há auth, real-time, ou
+  queries complexas que justifiquem a duplicação
+
+### O que mudou
+
+**1. Gateway do engine (FastAPI) — NOVOS endpoints REST:**
+- `GET /api/traders` (?status= filtro opcional) — lista traders
+- `GET /api/traders/{address}` — trader específico
+- `GET /api/fills` (?strategy_id= OBRIGATÓRIO, ?limit=) — fills com ADR 0010
+- `GET /api/strategies` — lista strategies
+- `GET /api/events` (?event_type=, ?limit=) — eventos
+- `GET /api/stats` — estatísticas do discovery (último scan, funil)
+- CORS habilitado para localhost:3002
+- Arquivo: `engine/gateway/server.py`
+
+**2. Dashboard Next.js — lê do gateway:**
+- `web/lib/api.ts` (NOVO): cliente HTTP para o gateway
+- `web/app/(app)/page.tsx`: usa `USE_SUPABASE = false` (flag)
+  - Se `true`: usa Supabase (comportamento anterior)
+  - Se `false`: usa gateway do engine (novo)
+- `web/.env.local`: `NEXT_PUBLIC_API_BASE=http://localhost:8700/api`
+- Refresh automático a cada 30s
+
+**3. Backup do SQLite:**
+- Cron diário 3am: `~/.hermes/scripts/tokio_sqlite_backup.sh`
+- Cria backup comprimido em `/home/tokio/Tokio/data/backups/`
+- Mantém últimos 7 dias
+
+### Semânticas novas que o Cursor DEVE preservar:
+1. **USE_SUPABASE flag**: o dashboard tem uma flag booleana para alternar
+   entre gateway do engine (false) e Supabase (true). NÃO remover o código
+   do Supabase — é o plano B.
+2. **Endpoints /api/**: o gateway agora serve dados de leitura. Novos
+   endpoints devem seguir o padrão (try/except, ADR 0010, JSON serializável).
+3. **Isolamento ADR 0010**: `/api/fills` exige `?strategy_id=` como filtro
+   obrigatório. Dashboard de copy trade só vê fills `ct_*`.
+4. **Backup SQLite**: o SQLite agora é a ÚNICA fonte de verdade em
+   produção. O backup diário é essencial.
+
+### O que NÃO mudou:
+- O replicator (SQLite → Supabase) continua rodando — não foi desativado.
+  O Supabase continua recebendo dados (quando a fila não trava). O dashboard
+  simplesmente não lê mais dele.
+- As migrations Supabase automáticas (Bloco 2) continuam funcionando.
+- O schema do SQLite e do Supabase continuam idênticos.
+
+### Como voltar atrás (reativar Supabase):
+1. Em `web/app/(app)/page.tsx`: mudar `USE_SUPABASE = false` para `true`
+2. Rebuild do dashboard: `cd web && npm run build`
+3. Reiniciar o serviço web
+
+### Arquivos alterados/criados:
+- `engine/gateway/server.py` (endpoints /api/ + CORS)
+- `web/lib/api.ts` (NOVO — cliente HTTP)
+- `web/app/(app)/page.tsx` (flag USE_SUPABASE)
+- `web/.env.local` (NEXT_PUBLIC_API_BASE)
+- `~/.hermes/scripts/tokio_sqlite_backup.sh` (NOVO — backup diário)
+
+### Validação:
+- `curl http://localhost:8700/api/traders` → JSON array
+- `curl http://localhost:8700/api/fills?strategy_id=ct_test` → JSON array
+- Dashboard em https://tokio.bz carrega traders em tempo real
+- Backup em `/home/tokio/Tokio/data/backups/`
+
+### Skill:
+- `skill/SKILL.md` atualizada com: dashboard lê do gateway, backup SQLite
+  diário, flag USE_SUPABASE.
