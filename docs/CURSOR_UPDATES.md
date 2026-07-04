@@ -691,3 +691,36 @@ notificando o Hermes das novas leituras e filtros.
 - O score não mede copiabilidade real
 - Filtros atuais não olham posições abertas no momento do scan
 - A simulação retroativa é a mudança de maior impacto estrutural
+
+## UPDATE-0008 · 2026-07-04 · Status: PENDENTE
+
+Origem: PR do Hermes "skill v7 — aplica UPDATE-0008 do HERMES_UPDATES"
+Tipo: skill
+
+Resumo: a skill `trade` (SKILL.md) foi atualizada para refletir o
+logic_version 7 do discovery (UPDATE-0008 em HERMES_UPDATES.md, aplicado).
+A seção "Copy trade — discovery e traders" agora cobre: 15 hard filters
+(F1–F15) com os novos filtros de copiabilidade (F7b alavancagem atual,
+F12 margem disponível — OFF na v7, F13 distância de liquidação do MARK
+price, F15 simulação retroativa, F11 corrigido); as colunas novas em
+`traders` (max_current_leverage, available_margin_pct, sim_net_pnl_usd);
+e a nova ordem de prioridade ao sugerir wallet para Gate 2 (margem
+disponível, lev atual, cópia simulada ANTES do score).
+
+Validação pós-aplicação (executada em produção):
+- Engine reiniciado; evento `logic_updated` (6→7) + `discovery.scan_completed`
+  com `logic_version: 7` confirmados em `events`.
+- Scan v7: 0 aprovados, 150 rejeitados (F13: 5, F7b: 4, F11: 3).
+- Os 2 wallets do dossiê (0x1aa5…95cb, 0x5d8f…7927) constam como
+  REJEITADO com motivos F7b e F13 respectivamente; colunas novas
+  preenchidas.
+- `curl http://127.0.0.1:8700/health` → ok: true, kill_switch: false;
+  tokio-engine.service e tokio.service = active (running).
+
+Ações do Cursor: nenhuma ação de código necessária — apenas tomar ciência
+de que a skill agora referencia o funil v7 (F1–F15) e a nova ordem de
+leitura de candidatos ao sugerir copy.
+
+Validação: `grep "logic_version 7" skill/SKILL.md` retorna 1;
+`grep "F7b" skill/SKILL.md` retorna > 0; UPDATE-0008 em
+HERMES_UPDATES.md marcado `APLICADO em 2026-07-04`.

@@ -202,22 +202,41 @@ Contrato completo em `AGENTS.md` na raiz do repo.
 | Config operacional, skill/, crons, rotina de produção | Hermes |
 | Conflito genuíno | Ambos PARAM e notificam rtg003 |
 
-### Copy trade — discovery e traders (logic_version 6)
+### Copy trade — discovery e traders (logic_version 7)
 
 - Tabela `traders` é a fonte ÚNICA (ADR 0008). Sem YAMLs.
 - Gate: SUGERIDO → DRY_RUN/COPIANDO só com autorização humana explícita,
   inclusive em testnet. CLI: `trader approve <address>` (→ DRY_RUN),
   `trader approve <address> --live --evidence docs/<arquivo>` (→ COPIANDO).
-- Funil v3 (config: `config/discovery_config.yaml`):
+- Funil v7 (config: `config/discovery_config.yaml`):
   - 4 janelas (7d/30d/60d/90d). Entrada: **≥2/4 com 30d obrigatória** (v3 —
     era ≥3/4 com 30d+60d na v2). A 7d PODE ser negativa.
-  - 11 hard filters (F1–F11), mas na v3: **F3 (anti-scalper) OFF**,
-    **F4 (TWRR≥5%) OFF**, **F5 (max DD) 40%** (era 25%). Filtros desabilitados
-    têm threshold `null` no config — reativar = config + bump de logic_version.
+  - **15 hard filters (F1–F15)**. Herança v3: **F3 (anti-scalper) OFF**,
+    **F4 (TWRR≥5%) OFF**, **F5 (max DD) 40%** (era 25%). Filtros
+    desabilitados têm threshold `null` no config — reativar = config +
+    bump de logic_version.
+  - **Novos filtros de copiabilidade (v7)** — olham posições ABERTAS no
+    momento do scan e simulam a cópia:
+    - **F7b**: alavancagem ATUAL (max das posições abertas) ≤ 10x (F7
+      histórico continua ≤ 15x). Sem posição aberta = passa.
+    - **F12**: margem disponível ≥ 10% do `accountValue` — **OFF na v7**
+      (threshold `null` pós-scan 407e8caa996f: 7/150 reprovados, 0
+      aprovados). Reativar = config + bump.
+    - **F13**: distância de liquidação ≥ 15%, medida do **MARK price**
+      (não da entrada — o cálculo antigo escondia risco em posição que já
+      andou). Penalidade de score −10 cobre a faixa 15–20%.
+    - **F15**: simulação retroativa — cópia com `$mirror_capital` (default
+      $1K) nos últimos 30d, líquida de taxa+slippage por perna; net ≤ 0
+      reprova. Só PnL REALIZADO conta (lucro 100% não-realizado reprova).
+    - **F11 corrigido**: notional mediano REAL dos fills ×
+      (mirror_capital/equity) ≥ $10 (o cálculo antigo assumia trade = 5%
+      do equity — bug).
+  - Colunas novas em `traders` (migration 0005): `max_current_leverage`,
+    `available_margin_pct`, `sim_net_pnl_usd` — também no dashboard
+    expandido e no rationale do report.
   - Score 0–100 com ajustes (+5 consistência 4/4, −10 liquidação <10%,
-    −5 crowding top-20).
-  - Scalpers agora ENTRAM com score penalizado pela copiabilidade — cite
-    `avg_holding_hours` e `n_trades_30d` ao sugerir.
+    −5 crowding top-20). Scalpers ENTRAM com score penalizado pela
+    copiabilidade — cite `avg_holding_hours` e `n_trades_30d` ao sugerir.
 - Profit factor: crédito integral até 3.0; meio-crédito 3.0–5.0 só com
   n≥60; >5.0 não pontua. PF incl. PnL não realizado.
 - Scan diário 05:00 SP (engine scheduler, não cron externo). Re-scan
@@ -225,10 +244,13 @@ Contrato completo em `AGENTS.md` na raiz do repo.
 - CLI (quando registrada): `discovery scan`, `discovery inspect <address>`,
   `discovery positioning`, `discovery token <ativo>`, `discovery report --last`.
   Alternativa atual: `trader list` + `discovery.py` direto.
-- Reprovados ficam na tabela como REJEITADO com `reject_reason`.
+- Reprovados ficam na tabela como REJEITADO com `reject_reason` (cite o
+  filtro/motivo ao relatar — ex.: `F7b: lev atual 20.0x > 10.0x`).
 - Toda exibição de traders ordena por score DECRESCENTE.
-- Ao sugerir wallet para Gate 2, citar explicitamente: score, janelas,
-  TWRR, PF+n, hold médio, trades/dia, DD.
+- Ao sugerir wallet para Gate 2, citar explicitamente (ORDEM DE
+  PRIORIDADE pós-v7): **margem disponível, lev atual, cópia simulada
+  (net)** — depois score, janelas, TWRR, PF+n, hold médio, trades/dia,
+  DD. Score alto sem essas três é construção, não copiabilidade.
 
 Referências: `references/strategy_md_template.md` (template obrigatório de
 `strategy.md`), `references/lessons.md` (lições agregadas de post-mortems) e
