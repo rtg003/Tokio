@@ -211,6 +211,14 @@ class HLDataClient:
         import os
 
         addresses: list[str] = []
+        # v9: HyperTracker ON — lab mediu +274 endereços exclusivos (+53% de
+        # pool) com qualidade fora da amostra igual/melhor (RESULTADOS.md §6)
+        ht = sources_cfg.get("hypertracker") or {}
+        if ht.get("enabled"):
+            key = os.environ.get(str(ht.get("api_key_env", "HYPERTRACKER_API_KEY")), "")
+            if key:
+                addresses += self._hypertracker_leaderboard(
+                    key, max_addresses=int(ht.get("max_addresses", 300)))
         nansen = sources_cfg.get("nansen_leaderboard") or {}
         if nansen.get("enabled"):
             key = os.environ.get(str(nansen.get("api_key_env", "NANSEN_API_KEY")), "")
@@ -235,6 +243,35 @@ class HLDataClient:
                 seen.add(a)
                 out.append(a)
         return out
+
+    def _hypertracker_leaderboard(self, api_key: str, *,
+                                  max_addresses: int) -> list[str]:
+        """Leaderboard perp-only do HyperTracker (free tier: 100 req/dia).
+
+        Pagina por PnL do mês e da semana (100 rows/página) até
+        `max_addresses` — ~3-5 requests por scan, com cache TTL normal.
+        """
+        out: list[str] = []
+        pages = max(1, max_addresses // 100)
+        for rank_by in ("pnlMonth", "pnlWeek"):
+            for page in range(pages):
+                data = self._request(
+                    f"ht_lb:{rank_by}:{page}",
+                    lambda rb=rank_by, p=page: self._http.get(
+                        "https://ht-api.coinmarketman.com/api/external/leaderboards/perp-pnl",
+                        params={"rankBy": rb, "orderBy": rb, "order": "desc",
+                                "limit": 100, "offset": p * 100},
+                        headers={"Authorization": f"Bearer {api_key}",
+                                 "Accept": "application/json"},
+                    ))
+                rows = (data or {}).get("data") or []
+                if not rows:
+                    break
+                out += [str(r.get("address", "")).lower() for r in rows
+                        if isinstance(r, dict)]
+                if len(out) >= max_addresses:
+                    return out[:max_addresses]
+        return out[:max_addresses]
 
     def _nansen_leaderboard(self, api_key: str, *, max_addresses: int,
                             window_days: int) -> list[str]:

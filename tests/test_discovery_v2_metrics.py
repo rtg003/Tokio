@@ -226,6 +226,21 @@ def test_simulate_copy_sign_is_capital_invariant() -> None:
     assert small.net_pnl_usd * 100 == pytest.approx(big.net_pnl_usd)
 
 
+def test_simulate_copy_caps_notional_by_max_copy_leverage() -> None:
+    # trader equity $10k, fill $1M, copy capital $1k:
+    # proportional seria $100k; v9 cap 3x limita a $3k e escala o PnL no mesmo fator.
+    fills = [sim_fill(NOW - 2 * 86_400_000.0, 10, 100_000, closed_pnl=10_000)]
+    uncapped = simulate_copy(fills, 10_000, 1_000, now_ms=NOW)
+    capped = simulate_copy(fills, 10_000, 1_000, max_copy_leverage=3.0, now_ms=NOW)
+    assert uncapped is not None and capped is not None
+    assert uncapped.median_copy_notional_usd == pytest.approx(100_000.0)
+    assert capped.median_copy_notional_usd == pytest.approx(3_000.0)
+    # PnL proporcional seria $1000; cap de 3k/100k = 3% => $30 bruto.
+    assert capped.gross_pnl_usd == pytest.approx(30.0)
+    assert capped.cost_usd == pytest.approx(1.95)
+    assert capped.net_pnl_usd == pytest.approx(28.05)
+
+
 # --- Estágio 4 (v8): latência, expectância, DD da cópia e fator de ranking --------
 def test_simulate_copy_latency_cost_reduces_net() -> None:
     fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=100)]
