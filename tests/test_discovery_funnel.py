@@ -177,9 +177,9 @@ def test_scan_approves_swing_rejects_traps(db) -> None:
     rejected = {c.address: c.reject_reason for c in result.rejected}
 
     assert GOOD in approved
-    # v7: o scalper de edge magro REPROVA no F15 — 900 trades de $30 sobre
-    # notional de $100k não pagam taxa+slippage quando espelhados
-    assert SCALP in rejected and rejected[SCALP].startswith("F15")
+    # v9: o scalper morre ANTES da simulação — 19 dias de histórico < F16 (30d)
+    # (na v7 ele morria no F15; o edge magro continua barrado, mais cedo)
+    assert SCALP in rejected and rejected[SCALP].startswith("F16")
     assert DEPOSIT in rejected and rejected[DEPOSIT].startswith("F10")  # anti-aporte
     assert result.funnel_stats["aprovados"] == len(result.approved)
     assert result.funnel_stats["coletados"] == 5
@@ -264,17 +264,21 @@ def test_report_contains_funnel_stats_and_ranking(db) -> None:
 
 
 def test_entry_rule_windows() -> None:
-    c = Candidate(address="0x1", windows_pnl={"7d": -10, "30d": 100, "60d": 50, "90d": 80})
-    assert entry_rule_ok(c, CFG) is True and c.windows_positive == "3/4"
-    # v3: 60d deixou de ser obrigatória — 3/4 com 30d positiva passa
-    c2 = Candidate(address="0x2", windows_pnl={"7d": 10, "30d": 100, "60d": -5, "90d": 80})
-    assert entry_rule_ok(c2, CFG) is True
-    # 30d segue obrigatória: negativa reprova mesmo com 3/4
-    c3 = Candidate(address="0x3", windows_pnl={"7d": 10, "30d": -5, "60d": 50, "90d": 80})
-    assert entry_rule_ok(c3, CFG) is False
-    # mínimo 2/4: só a 30d positiva não basta
-    c4 = Candidate(address="0x4", windows_pnl={"7d": -1, "30d": 100, "60d": -5, "90d": -8})
-    assert entry_rule_ok(c4, CFG) is False and c4.windows_positive == "1/4"
+    # v9: entrada por janelas de PnL DESATIVADA (poder preditivo ~0 no lab) —
+    # até all-negative passa; quem decide é a simulação (F16-F19)
+    c3 = Candidate(address="0x3", windows_pnl={"7d": -10, "30d": -5, "60d": -50, "90d": -80})
+    assert entry_rule_ok(c3, CFG) is True and c3.windows_positive == "0/4"
+    # o MECANISMO continua funcional para reativação via config (regras v3):
+    import copy
+
+    cfg_v3 = copy.deepcopy(CFG)
+    cfg_v3["entry_rule"] = {"min_positive_windows": 2, "required_windows": ["30d"]}
+    ok = Candidate(address="0x1", windows_pnl={"7d": -10, "30d": 100, "60d": 50, "90d": 80})
+    assert entry_rule_ok(ok, cfg_v3) is True and ok.windows_positive == "3/4"
+    bad30 = Candidate(address="0x2", windows_pnl={"7d": 10, "30d": -5, "60d": 50, "90d": 80})
+    assert entry_rule_ok(bad30, cfg_v3) is False
+    only30 = Candidate(address="0x4", windows_pnl={"7d": -1, "30d": 100, "60d": -5, "90d": -8})
+    assert entry_rule_ok(only30, cfg_v3) is False and only30.windows_positive == "1/4"
 
 
 def test_null_thresholds_disable_f3_f4() -> None:
@@ -312,6 +316,9 @@ def v7_base_candidate(**overrides: Any) -> Candidate:
         max_current_leverage=3.0, available_margin_pct=80.0,
         liq_distance_pct=35.0, median_fill_notional=5_000.0,
         sim_net_pnl_usd=12.5,
+        # v9: campos de cópia exigidos por F16-F19
+        coverage_days=45.0, sim_stage4_net_usd=42.0, sim_max_dd_pct=8.0,
+        sim_half_old_net=15.0, sim_half_new_net=27.0,
     )
     base.update(overrides)
     return Candidate(**base)
@@ -354,17 +361,25 @@ def test_v7_f12_rejects_when_enabled() -> None:
 
 
 def test_v7_null_thresholds_disable_new_filters() -> None:
-    """Threshold null desabilita F7b/F12/F13/F15 (padrão v3 de reativação)."""
+    """Threshold null desabilita F7b/F12/F13/F15–F20 (padrão v3 de reativação)."""
     import copy
 
     from engine.strategies.copy_trade.funnel import hard_filters
 
     cfg = copy.deepcopy(CFG)
     for key in ("f7b_max_current_leverage", "f12_min_available_margin_pct",
-                "f13_min_liq_distance_pct", "f15_sim_window_days"):
+                "f13_min_liq_distance_pct", "f15_sim_window_days",
+                "f16_min_coverage_days", "f17_min_sim_net_usd",
+                "f19_max_sim_dd_pct", "f20_max_trader_equity_usd"):
         cfg["hard_filters"][key] = None
+    cfg["hard_filters"]["f18_sim_positive_halves"] = False
     c = v7_base_candidate(max_current_leverage=25.0, available_margin_pct=0.0,
-                          liq_distance_pct=3.0, sim_net_pnl_usd=-50.0)
+                          liq_distance_pct=3.0, sim_net_pnl_usd=-50.0,
+                          coverage_days=2.0, sim_stage4_net_usd=-99.0,
+                          sim_max_dd_pct=90.0, sim_half_new_net=-1.0,
+                          equity=999_999.0,
+                          # F11 escala com equity: notional alto p/ não disparar
+                          median_fill_notional=100_000.0)
     assert hard_filters(c, cfg, now_ms=NOW_MS) is None
 
 
@@ -381,7 +396,7 @@ def test_v7_no_open_positions_is_not_rejected() -> None:
 # v8: Estágio 4 — simulação de cópia como critério final de ranking
 # ----------------------------------------------------------------------------
 def test_v8_stage4_demotes_negative_copy_sim(db) -> None:
-    """Score alto + cópia simulada negativa → REJEITADO (copy_sim_negativa)."""
+    """Guarda final: cópia negativa → REJEITADO mesmo com F15/F17 desligados."""
     import copy
 
     client = make_client()
@@ -389,17 +404,33 @@ def test_v8_stage4_demotes_negative_copy_sim(db) -> None:
     approved_before = {c.address for c in result.approved}
     assert GOOD in approved_before                       # baseline: GOOD aprova
 
-    # mesma carteira, mas com replay do estágio 4 muito mais caro (latência
-    # absurda) — o net do GOOD vira negativo SÓ no estágio 4
+    # mesma carteira, replay muito mais caro (latência absurda) e SEM os gates
+    # F15/F17/F18 — o rebaixamento copy_sim_negativa é a última linha de defesa
     cfg2 = copy.deepcopy(CFG)
     cfg2["copy_simulation"]["latency_slippage_pct"] = 50.0
-    cfg2["hard_filters"]["f15_sim_window_days"] = None   # isola o estágio 4
+    cfg2["hard_filters"]["f15_sim_window_days"] = None
+    cfg2["hard_filters"]["f17_min_sim_net_usd"] = None
+    cfg2["hard_filters"]["f18_sim_positive_halves"] = False
+    cfg2["hard_filters"]["f19_max_sim_dd_pct"] = None
     client2 = make_client()
     result2 = run_scan(client2, db, cfg2, now_ms=NOW_MS)
     rejected = {c.address: c.reject_reason for c in result2.rejected}
     assert GOOD in rejected
     assert rejected[GOOD].startswith("copy_sim_negativa")
     assert result2.funnel_stats.get("rebaixados_copy_sim", 0) >= 1
+
+
+def test_v9_f17_rejects_before_score(db) -> None:
+    """v9: cópia que não rende > $10 morre no F17 (hard filter, pré-score)."""
+    import copy
+
+    cfg2 = copy.deepcopy(CFG)
+    cfg2["copy_simulation"]["latency_slippage_pct"] = 50.0   # torna o GOOD negativo
+    cfg2["hard_filters"]["f15_sim_window_days"] = None       # deixa o F17 decidir
+    client = make_client()
+    result = run_scan(client, db, cfg2, now_ms=NOW_MS)
+    rejected = {c.address: c.reject_reason for c in result.rejected}
+    assert GOOD in rejected and rejected[GOOD].startswith("F17")
 
 
 def test_v8_final_ranking_uses_sim_factor(db) -> None:
@@ -409,8 +440,9 @@ def test_v8_final_ranking_uses_sim_factor(db) -> None:
     assert result.approved, "esperava ao menos 1 aprovado no fixture"
     for c in result.approved:
         assert c.sim_factor is not None and c.sim_factor > 0
-        assert any(r.startswith("estágio 4:") for r in c.rationale)
-    ranks = [c.score * (c.sim_factor or 1.0) for c in result.approved]
+        assert any(r.startswith("cópia simulada:") for r in c.rationale)
+    # v9: ranking final = net da cópia simulada (score é informativo)
+    ranks = [c.sim_stage4_net_usd for c in result.approved]
     assert ranks == sorted(ranks, reverse=True)
 
 
@@ -424,19 +456,28 @@ def test_v8_external_sources_disabled_by_default(db) -> None:
     calls: list[dict] = []
     client2.external_candidates = lambda cfg_sources: calls.append(cfg_sources) or []  # type: ignore[attr-defined]
     result2 = run_scan(client2, db, CFG, now_ms=NOW_MS)
-    # o hook é chamado, mas com flags off retorna vazio → 0 novos
+    # o hook é chamado, mas sem endereços novos → 0 novos
     assert result2.funnel_stats.get("fontes_externas_novos") == 0
     assert calls and calls[0] is CFG["sources"]
 
 
-def test_v8_hl_client_external_candidates_flags_off() -> None:
-    """HLDataClient.external_candidates com flags off não faz request algum."""
+def test_v9_hl_client_external_candidates_no_key_is_silent() -> None:
+    """v9: hypertracker ON no config, mas SEM chave no ambiente → OFF silencioso
+    (zero requests); demais fontes seguem desligadas por flag."""
+    import os
+
     from engine.strategies.copy_trade.hl_data import HLDataClient
 
     client = HLDataClient(None, request_budget=0)   # budget 0: request explodiria
     cfg_sources = CFG["sources"]
+    assert cfg_sources["hypertracker"]["enabled"] is True
     assert cfg_sources["nansen_leaderboard"]["enabled"] is False
-    assert client.external_candidates(cfg_sources) == []
+    old = os.environ.pop("HYPERTRACKER_API_KEY", None)
+    try:
+        assert client.external_candidates(cfg_sources) == []
+    finally:
+        if old is not None:
+            os.environ["HYPERTRACKER_API_KEY"] = old
 
 
 def test_v7_liq_distance_uses_mark_price(db) -> None:

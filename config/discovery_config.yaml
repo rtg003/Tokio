@@ -3,8 +3,12 @@
 # Toda mudança aqui exige: PR com justificativa numérica + bump de
 # logic_version + entrada em docs/discovery_changelog.md + evento logic_updated.
 # (spec: docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md · ADR 0008)
+#
+# REFERÊNCIA CANÔNICA de TODA variável deste arquivo (significado, valor,
+# porquê, evidência, efeito de mudar): docs/discovery_logic_v9.md.
+# tests/test_docs_coverage.py QUEBRA se uma chave nova não estiver lá.
 # ============================================================================
-logic_version: 8
+logic_version: 9
 
 collection:
   leaderboard_top_n: 5000           # v6: era 500 (leaderboard tem 40k+ rows; 500 pegava só baleias)
@@ -30,6 +34,13 @@ collection:
 # dependência dura). HL público continua a fonte de verdade: terceiros só
 # alimentam ENDEREÇOS candidatos — todas as métricas/filtros são nossos.
 sources:
+  # v9: ON — laboratório mediu +274 endereços exclusivos (+53% de pool) com
+  # qualidade fora da amostra igual/melhor (mediana +11.79 vs +10.45).
+  # Sem chave no ambiente → OFF silencioso (zero erro).
+  hypertracker:
+    enabled: true
+    api_key_env: HYPERTRACKER_API_KEY
+    max_addresses: 300            # ~3-5 requests (100/página, pnlMonth+pnlWeek)
   nansen_leaderboard:
     enabled: false                # ligar exige NANSEN_API_KEY no ambiente
     api_key_env: NANSEN_API_KEY
@@ -42,21 +53,27 @@ sources:
     max_addresses: 100
 
 entry_rule:
-  min_positive_windows: 2         # v3: PnL positivo em >= 2 das 4 janelas
-  required_windows: ["30d"]       # v3: só a 30d é obrigatória (60d/7d podem ser negativas)
+  # v9: DESATIVADA (0/vazio) — janelas de PnL têm poder preditivo ~0 sobre o
+  # lucro da cópia (lab: ρ +0.075). A entrada agora é decidida pela simulação
+  # (F16-F19). Código preservado; reativar = valores antigos + bump.
+  min_positive_windows: 0
+  required_windows: []
 
-hard_filters:                     # F1–F11 (binários, ordem de custo; null = desabilitado)
-  f1_recent_activity_days: 7
-  f2_min_closed_trades: 30
+hard_filters:                     # F1–F20 (binários, ordem de custo; null = desabilitado)
+  f1_recent_activity_days: 21     # v9: era 7 — atividade agora é julgada pela simulação (F17/F18); 21d só corta abandono
+  f2_min_closed_trades: 15        # v9: era 30 — amostra mínima p/ a SIMULAÇÃO ter significado
   f2_min_history_days: 60
-  f2b_min_trades_30d: 5           # v5: trader sem atividade recente não tem o que copiar
+  f2b_min_trades_30d: 3           # v9: era 5 — idem f2 (a simulação decide)
   # F3 desabilitado na v3 (scan b684b8bbe5f5: 34/100 reprovados) — scalper é
   # penalizado pelo score de copiabilidade, não eliminado.
   f3_min_avg_holding_hours: null
   f3_max_trades_per_day: null
   # F4 desabilitado na v3 — TWRR segue calculado/exibido, não é mais eliminatório.
   f4_min_twrr_30d_pct: null
-  f5_max_drawdown_90d_pct: 40.0   # v3: era 25.0 (teto também alimenta o score de DD)
+  # v9: F5 vira TETO DE SANIDADE (era 40) — o DD do TRADER teve correlação
+  # POSITIVA com o lucro da cópia no lab (ρ +0.105); quem protege a cópia é o
+  # F19 (DD da CÓPIA). 80% só barra a bomba-relógio (DD 99% = quase-liquidado).
+  f5_max_drawdown_90d_pct: 80.0
   # v4: faixas de DD para o score (drawdown_quality piecewise, não linear)
   # DD 0-20% = score cheio; 20-30% = ×0.7; 30-40% = ×0.4; >40% = reprovado
   f5_dd_quality_bands:
@@ -81,16 +98,30 @@ hard_filters:                     # F1–F11 (binários, ordem de custo; null = 
   # pelo ratio mirror_capital/equity, líquido de taxa+slippage por perna
   f15_sim_window_days: 30
   f15_min_net_pnl_usd: 0.0             # net simulado <= este valor reprova
+  # ---------------------------------------------------------------------------
+  # v9: F16–F20 — GATES SOBRE A CÓPIA (a inversão de filosofia: não julgamos o
+  # trader, julgamos o resultado simulado de ESPELHÁ-LO). Evidência de cada
+  # valor: docs/discovery_logic_v9.md + research/discovery_lab/RESULTADOS.md.
+  f16_min_coverage_days: 30            # histórico mínimo (1º→último fill); mata wallet de 5 dias
+  f17_min_sim_net_usd: 10.0            # cópia precisa RENDER > $10 na janela (quintil top: +71 fora da amostra)
+  f18_sim_positive_halves: true        # edge nas 2 metades da janela (mata sortudo de uma perna)
+  f19_max_sim_dd_pct: 25.0             # DD máximo da CURVA DA CÓPIA (perdedores tinham 56-75% já visível)
+  f20_max_trader_equity_usd: 150000    # preditor nº1 do lab (ρ -0.227): conta menor copia melhor
 
-# v8: ESTÁGIO 4 — simulação de cópia como critério FINAL de ranking.
-# Replay dos fills (janela abaixo) com nosso sizing, taxas taker e custo de
-# latência (200ms-2s ≈ slippage extra por perna). Ranking = score × fator;
-# net negativo rebaixa a REJEITADO (copy_sim_negativa) mesmo com score alto.
+# v8/v9: SIMULAÇÃO DE CÓPIA — replay dos fills com nosso sizing, taxas taker,
+# custo de latência e TETO DE ALAVANCAGEM. v9: o RANKING FINAL é o net desta
+# simulação (score vira informativo); net <= f17 reprova.
 copy_simulation:
   window_days: 60                 # replay 30-60d; 60 = janela cheia de fills
   latency_slippage_pct: 0.03      # custo da latência por perna (bps ≈ 200ms-2s)
-  factor_floor: 0.5               # fator mínimo (cópia ruim, mas positiva)
-  factor_cap: 1.2                 # fator máximo (evita sim dominar o score)
+  # v9: teto de alavancagem da CÓPIA — notional espelhado por fill limitado a
+  # capital × 3. Sem isso, fill de $1.47M em conta de $11k virava "cópia" de
+  # $128k sobre $1k (128x, inexecutável — auditoria do top 1, 2026-07-04).
+  # Racional do 3: DD escala ~linear com lev; custo 10x = 1.3% do capital/trade;
+  # teto 1x derrubaria fills abaixo do mínimo de $10/ordem da HL.
+  max_copy_leverage: 3.0
+  factor_floor: 0.5               # fator mínimo (informativo desde a v9)
+  factor_cap: 1.2                 # fator máximo (informativo desde a v9)
 
 score_weights:                    # somam 1.0
   consistency: 0.25
@@ -106,7 +137,10 @@ score_adjustments:
   liq_distance_threshold_pct: 20.0  # v7: era 10 (abaixo de 15% o F13 já rejeita; penaliza 15-20%)
   crowding_penalty: -5            # wallet no top 20 all-time
   crowding_top_n: 20
-  min_score_for_suggestion: 60.0  # v4: abaixo deste score, candidato vira REJEITADO (não SUGERIDO)
+  # v9: 0 = DESATIVADO (era 60) — o score completo tem ρ +0.125 com o lucro da
+  # cópia (mal supera componentes isolados); a régua decisiva é F16-F19.
+  # Score segue calculado e exibido como informação.
+  min_score_for_suggestion: 0.0
   pf_absurd_penalty: -5           # v5: PF > 10 é suspeito (ausência de perdas realizadas)
   pf_absurd_threshold: 10.0       # v5: threshold para penalização de PF absurdo
 

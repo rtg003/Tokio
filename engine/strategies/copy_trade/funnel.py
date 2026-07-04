@@ -85,6 +85,10 @@ class Candidate:
     sim_expectancy_usd: float | None = None      # net / trade fechado
     sim_max_dd_pct: float | None = None          # max DD da curva da cópia
     sim_factor: float | None = None              # multiplicador do ranking
+    # v9: cobertura + consistência da cópia (F16/F18)
+    coverage_days: float | None = None           # dias entre 1º e último fill
+    sim_half_old_net: float | None = None        # net da cópia na metade antiga
+    sim_half_new_net: float | None = None        # net da cópia na metade recente
     top_assets: list[str] = field(default_factory=list)
     last_activity: str | None = None
     history_truncated: bool = False
@@ -317,35 +321,70 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
                   for i in range(0, len(pnl_30d_hist) - 1, step)]
         c.weekly_stability = M.weekly_stability(weekly)
 
-    # -- v7: simulação retroativa de cópia (F15) --------------------------------
+    # simulações de cópia (F15/F17/F18) — implementação ÚNICA, usada também
+    # pelo laboratório (research/discovery_lab/qualify.py)
+    compute_copy_sims(c, fills, cfg, now_ms)
+
+    c.style = classify_style(c.median_hold_hours)
+
+
+def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
+                      cfg: dict[str, Any], now_ms: float) -> None:
+    """Preenche as métricas de simulação de cópia do candidato.
+
+    - F15 (v7): net sem latência na janela curta.
+    - Estágio 4 (v8): net/expectância/DD com latência e TETO DE ALAVANCAGEM (v9).
+    - F16 (v9): cobertura de fills (dias entre 1º e último).
+    - F18 (v9): net das duas metades da janela (consistência da CÓPIA).
+    """
     hf = cfg["hard_filters"]
-    if fills and hf.get("f15_sim_window_days") is not None and c.equity > 0:
-        cost = cfg["cost_of_copy"]
+    if not fills or c.equity <= 0:
+        return
+    cost = cfg["cost_of_copy"]
+    stage4 = cfg.get("copy_simulation") or {}
+    max_lev = stage4.get("max_copy_leverage")
+    capital = float(hf["f11_mirror_capital_usd"])
+
+    times = [float(f.get("time", 0)) for f in fills]
+    c.coverage_days = (max(times) - min(times)) / DAY_MS if len(times) >= 2 else 0.0
+
+    if hf.get("f15_sim_window_days") is not None:
         sim = M.simulate_copy(
-            fills, c.equity, float(hf["f11_mirror_capital_usd"]),
+            fills, c.equity, capital,
             taker_fee_pct=float(cost["taker_fee_pct"]),
             slippage_pct=float(cost["slippage_pct"]),
+            max_copy_leverage=max_lev,
             window_days=float(hf["f15_sim_window_days"]), now_ms=now_ms)
         if sim is not None:
             c.sim_net_pnl_usd = sim.net_pnl_usd
             c.sim_copy_notional_usd = sim.median_copy_notional_usd
 
-    # -- v8: Estágio 4 — replay com custo de latência (critério final) ----------
-    stage4 = cfg.get("copy_simulation")
-    if fills and stage4 and c.equity > 0:
-        cost = cfg["cost_of_copy"]
+    if stage4:
+        lat = float(stage4.get("latency_slippage_pct", 0))
+        window = float(stage4.get("window_days", 60))
         sim4 = M.simulate_copy(
-            fills, c.equity, float(hf["f11_mirror_capital_usd"]),
+            fills, c.equity, capital,
             taker_fee_pct=float(cost["taker_fee_pct"]),
             slippage_pct=float(cost["slippage_pct"]),
-            latency_slippage_pct=float(stage4.get("latency_slippage_pct", 0)),
-            window_days=float(stage4.get("window_days", 60)), now_ms=now_ms)
+            latency_slippage_pct=lat, max_copy_leverage=max_lev,
+            window_days=window, now_ms=now_ms)
         if sim4 is not None:
             c.sim_stage4_net_usd = sim4.net_pnl_usd
             c.sim_expectancy_usd = sim4.expectancy_usd
             c.sim_max_dd_pct = sim4.max_dd_pct
-
-    c.style = classify_style(c.median_hold_hours)
+        # F18 — metades: o limite SUPERIOR é garantido filtrando os fills
+        # (simulate_copy só corta o inferior)
+        half = window / 2
+        for attr, half_end in (("sim_half_old_net", now_ms - half * DAY_MS),
+                               ("sim_half_new_net", now_ms)):
+            half_fills = [f for f in fills if float(f.get("time", 0)) <= half_end]
+            h = M.simulate_copy(
+                half_fills, c.equity, capital,
+                taker_fee_pct=float(cost["taker_fee_pct"]),
+                slippage_pct=float(cost["slippage_pct"]),
+                latency_slippage_pct=lat, max_copy_leverage=max_lev,
+                window_days=half, now_ms=half_end)
+            setattr(c, attr, h.net_pnl_usd if h is not None else None)
 
 
 def utcnow_from_ms(ms: float) -> str:
@@ -357,8 +396,10 @@ def utcnow_from_ms(ms: float) -> str:
 # ----------------------------------------------------------------------------
 def hard_filters(c: Candidate, cfg: dict[str, Any],
                  now_ms: float | None = None) -> str | None:
-    """F1–F15 (incl. F7b/F12/F13 de posição aberta — v7). Retorna o motivo da
-    PRIMEIRA reprovação, ou None (passou). Threshold null = filtro desabilitado."""
+    """F1–F20 (v7: F7b/F12/F13 posição aberta · v9: F16–F20 copiabilidade real).
+    Retorna o motivo da PRIMEIRA reprovação, ou None (passou).
+    Threshold null = filtro desabilitado. Referência canônica de cada variável:
+    docs/discovery_logic_v9.md."""
     f = cfg["hard_filters"]
     now_ms = now_ms or time.time() * 1000
 
@@ -377,6 +418,21 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
     f2b = f.get("f2b_min_trades_30d")
     if f2b is not None and c.n_trades_30d < int(f2b):
         return f"F2b: {c.n_trades_30d} trades fechados nos últimos 30d < {f2b}"
+
+    # v9 — F16: cobertura mínima de histórico (dias entre 1º e último fill).
+    # Auditoria do "top 1" do lab: 5 dias de atividade geravam +250% irreal.
+    if f.get("f16_min_coverage_days") is not None and \
+            c.coverage_days is not None and \
+            c.coverage_days < float(f["f16_min_coverage_days"]):
+        return (f"F16: histórico de {c.coverage_days:.0f}d < "
+                f"{f['f16_min_coverage_days']}d (wallet nova demais p/ julgar)")
+
+    # v9 — F20: teto de equity do trader — preditor nº 1 do laboratório
+    # (Spearman −0.227): quanto MENOR a conta, melhor a cópia com $1k.
+    if f.get("f20_max_trader_equity_usd") is not None and \
+            c.equity > float(f["f20_max_trader_equity_usd"]):
+        return (f"F20: equity US$ {c.equity:,.0f} > "
+                f"{f['f20_max_trader_equity_usd']:,.0f} (grande demais p/ espelhar)")
 
     # F3 anti-scalper (threshold null = desabilitado): exige EVIDÊNCIA positiva
     # (hold None nunca reprova sozinho)
@@ -450,6 +506,33 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
         return (f"F15: cópia simulada {f['f15_sim_window_days']}d com "
                 f"US$ {f['f11_mirror_capital_usd']:.0f} → PnL líquido "
                 f"US$ {c.sim_net_pnl_usd:.2f}")
+
+    # v9 — F17: a cópia simulada (com latência e teto de alavancagem) precisa
+    # RENDER, não só não perder. Quintis do lab: top +$71 em B vs +$0.3 no 2º.
+    if f.get("f17_min_sim_net_usd") is not None and \
+            c.sim_stage4_net_usd is not None and \
+            c.sim_stage4_net_usd <= float(f["f17_min_sim_net_usd"]):
+        return (f"F17: cópia simulada rende US$ {c.sim_stage4_net_usd:.2f} <= "
+                f"{f['f17_min_sim_net_usd']} (não paga o risco)")
+
+    # v9 — F18: edge nas DUAS metades da janela (mata o sortudo de uma perna).
+    # Só opera quando a simulação foi computada (sim_stage4 não-None); metade
+    # antiga sem dados = sem evidência, não reprova — mas a RECENTE é
+    # obrigatória. Lab: corte 2 foi de −$94 p/ +$770 com este gate.
+    if f.get("f18_sim_positive_halves") and c.sim_stage4_net_usd is not None:
+        if c.sim_half_new_net is None or c.sim_half_new_net <= 0 or \
+                (c.sim_half_old_net is not None and c.sim_half_old_net <= 0):
+            old_s = f"{c.sim_half_old_net:.2f}" if c.sim_half_old_net is not None else "n/d"
+            new_s = f"{c.sim_half_new_net:.2f}" if c.sim_half_new_net is not None else "n/d"
+            return f"F18: metades da cópia (antiga US$ {old_s} / recente US$ {new_s})"
+
+    # v9 — F19: DD máximo da curva da CÓPIA (risco da cópia, não do trader).
+    # Lab: perdedores fora da amostra tinham DD de cópia 56–75% já visível aqui.
+    if f.get("f19_max_sim_dd_pct") is not None and \
+            c.sim_max_dd_pct is not None and \
+            c.sim_max_dd_pct > float(f["f19_max_sim_dd_pct"]):
+        return (f"F19: DD da cópia simulada {c.sim_max_dd_pct:.1f}% > "
+                f"{f['f19_max_sim_dd_pct']}%")
     return None
 
 
@@ -672,14 +755,21 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
                 floor=float(stage4.get("factor_floor", 0.5)),
                 cap=float(stage4.get("factor_cap", 1.2)))
             c.rationale.append(
-                f"estágio 4: net US$ {c.sim_stage4_net_usd:+.2f}, "
+                f"cópia simulada: net US$ {c.sim_stage4_net_usd:+.2f}, "
                 f"expectância US$ {c.sim_expectancy_usd:+.2f}/trade, "
-                f"DD da cópia {c.sim_max_dd_pct:.1f}%, fator {c.sim_factor:.2f}"
+                f"DD da cópia {c.sim_max_dd_pct:.1f}%, "
+                f"cobertura {c.coverage_days:.0f}d, metades "
+                f"{c.sim_half_old_net if c.sim_half_old_net is not None else 'n/d'}"
+                f"/{c.sim_half_new_net if c.sim_half_new_net is not None else 'n/d'}"
                 if c.sim_stage4_net_usd is not None else
-                "estágio 4: sem dados de simulação (fator neutro 1.0)")
+                "cópia simulada: sem dados")
             survivors.append(c)
         approved = survivors
-        approved.sort(key=lambda c: -(c.score * (c.sim_factor or 1.0)))
+        # v9: RANKING FINAL = net da cópia simulada (score é informativo).
+        # Evidência: rank por net superou score×fator no walk-forward do lab.
+        approved.sort(key=lambda c: -(c.sim_stage4_net_usd
+                                      if c.sim_stage4_net_usd is not None
+                                      else -1e12))
     else:
         approved.sort(key=lambda c: -c.score)
     stats["aprovados"] = len(approved)
@@ -720,6 +810,9 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
                 "sim_expectancy_usd": c.sim_expectancy_usd,
                 "sim_max_dd_pct": c.sim_max_dd_pct,
                 "sim_factor": c.sim_factor,
+                "coverage_days": c.coverage_days,
+                "sim_half_old_net": c.sim_half_old_net,
+                "sim_half_new_net": c.sim_half_new_net,
             },
         )
         if c.reject_reason:
@@ -797,7 +890,9 @@ def render_report(result: ScanResult, cfg: dict[str, Any]) -> tuple[str, str]:
             "sim_expectancy_usd": c.sim_expectancy_usd,
             "sim_max_dd_pct": c.sim_max_dd_pct,
             "sim_factor": c.sim_factor,
-            "final_rank_score": round(c.score * (c.sim_factor or 1.0), 2),
+            "coverage_days": c.coverage_days,
+            "sim_half_old_net": c.sim_half_old_net,
+            "sim_half_new_net": c.sim_half_new_net,
             "rationale": c.rationale,
         } for i, c in enumerate(top)],
         "rejected_reasons": {c.address: c.reject_reason for c in result.rejected},

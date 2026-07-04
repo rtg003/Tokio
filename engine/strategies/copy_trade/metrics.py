@@ -311,7 +311,7 @@ class CopySimulation:
 def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
                   mirror_capital: float, *, taker_fee_pct: float = 0.045,
                   slippage_pct: float = 0.02, latency_slippage_pct: float = 0.0,
-                  window_days: float = 30.0,
+                  window_days: float = 30.0, max_copy_leverage: float | None = None,
                   now_ms: float | None = None) -> CopySimulation | None:
     """Espelhamento retroativo: "se tivéssemos copiado este trader com
     `mirror_capital` na janela, qual seria o PnL LÍQUIDO de taxas+slippage?"
@@ -328,6 +328,12 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     A curva de equity da cópia (capital + PnL líquido acumulado, na ordem
     cronológica dos fills) produz `max_dd_pct` e `expectancy_usd`.
 
+    v9 — TETO DE ALAVANCAGEM: `max_copy_leverage` limita o notional espelhado
+    por fill a `mirror_capital × teto`; o PnL do fill é escalado pelo MESMO
+    fator do corte (copiamos 40% do tamanho → recebemos 40% do PnL). Sem o
+    teto, um fill de $1,47M numa conta de $11k viraria "cópia" de $128k sobre
+    $1k — 128x, inexecutável (auditoria do top 1, 2026-07-04).
+
     Aproximações documentadas: equity ATUAL como denominador (equity da janela
     não é conhecido ponto a ponto); só PnL REALIZADO (rejeitar lucro 100%
     não-realizado é intencional — dossiê #1 do Hermes); funding ignorado.
@@ -342,6 +348,8 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     if not window:
         return None
     ratio = mirror_capital / trader_equity
+    notional_cap = (mirror_capital * float(max_copy_leverage)
+                    if max_copy_leverage else None)
     base_rate = (taker_fee_pct + slippage_pct) / 100.0        # por perna
     lat_rate = latency_slippage_pct / 100.0                    # por perna
     gross = 0.0
@@ -355,12 +363,16 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     for f in window:
         notional = abs(float(f.get("sz", 0) or 0) * float(f.get("px", 0) or 0))
         copy_notional = notional * ratio
+        scale = 1.0
+        if notional_cap is not None and copy_notional > notional_cap:
+            scale = notional_cap / copy_notional
+            copy_notional = notional_cap
         notionals.append(copy_notional)
         leg_cost = copy_notional * base_rate
         leg_lat = copy_notional * lat_rate
         cost += leg_cost + leg_lat
         lat_cost += leg_lat
-        pnl = float(f.get("closedPnl", 0) or 0) * ratio
+        pnl = float(f.get("closedPnl", 0) or 0) * ratio * scale
         gross += pnl
         if pnl != 0.0:
             n_closed += 1
