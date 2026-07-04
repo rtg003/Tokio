@@ -691,3 +691,41 @@ notificando o Hermes das novas leituras e filtros.
 - O score não mede copiabilidade real
 - Filtros atuais não olham posições abertas no momento do scan
 - A simulação retroativa é a mudança de maior impacto estrutural
+
+## UPDATE-0008 · 2026-07-04 · Status: PENDENTE
+
+Origem: PR do Hermes "discovery v10 — filtros de atividade + win_rate realista"
+Tipo: logica_discovery + operacao
+
+Resumo: 4 correções no funil após dossiê do top 1 do scan v9 (trader parado
+há 7 dias ainda era SUGERIDO, win rate 100% na tabela mas 64% na realidade).
+
+Mudanças em código (funnel.py):
+1. F2c (NOVO): min_trades_7d — rejeita trader sem 5 trades nos últimos 7d
+   - Atributo n_trades_7d adicionado ao Candidate
+   - Calculado no deep_dive junto com n_trades_30d
+   - Adicionado no hard_filters() após F2b
+2. win_rate_30d (NOVO): win rate calculado só sobre últimos 30d
+   - Atributo win_rate_30d adicionado ao Candidate
+   - Calculado no deep_dive
+   - win_rate original (60d) permanece para compatibilidade
+3. Ambos persistidos no extras do upsert_candidate
+
+Mudanças em config:
+- logic_version: 9 → 10
+- f1_recent_activity_days: 21 → 7 (voltou para 7)
+- f2c_min_trades_7d: 5 (NOVO)
+- f20_max_trader_equity_usd: 150000 → 50000
+
+Migration 0008 (SQLite + Supabase):
+- ALTER TABLE traders ADD COLUMN n_trades_7d INTEGER
+- ALTER TABLE traders ADD COLUMN win_rate_30d REAL
+
+Ações do Cursor:
+1. Tomar ciência das mudanças em funnel.py
+2. O test_docs_coverage.py pode quebrar se exigir que toda chave do config
+   esteja documentada em docs/discovery_logic_v9.md — atualizar doc se preciso
+3. Se for evoluir o discovery, trabalhar sobre a v10
+
+Validação: scan v10 dispara automaticamente no próximo start do engine.
+Verificar events por logic_updated (9→10).

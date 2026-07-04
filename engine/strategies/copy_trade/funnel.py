@@ -62,10 +62,12 @@ class Candidate:
     pf: float | None = None
     n_trades: int = 0                 # episódios fechados na janela
     n_trades_30d: int = 0
+    n_trades_7d: int = 0            # v10: trades fechados nos últimos 7d (filtro de inatividade)
     fills_per_day: float = 0.0
     trades_per_day: float = 0.0
     median_hold_hours: float | None = None
     win_rate: float | None = None
+    win_rate_30d: float | None = None   # v10: win rate só dos últimos 30d (não 60d)
     top3_concentration: float = 0.0
     avg_leverage: float | None = None
     liquid_volume_share: float = 1.0
@@ -222,11 +224,20 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
         c.n_trades = len(closing_fills)
         c.n_trades_30d = len([f for f in closing_fills
                               if float(f["time"]) >= now_ms - 30 * DAY_MS])
+        c.n_trades_7d = len([f for f in closing_fills
+                             if float(f["time"]) >= now_ms - 7 * DAY_MS])
         c.trades_per_day = len(closing_fills) / covered_days
 
         closed_pnls = [float(f.get("closedPnl", 0) or 0) for f in closing_fills]
         wins = [p for p in closed_pnls if p > 0]
         c.win_rate = len(wins) / len(closed_pnls) if closed_pnls else None
+        # v10: win_rate_30d — calculado só sobre closing fills dos últimos 30d
+        # (o win_rate da janela de 60d é enviesado por fills antigos)
+        closing_30d = [f for f in closing_fills
+                       if float(f["time"]) >= now_ms - 30 * DAY_MS]
+        closed_pnls_30d = [float(f.get("closedPnl", 0) or 0) for f in closing_30d]
+        wins_30d = [p for p in closed_pnls_30d if p > 0]
+        c.win_rate_30d = len(wins_30d) / len(closed_pnls_30d) if closed_pnls_30d else None
         c.top3_concentration = M.top_n_concentration(closed_pnls, 3)
 
         volume = sum(abs(float(f.get("sz", 0)) * float(f.get("px", 0))) for f in fills)
@@ -418,6 +429,11 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
     f2b = f.get("f2b_min_trades_30d")
     if f2b is not None and c.n_trades_30d < int(f2b):
         return f"F2b: {c.n_trades_30d} trades fechados nos últimos 30d < {f2b}"
+
+    # v10: F2c — trader sem atividade nas últimas 48h/7d não tem o que copiar AGORA
+    f2c = f.get("f2c_min_trades_7d")
+    if f2c is not None and c.n_trades_7d < int(f2c):
+        return f"F2c: {c.n_trades_7d} trades fechados nos últimos 7d < {f2c} (inativo)"
 
     # v9 — F16: cobertura mínima de histórico (dias entre 1º e último fill).
     # Auditoria do "top 1" do lab: 5 dias de atividade geravam +250% irreal.
@@ -796,6 +812,8 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             logic_version=lv,
             extras={
                 "n_trades_30d": c.n_trades_30d,
+                "n_trades_7d": c.n_trades_7d,
+                "win_rate_30d": c.win_rate_30d,
                 "avg_holding_hours": c.median_hold_hours,
                 "avg_leverage": c.avg_leverage,
                 "equity": c.equity,
