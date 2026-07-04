@@ -1,0 +1,4 @@
+# H2 — custo de latência sensível ao perfil: scalper (hold curto) paga mais.
+# fator = clamp(4h/hold, 0.5, 4.0) sobre latency_slippage_pct por perna.
+lab:
+  latency_hold_scaling: true

@@ -4,7 +4,7 @@
 # logic_version + entrada em docs/discovery_changelog.md + evento logic_updated.
 # (spec: docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md · ADR 0008)
 # ============================================================================
-logic_version: 7
+logic_version: 8
 
 collection:
   leaderboard_top_n: 5000           # v6: era 500 (leaderboard tem 40k+ rows; 500 pegava só baleias)
@@ -25,6 +25,21 @@ collection:
   active_scan_window_hours: 48    # janela de varredura ativa (48h = fim de semana + dia útil)
   active_scan_max_addresses: 200  # limite de endereços novos por varredura
   active_scan_min_notional_usd: 1000  # ignora fills poeira
+
+# v8: fontes ADICIONAIS de candidatos (opcionais, atrás de flag, sem
+# dependência dura). HL público continua a fonte de verdade: terceiros só
+# alimentam ENDEREÇOS candidatos — todas as métricas/filtros são nossos.
+sources:
+  nansen_leaderboard:
+    enabled: false                # ligar exige NANSEN_API_KEY no ambiente
+    api_key_env: NANSEN_API_KEY
+    max_addresses: 100
+    window_days: 30               # janela de datas do leaderboard consultado
+  apify_hl_scraper:               # backup de coleta (scraper gerenciado)
+    enabled: false                # ligar exige APIFY_TOKEN no ambiente
+    api_key_env: APIFY_TOKEN
+    actor: ~                      # id do actor Apify (definido na ativação)
+    max_addresses: 100
 
 entry_rule:
   min_positive_windows: 2         # v3: PnL positivo em >= 2 das 4 janelas
@@ -66,6 +81,16 @@ hard_filters:                     # F1–F11 (binários, ordem de custo; null = 
   # pelo ratio mirror_capital/equity, líquido de taxa+slippage por perna
   f15_sim_window_days: 30
   f15_min_net_pnl_usd: 0.0             # net simulado <= este valor reprova
+
+# v8: ESTÁGIO 4 — simulação de cópia como critério FINAL de ranking.
+# Replay dos fills (janela abaixo) com nosso sizing, taxas taker e custo de
+# latência (200ms-2s ≈ slippage extra por perna). Ranking = score × fator;
+# net negativo rebaixa a REJEITADO (copy_sim_negativa) mesmo com score alto.
+copy_simulation:
+  window_days: 60                 # replay 30-60d; 60 = janela cheia de fills
+  latency_slippage_pct: 0.03      # custo da latência por perna (bps ≈ 200ms-2s)
+  factor_floor: 0.5               # fator mínimo (cópia ruim, mas positiva)
+  factor_cap: 1.2                 # fator máximo (evita sim dominar o score)
 
 score_weights:                    # somam 1.0
   consistency: 0.25

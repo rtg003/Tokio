@@ -1,0 +1,4 @@
+# H4 — Estágio 4 como qualificador com PISO: cópia em A precisa render > $5
+# (0.5% sobre $1k na janela) — não basta não perder.
+lab:
+  min_stage4_net: 5.0
