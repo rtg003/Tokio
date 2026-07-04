@@ -771,3 +771,55 @@ Validação: após próximo deploy, verificar
 `SELECT * FROM schema_migrations_supabase ORDER BY filename;` — deve listar
 0001..0009 com applied_at preenchido. A tabela _migration_test deve existir
 em Postgres.
+
+---
+
+### UPDATE-0011 — Bloco 3 copy_pinned + migration 0008 (schema fix)
+
+**Status:** PENDENTE
+
+**Contexto:** Implementação do Bloco 3 (flag inviolável copy_pinned) na branch
+`feat/copy-trade-operacional`. A maior parte do código já estava commitada em
+`f19c54c`; este commit (`b9cec84`) adiciona a migration 0008 faltante e limpa
+imports do teste.
+
+**Mudanças que afetam o Cursor (schema/migrations):**
+
+1. `db/migrations/0008_discovery_v10.sql` (NOVO): cria colunas v10
+   `n_trades_7d INTEGER` e `win_rate_30d REAL` na tabela `traders`. Estas
+   colunas já eram referenciadas em `funnel.persist_scan` (linhas ~824-825)
+   mas não tinham migration local — só existiam no espelho Supabase
+   (`0006_discovery_v8.sql` cobre v8, mas `n_trades_7d`/`win_rate_30d` não
+   estavam em nenhuma migration local). Sem esta migration, o teste
+   `test_rescan_pinned_rejecting_keeps_status_and_reason` falha com
+   `sqlite3.OperationalError: no such column: n_trades_7d`.
+2. `db/migrations/supabase/0008_discovery_v10.sql` (NOVO): espelho Postgres
+   idempotente (`IF NOT EXISTS`) das mesmas duas colunas.
+3. `db/migrations/0009_copy_pinned.sql` (já existente, `f19c54c`):
+   `ALTER TABLE traders ADD COLUMN copy_pinned INTEGER NOT NULL DEFAULT 0`.
+4. `db/migrations/supabase/0009_copy_pinned.sql` (já existente, `f19c54c`):
+   espelho Postgres idempotente.
+
+**Comportamento do copy_pinned (Bloco 3):**
+- `set_status` → DRY_RUN/COPIANDO com `by` contendo 'human' ou 'gate'
+  (ou `human_gate=True`) seta `copy_pinned = 1` automaticamente.
+- `unpin_trader(db, addr, by=, human_gate=True)`: só remove o pin com
+  human_gate=True E status fora de DRY_RUN/COPIANDO (precisa pausar antes).
+- `funnel.persist_scan`: traders com `copy_pinned = 1` têm métricas
+  atualizadas (score, simulações, etc.) mas NUNCA têm `reject_reason`
+  sobrescrito, NUNCA são rebaixados via `set_status`. Log informativo
+  `discovery.pinned_would_reject` quando o re-scan reprovaria.
+- CLI: `python -m engine.cli trader unpin <addr> [--yes]`.
+- Dashboard: chip 📌 ao lado do status quando `copy_pinned = 1`.
+
+**Ações do Cursor:**
+1. Tomar ciência da migration 0008 (schema fix v10) — era um gap: o código
+   já escrevia nessas colunas mas a migration local não existia.
+2. Ao revisar PRs do copy_trade, verificar consistência: toda coluna nova
+   referenciada em `funnel.persist_scan`/`upsert_candidate` deve ter
+   migration local correspondente.
+
+**Validação:** `pytest tests/test_traders_store.py` — 14 passam (6 originais
++ 8 do Bloco 3). Nota: `tests/test_discovery_funnel.py` tem 19 falhas
+pré-existentes (não relacionadas ao Bloco 3 — falham no commit `f19c54c`
+original; são ligadas ao schema/config de discovery v10).
