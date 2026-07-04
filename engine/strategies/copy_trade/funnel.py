@@ -74,6 +74,12 @@ class Candidate:
     deposit_share: float = 0.0
     liq_distance_pct: float | None = None
     avg_trade_pnl_pct: float = 0.0
+    # v7 (UPDATE-0007): copiabilidade real — posições abertas + simulação
+    max_current_leverage: float | None = None    # max lev das posições ABERTAS
+    available_margin_pct: float | None = None    # margem livre / accountValue
+    median_fill_notional: float | None = None    # mediana |sz×px| dos fills
+    sim_net_pnl_usd: float | None = None         # F15: net da cópia simulada
+    sim_copy_notional_usd: float | None = None   # mediana do notional espelhado
     top_assets: list[str] = field(default_factory=list)
     last_activity: str | None = None
     history_truncated: bool = False
@@ -230,6 +236,9 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
         if closed_pnls and volume > 0:
             c.avg_trade_pnl_pct = (pnl_total / len(closed_pnls)) / \
                 (volume / len(fills)) * 100
+        # v7: notional REAL por fill (o F11 antigo assumia 5% do equity — bug)
+        c.median_fill_notional = statistics.median(
+            abs(float(f.get("sz", 0)) * float(f.get("px", 0))) for f in fills)
     else:
         gains = losses = 0.0
 
@@ -243,14 +252,26 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
         c.equity = equity_now
     levs = [float(p.get("leverage", {}).get("value", 0) or 0) for p in positions]
     c.avg_leverage = statistics.mean([l for l in levs if l > 0]) if any(levs) else None
-    # distância de liquidação da posição mais próxima
+    # v7 — F7b: alavancagem ATUAL (o F7 mede a média; o trader pode estar 20x agora)
+    c.max_current_leverage = max((l for l in levs if l > 0), default=None)
+    # v7 — F12: margem disponível (available = 0 → 100% comprometido)
+    margin_used = float(ch.get("marginSummary", {}).get("totalMarginUsed", 0) or 0)
+    if equity_now > 0:
+        c.available_margin_pct = max(0.0, (equity_now - margin_used) / equity_now * 100)
+    # distância de liquidação da posição mais próxima — referência = MARK price
+    # (v7: usar a entrada escondia risco em posição que já andou muito)
     dists = []
     for p in positions:
         liq_px = p.get("liquidationPx")
-        entry = float(p.get("entryPx", 0) or 0)
-        if liq_px is None or entry <= 0:
+        if liq_px is None:
             continue
-        dists.append(abs(entry - float(liq_px)) / entry * 100)
+        szi = abs(float(p.get("szi", 0) or 0))
+        notional = float(p.get("positionValue", 0) or 0)
+        ref = (notional / szi) if szi > 0 and notional > 0 else \
+            float(p.get("entryPx", 0) or 0)
+        if ref <= 0:
+            continue
+        dists.append(abs(ref - float(liq_px)) / ref * 100)
     c.liq_distance_pct = min(dists) if dists else None
     # exposição líquida (delta-neutro p/ F9)
     notionals = [float(p.get("positionValue", 0) or 0) *
@@ -291,6 +312,19 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
                   for i in range(0, len(pnl_30d_hist) - 1, step)]
         c.weekly_stability = M.weekly_stability(weekly)
 
+    # -- v7: simulação retroativa de cópia (F15) --------------------------------
+    hf = cfg["hard_filters"]
+    if fills and hf.get("f15_sim_window_days") is not None and c.equity > 0:
+        cost = cfg["cost_of_copy"]
+        sim = M.simulate_copy(
+            fills, c.equity, float(hf["f11_mirror_capital_usd"]),
+            taker_fee_pct=float(cost["taker_fee_pct"]),
+            slippage_pct=float(cost["slippage_pct"]),
+            window_days=float(hf["f15_sim_window_days"]), now_ms=now_ms)
+        if sim is not None:
+            c.sim_net_pnl_usd = sim.net_pnl_usd
+            c.sim_copy_notional_usd = sim.median_copy_notional_usd
+
     c.style = classify_style(c.median_hold_hours)
 
 
@@ -303,7 +337,8 @@ def utcnow_from_ms(ms: float) -> str:
 # ----------------------------------------------------------------------------
 def hard_filters(c: Candidate, cfg: dict[str, Any],
                  now_ms: float | None = None) -> str | None:
-    """F1–F11. Retorna o motivo da PRIMEIRA reprovação, ou None (passou)."""
+    """F1–F15 (incl. F7b/F12/F13 de posição aberta — v7). Retorna o motivo da
+    PRIMEIRA reprovação, ou None (passou). Threshold null = filtro desabilitado."""
     f = cfg["hard_filters"]
     now_ms = now_ms or time.time() * 1000
 
@@ -342,11 +377,32 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
             c.max_dd_90d_pct > float(f["f5_max_drawdown_90d_pct"]):
         return f"F5: max DD 90d {c.max_dd_90d_pct:.1f}% > {f['f5_max_drawdown_90d_pct']}%"
 
+    # v7 — F13: posição aberta perto demais da liquidação (medida do mark price)
+    if f.get("f13_min_liq_distance_pct") is not None and \
+            c.liq_distance_pct is not None and \
+            c.liq_distance_pct < float(f["f13_min_liq_distance_pct"]):
+        return (f"F13: dist. liquidação {c.liq_distance_pct:.1f}% < "
+                f"{f['f13_min_liq_distance_pct']}%")
+
     if c.top3_concentration > float(f["f6_max_top3_pnl_concentration"]):
         return f"F6: top-3 trades = {c.top3_concentration * 100:.0f}% do PnL"
 
     if c.avg_leverage is not None and c.avg_leverage > float(f["f7_max_avg_leverage"]):
         return f"F7: alavancagem média {c.avg_leverage:.1f}x > {f['f7_max_avg_leverage']}x"
+
+    # v7 — F7b: alavancagem ATUAL das posições abertas (a média esconde o agora)
+    if f.get("f7b_max_current_leverage") is not None and \
+            c.max_current_leverage is not None and \
+            c.max_current_leverage > float(f["f7b_max_current_leverage"]):
+        return (f"F7b: alavancagem atual {c.max_current_leverage:.1f}x > "
+                f"{f['f7b_max_current_leverage']}x")
+
+    # v7 — F12: margem 100% comprometida = qualquer movimento contra liquida
+    if f.get("f12_min_available_margin_pct") is not None and \
+            c.available_margin_pct is not None and \
+            c.available_margin_pct < float(f["f12_min_available_margin_pct"]):
+        return (f"F12: margem disponível {c.available_margin_pct:.1f}% < "
+                f"{f['f12_min_available_margin_pct']}%")
 
     if c.liquid_volume_share < float(f["f8_min_liquid_volume_share"]):
         return f"F8: só {c.liquid_volume_share * 100:.0f}% do volume em ativos líquidos"
@@ -359,12 +415,21 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
     if c.deposit_share > float(f["f10_max_deposit_growth_share"]):
         return f"F10: {c.deposit_share * 100:.0f}% do crescimento veio de aporte"
 
-    if c.equity > 0 and c.n_trades > 0:
-        median_notional = c.equity * 0.05 if not c.top_assets else c.equity * 0.05
-        copy_notional = median_notional * float(f["f11_mirror_capital_usd"]) / c.equity
+    # v7 — F11 corrigido: notional REAL dos fills (o placeholder de 5% do equity
+    # estimava US$ 50 de cópia onde o real era US$ 1.80 — dossiê #6 do Hermes)
+    if c.equity > 0 and c.median_fill_notional is not None:
+        copy_notional = c.median_fill_notional * \
+            float(f["f11_mirror_capital_usd"]) / c.equity
         if copy_notional < float(f["f11_min_mirror_notional_usd"]):
             return (f"F11: cópia estimada US$ {copy_notional:.2f} < "
                     f"{f['f11_min_mirror_notional_usd']} com capital configurado")
+
+    # v7 — F15: simulação retroativa — cópia que não paga taxa+slippage não serve
+    if f.get("f15_sim_window_days") is not None and c.sim_net_pnl_usd is not None \
+            and c.sim_net_pnl_usd <= float(f.get("f15_min_net_pnl_usd", 0.0)):
+        return (f"F15: cópia simulada {f['f15_sim_window_days']}d com "
+                f"US$ {f['f11_mirror_capital_usd']:.0f} → PnL líquido "
+                f"US$ {c.sim_net_pnl_usd:.2f}")
     return None
 
 
@@ -414,6 +479,13 @@ def score_candidate(c: Candidate, cfg: dict[str, Any]) -> float:
         f"max DD 90d: {c.max_dd_90d_pct:.1f}%" if c.max_dd_90d_pct is not None else "DD: n/d",
         f"hold mediano: {c.median_hold_hours:.1f}h" if c.median_hold_hours is not None
         else "hold: n/d",
+        # v7: copiabilidade real (posições abertas + simulação)
+        f"margem disponível: {c.available_margin_pct:.0f}%"
+        if c.available_margin_pct is not None else "margem: n/d",
+        f"lev atual: {c.max_current_leverage:.1f}x"
+        if c.max_current_leverage is not None else "lev atual: sem posição",
+        f"cópia simulada 30d: US$ {c.sim_net_pnl_usd:+.2f} líquido"
+        if c.sim_net_pnl_usd is not None else "cópia simulada: n/d",
         *(f"ajuste {name}: {val:+.0f}" for name, val in comps.adjustments),
     ]
     return c.score
@@ -576,6 +648,9 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
                 "windows_positive": c.windows_positive,
                 "reject_reason": c.reject_reason,
                 "history_truncated": 1 if c.history_truncated else 0,
+                "max_current_leverage": c.max_current_leverage,
+                "available_margin_pct": c.available_margin_pct,
+                "sim_net_pnl_usd": c.sim_net_pnl_usd,
             },
         )
         if c.reject_reason:
@@ -646,6 +721,9 @@ def render_report(result: ScanResult, cfg: dict[str, Any]) -> tuple[str, str]:
             "rank": i + 1, "address": c.address, "score": c.score,
             "cohort": c.cohort, "windows": c.windows_positive,
             "twrr_30d_pct": c.twrr_30d_pct, "pf": c.pf,
+            "available_margin_pct": c.available_margin_pct,
+            "max_current_leverage": c.max_current_leverage,
+            "sim_net_pnl_usd": c.sim_net_pnl_usd,
             "rationale": c.rationale,
         } for i, c in enumerate(top)],
         "rejected_reasons": {c.address: c.reject_reason for c in result.rejected},

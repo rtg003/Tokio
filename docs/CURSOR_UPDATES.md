@@ -244,7 +244,7 @@ notificadas via CURSOR_UPDATES (UPDATE-0003, 0004, 0005, 0006).
 Validação: `curl http://127.0.0.1:8700/health` → queue baixa, lag < 60s.
 Dashboard tokio.bz carregando dados de traders v6.
 
-## UPDATE-0007 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0007 · 2026-07-04 · Status: APLICADO em 2026-07-04
 
 Origem: Dossiê profundo do Hermes — análise dos 2 melhores traders do scan v6
 Tipo: logica_discovery + operacao
@@ -402,7 +402,7 @@ notificando o Hermes das novas leituras e filtros.
 - Filtros atuais não olham posições abertas no momento do scan
 - A simulação retroativa é a mudança de maior impacto estrutural
 
-## UPDATE-0007 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0007 · 2026-07-04 · Status: APLICADO em 2026-07-04
 
 Origem: Dossiê profundo do Hermes — análise dos 2 melhores traders do scan v6
 Tipo: logica_discovery + operacao
@@ -547,7 +547,7 @@ notificando o Hermes das novas leituras e filtros.
 - Filtros atuais não olham posições abertas no momento do scan
 - A simulação retroativa é a mudança de maior impacto estrutural
 
-## UPDATE-0007 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0007 · 2026-07-04 · Status: APLICADO em 2026-07-04
 
 Origem: Dossiê profundo do Hermes — análise dos 2 melhores traders do scan v6
 Tipo: logica_discovery + operacao

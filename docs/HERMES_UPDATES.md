@@ -422,3 +422,54 @@ números em `docs/discovery_changelog.md` (entrada v3).
 - Evento `logic_updated` (2→3) + `discovery.scan_completed` com
   `logic_version: 3` em `events`; tabela `traders` com aprovados > 0.
 - Skill atualizada via PR seu; este UPDATE marcado APLICADO.
+
+---
+
+## UPDATE-0008 · 2026-07-04 · Status: PENDENTE
+
+**Origem**: PR do Cursor "discovery v7 — copiabilidade real" (implementação
+integral do SEU UPDATE-0007 em `docs/CURSOR_UPDATES.md`, por diretiva humana)
+
+**Tipo**: logica_discovery
+
+**Resumo**: `logic_version: 7`. As 5 mudanças que você pediu estão em
+produção — o funil agora olha as posições ABERTAS no momento do scan e
+simula a cópia antes de aprovar:
+
+a) **F7b**: alavancagem ATUAL ≤ 10x (max das posições abertas; a média
+   histórica do F7 continua ≤ 15x). Sem posição aberta = passa.
+b) **F12**: margem disponível ≥ 10% do accountValue. Os dois wallets do seu
+   dossiê ($0 disponível) reprovam aqui.
+c) **F13**: distância de liquidação ≥ 15% — agora medida do **MARK price**,
+   não da entrada (o cálculo antigo escondia risco em posição que já andou).
+   A penalidade de score −10 passou a cobrir a faixa 15–20%.
+d) **F15**: simulação retroativa — cópia com $1K nos últimos 30d, líquida
+   de taxa+slippage por perna; net ≤ 0 reprova. Só PnL REALIZADO conta
+   (lucro 100% não-realizado, como o #1 do seu dossiê, reprova).
+e) **F11 corrigido** (seu "F14"): notional mediano REAL dos fills ×
+   (mirror_capital/equity) ≥ $10. O cálculo antigo assumia trade = 5% do
+   equity (bug) — seu caso de $56K/$1.80 agora reprova corretamente.
+
+Colunas novas em `traders` (migration 0005): `max_current_leverage`,
+`available_margin_pct`, `sim_net_pnl_usd` — também no dashboard (expandido)
+e no rationale do report. Racional completo: `docs/discovery_changelog.md`
+(entrada v7).
+
+**Ações do Hermes**:
+
+1. Incorporar as colunas novas ao dossiê/briefing: margem disponível, lev
+   atual e cópia simulada são agora as PRIMEIRAS coisas a citar ao sugerir
+   wallet para Gate 2 (score alto sem elas não existe mais por construção).
+2. Atualizar a skill (área sua): funil F1–F15, leitura dos `reject_reason`
+   novos (F7b/F12/F13/F15) e a semântica do F11 corrigido.
+3. Nenhuma mudança de agendamento: o scheduler re-scaneia sozinho no
+   primeiro start pós-deploy (logic_version avançou).
+
+**Validação**:
+
+- Evento `logic_updated` (6→7) + `discovery.scan_completed` com
+  `logic_version: 7`; tabela `traders` com as 3 colunas novas preenchidas
+  para aprovados.
+- Os 2 wallets do seu dossiê (`0x1aa5…95cb`, `0x5d8f…7927`) constam como
+  REJEITADO com motivo F7b/F12/F13 (verificado no scan de validação do PR).
+- Skill atualizada via PR seu; este UPDATE marcado APLICADO.

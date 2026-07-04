@@ -272,6 +272,9 @@ export default async function Dashboard({
                       <th className="num">Trades 30d</th>
                       <th className="num">Hold méd.</th>
                       <th className="num">Alav. méd.</th>
+                      <th className="num">Alav. atual</th>
+                      <th className="num">Margem disp.</th>
+                      <th className="num">Cópia sim.</th>
                       <th className="num">Equity</th>
                       <th>Ativos</th>
                       <th>Últ. atividade</th>
@@ -347,6 +350,22 @@ export default async function Dashboard({
                             {t.avg_leverage === null || t.avg_leverage === undefined
                               ? "—"
                               : `${fmtNum(t.avg_leverage, 1)}x`}
+                          </td>
+                          {/* v7: copiabilidade real (posições abertas + simulação) */}
+                          <td className="num">
+                            {t.max_current_leverage === null || t.max_current_leverage === undefined
+                              ? "—"
+                              : `${fmtNum(t.max_current_leverage, 1)}x`}
+                          </td>
+                          <td className="num">
+                            {t.available_margin_pct === null || t.available_margin_pct === undefined
+                              ? "—"
+                              : `${fmtNum(t.available_margin_pct, 0)}%`}
+                          </td>
+                          <td className={`num ${pnlClass(t.sim_net_pnl_usd)}`}>
+                            {t.sim_net_pnl_usd === null || t.sim_net_pnl_usd === undefined
+                              ? "—"
+                              : fmtSigned(t.sim_net_pnl_usd, 2)}
                           </td>
                           <td className="num">
                             {t.equity === null || t.equity === undefined

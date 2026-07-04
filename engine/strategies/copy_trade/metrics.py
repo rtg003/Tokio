@@ -293,6 +293,60 @@ def net_expectancy_score(avg_trade_pnl_pct: float, cost_per_trade_pct: float,
     return min(1.0, net / saturation_pct)
 
 
+# --- Simulação retroativa de cópia (v7 — F15) --------------------------------
+@dataclass
+class CopySimulation:
+    gross_pnl_usd: float            # closedPnl da janela × ratio
+    cost_usd: float                 # Σ notional_fill × ratio × (fee+slip) por perna
+    net_pnl_usd: float              # gross − cost
+    median_copy_notional_usd: float  # mediana do notional espelhado por fill
+    n_fills: int
+
+
+def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
+                  mirror_capital: float, *, taker_fee_pct: float = 0.045,
+                  slippage_pct: float = 0.02, window_days: float = 30.0,
+                  now_ms: float | None = None) -> CopySimulation | None:
+    """Espelhamento retroativo: "se tivéssemos copiado este trader com
+    `mirror_capital` na janela, qual seria o PnL LÍQUIDO de taxas+slippage?"
+
+    Cada fill do trader vira uma perna copiada com size proporcional
+    (ratio = mirror_capital / trader_equity); o PnL escala linearmente com o
+    ratio, então o SINAL do net independe do capital — o capital afeta a
+    executabilidade (notional mínimo por ordem, checada no F11).
+
+    Aproximações documentadas: equity ATUAL como denominador (equity da janela
+    não é conhecido ponto a ponto); só PnL REALIZADO (rejeitar lucro 100%
+    não-realizado é intencional — dossiê #1 do Hermes); funding ignorado.
+    """
+    if trader_equity <= 0 or mirror_capital <= 0:
+        return None
+    import time as _time
+    now_ms = now_ms or _time.time() * 1000
+    cutoff = now_ms - window_days * DAY_MS
+    window = [f for f in fills if float(f.get("time", 0)) >= cutoff]
+    if not window:
+        return None
+    ratio = mirror_capital / trader_equity
+    cost_rate = (taker_fee_pct + slippage_pct) / 100.0   # por perna
+    gross = 0.0
+    cost = 0.0
+    notionals = []
+    for f in window:
+        notional = abs(float(f.get("sz", 0) or 0) * float(f.get("px", 0) or 0))
+        copy_notional = notional * ratio
+        notionals.append(copy_notional)
+        cost += copy_notional * cost_rate
+        gross += float(f.get("closedPnl", 0) or 0) * ratio
+    return CopySimulation(
+        gross_pnl_usd=round(gross, 4),
+        cost_usd=round(cost, 4),
+        net_pnl_usd=round(gross - cost, 4),
+        median_copy_notional_usd=round(statistics.median(notionals), 4),
+        n_fills=len(window),
+    )
+
+
 # --- Anti-MM / vault / arb ---------------------------------------------------
 def looks_like_mm(trades_per_day: float, pnl_over_volume: float,
                   avg_abs_net_exposure_share: float,

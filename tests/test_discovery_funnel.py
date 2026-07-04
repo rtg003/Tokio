@@ -117,11 +117,23 @@ class FakeClient:
 
 
 GOOD = "0x" + "aa" * 20     # swing saudável — deve APROVAR
-SCALP = "0x" + "bb" * 20    # scalper lucrativo — v3: APROVA com score < GOOD
-                            # (F3 desabilitado; copiabilidade baixa penaliza)
+SCALP = "0x" + "bb" * 20    # scalper: v3 aprovava com score baixo; v7 REPROVA
+                            # no F15 (custo de cópia come o PnL magro)
 DEPOSIT = "0x" + "cc" * 20  # inflado por aporte — deve REPROVAR (F10)
 REKT1 = "0x" + "dd" * 20
 REKT2 = "0x" + "ee" * 20
+
+
+def healthy_clearinghouse(equity: float = 50_000) -> dict[str, Any]:
+    """v7: posição aberta SAUDÁVEL — lev 3x, margem livre ~83%, liq a 30%."""
+    return {
+        "marginSummary": {"accountValue": equity, "totalMarginUsed": equity * 0.17},
+        "assetPositions": [{"position": {
+            "coin": "BTC", "szi": 0.25, "positionValue": 25_000,
+            "entryPx": 100_000, "liquidationPx": 70_000,
+            "leverage": {"value": 3}, "unrealizedPnl": 0,
+        }}],
+    }
 
 
 def make_client() -> FakeClient:
@@ -143,7 +155,8 @@ def make_client() -> FakeClient:
                               "closedPnl": 30.0})
         t += 0.5 * H_MS
     profiles = {
-        GOOD: {"fills": swing_fills()},
+        GOOD: {"fills": swing_fills(),
+               "clearinghouse": healthy_clearinghouse()},
         SCALP: {"fills": scalper_fills},
         # início há 45d → último trade recente (passa F1) e cai no F10
         DEPOSIT: {"fills": swing_fills(n=35, pnl_each=20.0,
@@ -164,10 +177,9 @@ def test_scan_approves_swing_rejects_traps(db) -> None:
     rejected = {c.address: c.reject_reason for c in result.rejected}
 
     assert GOOD in approved
-    # v3: F3 desabilitado — o scalper APROVA, mas o score de copiabilidade
-    # o mantém abaixo do swing saudável
-    assert SCALP in approved
-    assert approved[SCALP].score < approved[GOOD].score
+    # v7: o scalper de edge magro REPROVA no F15 — 900 trades de $30 sobre
+    # notional de $100k não pagam taxa+slippage quando espelhados
+    assert SCALP in rejected and rejected[SCALP].startswith("F15")
     assert DEPOSIT in rejected and rejected[DEPOSIT].startswith("F10")  # anti-aporte
     assert result.funnel_stats["aprovados"] == len(result.approved)
     assert result.funnel_stats["coletados"] == 5
@@ -227,8 +239,11 @@ def test_rescan_reinstates_rejected_that_now_passes(db) -> None:
     persist_scan(db, result, CFG)
     # reprovado por aporte (F10) para de aportar no scan seguinte: sem ledger e
     # com curva de crescimento orgânico → REJEITADO volta a SUGERIDO
+    # (pnl_each alto p/ superar o min_score 60 da v4 — fixture estava quebrado
+    # no main desde a v4, que introduziu o piso sem atualizar este teste)
     client2 = make_client()
-    client2.profiles[DEPOSIT] = {"fills": swing_fills()}
+    client2.profiles[DEPOSIT] = {"fills": swing_fills(pnl_each=500.0),
+                                 "clearinghouse": healthy_clearinghouse()}
     result2 = run_scan(client2, db, CFG, now_ms=NOW_MS)
     persist_scan(db, result2, CFG)
     row = db.query("SELECT status, reject_reason FROM traders WHERE address = ?",
@@ -270,10 +285,112 @@ def test_null_thresholds_disable_f3_f4() -> None:
 
     c = Candidate(
         address="0x5", windows_pnl={"7d": 1, "30d": 1, "60d": 1, "90d": 1},
-        last_activity=utcnow(), n_trades=50, trades_per_day=300.0,
+        last_activity=utcnow(), n_trades=50, n_trades_30d=20,  # F2b (v5) exige
+        trades_per_day=300.0,
         median_hold_hours=0.1, twrr_30d_pct=-50.0, max_dd_90d_pct=10.0,
         top3_concentration=0.1, avg_leverage=5.0, liquid_volume_share=1.0,
         fills_per_day=10.0, pnl_over_volume=0.01, net_exposure_share=1.0,
         deposit_share=0.0, equity=0.0,
     )
     assert hard_filters(c, CFG, now_ms=NOW_MS) is None
+
+
+# ----------------------------------------------------------------------------
+# v7 (UPDATE-0007): copiabilidade real — posição aberta + simulação
+# ----------------------------------------------------------------------------
+def v7_base_candidate(**overrides: Any) -> Candidate:
+    """Candidato que passa TODOS os filtros — cada teste quebra um por vez."""
+    from engine.core.db import utcnow
+
+    base = dict(
+        address="0x7", windows_pnl={"7d": 1, "30d": 1, "60d": 1, "90d": 1},
+        last_activity=utcnow(), n_trades=50, n_trades_30d=20,
+        trades_per_day=2.0, median_hold_hours=24.0, twrr_30d_pct=15.0,
+        max_dd_90d_pct=10.0, top3_concentration=0.1, avg_leverage=5.0,
+        liquid_volume_share=1.0, fills_per_day=4.0, pnl_over_volume=0.01,
+        net_exposure_share=1.0, deposit_share=0.0, equity=50_000.0,
+        max_current_leverage=3.0, available_margin_pct=80.0,
+        liq_distance_pct=35.0, median_fill_notional=5_000.0,
+        sim_net_pnl_usd=12.5,
+    )
+    base.update(overrides)
+    return Candidate(**base)
+
+
+def test_v7_baseline_passes_all_filters() -> None:
+    from engine.strategies.copy_trade.funnel import hard_filters
+
+    assert hard_filters(v7_base_candidate(), CFG, now_ms=NOW_MS) is None
+
+
+@pytest.mark.parametrize("overrides, expected_prefix", [
+    # dossiê #1: 20x AGORA mesmo com média ok
+    ({"max_current_leverage": 20.0}, "F7b"),
+    # dossiê #6: SOL a 7.5% da liquidação (F12 desabilitado no config de produção)
+    ({"liq_distance_pct": 7.5}, "F13"),
+    # dossiê #6: equity $56k, fills de ~$100 → cópia de $1.79 com $1k
+    ({"equity": 56_000.0, "median_fill_notional": 100.0}, "F11"),
+    # cópia simulada não paga o custo
+    ({"sim_net_pnl_usd": -3.2}, "F15"),
+])
+def test_v7_copyability_filters_reject(overrides: dict, expected_prefix: str) -> None:
+    from engine.strategies.copy_trade.funnel import hard_filters
+
+    reason = hard_filters(v7_base_candidate(**overrides), CFG, now_ms=NOW_MS)
+    assert reason is not None and reason.startswith(expected_prefix), reason
+
+
+def test_v7_f12_rejects_when_enabled() -> None:
+    """F12 continua implementado — só desabilitado via null no config de produção."""
+    import copy
+
+    from engine.strategies.copy_trade.funnel import hard_filters
+
+    cfg = copy.deepcopy(CFG)
+    cfg["hard_filters"]["f12_min_available_margin_pct"] = 10.0
+    reason = hard_filters(v7_base_candidate(available_margin_pct=0.0), cfg,
+                          now_ms=NOW_MS)
+    assert reason is not None and reason.startswith("F12")
+
+
+def test_v7_null_thresholds_disable_new_filters() -> None:
+    """Threshold null desabilita F7b/F12/F13/F15 (padrão v3 de reativação)."""
+    import copy
+
+    from engine.strategies.copy_trade.funnel import hard_filters
+
+    cfg = copy.deepcopy(CFG)
+    for key in ("f7b_max_current_leverage", "f12_min_available_margin_pct",
+                "f13_min_liq_distance_pct", "f15_sim_window_days"):
+        cfg["hard_filters"][key] = None
+    c = v7_base_candidate(max_current_leverage=25.0, available_margin_pct=0.0,
+                          liq_distance_pct=3.0, sim_net_pnl_usd=-50.0)
+    assert hard_filters(c, cfg, now_ms=NOW_MS) is None
+
+
+def test_v7_no_open_positions_is_not_rejected() -> None:
+    """Sem posição aberta = sem evidência: F7b/F12/F13 não reprovam por None."""
+    from engine.strategies.copy_trade.funnel import hard_filters
+
+    c = v7_base_candidate(max_current_leverage=None, available_margin_pct=None,
+                          liq_distance_pct=None)
+    assert hard_filters(c, CFG, now_ms=NOW_MS) is None
+
+
+def test_v7_liq_distance_uses_mark_price(db) -> None:
+    """F13 mede do MARK price: posição lucrativa longe da entrada mas perto
+    da liquidação pelo preço atual deve reprovar."""
+    client = make_client()
+    # GOOD com posição que ENTROU a 100k (liq 70k = 30% da entrada), mas o
+    # mark caiu para 75k: distância real = |75k-70k|/75k = 6.7% → F13
+    client.profiles[GOOD]["clearinghouse"] = {
+        "marginSummary": {"accountValue": 50_000, "totalMarginUsed": 8_500},
+        "assetPositions": [{"position": {
+            "coin": "BTC", "szi": 0.25, "positionValue": 18_750,  # mark 75k
+            "entryPx": 100_000, "liquidationPx": 70_000,
+            "leverage": {"value": 3}, "unrealizedPnl": -6_250,
+        }}],
+    }
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    rejected = {c.address: c.reject_reason for c in result.rejected}
+    assert GOOD in rejected and rejected[GOOD].startswith("F13"), rejected.get(GOOD)
