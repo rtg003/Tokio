@@ -226,3 +226,12 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
 - **Resultado esperado**: aprovado = copiável por construção (margem livre,
   lev sã, longe da liquidação, cópia simulada lucrativa e executável).
   Fixture de teste: os perfis dos 2 dossiês são rejeitados (F7b/F12/F13/F11).
+- **Validação real (scan `407e8caa996f`, 2026-07-04, budget 1100, 710 req,
+  934s)**: **0 aprovados** — conforme o plano, sem auto-afrouxar (F12 a 10%
+  é agressivo para o perfil do leaderboard). Funil: 5000 coletados, 150
+  aprofundados; novos gargalos v7: F7b 4 · F12 7 · F13 3 · F11 1; legados:
+  F1 47 · F5 42 · F6 11 · F2 18 · F2b 7 · F8 7 · F7 3. Checagem dos 2
+  wallets do dossiê Hermes (deep dive isolado): `0x1aa5…95cb` reprovaria em
+  **F7b** (lev atual 20x; margem 34%, liq 70%, sim +$139); `0x5d8f…7927`
+  reprovaria em **F12** (margem 0%) e **F13** (liq 8.2% do mark; lev 10x
+  no limite do F7b). Decisão de threshold = gate humano.
