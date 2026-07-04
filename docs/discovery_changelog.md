@@ -237,3 +237,44 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
   **F7b** (lev atual 20x; margem 34%, liq 70%, sim +$139); `0x5d8f…7927`
   reprovaria em **F12** (margem 0%) e **F13** (liq 8.2% do mark; lev 10x
   no limite do F7b). Decisão de threshold = gate humano.
+
+## logic_version: 8 — Estágio 4: simulação de cópia como ranking final (2026-07-04)
+
+- **Autor**: Cursor (construtor), por diretiva humana de 2026-07-04.
+- **Motivo (diagnóstico primeiro)**: relatório completo em
+  `docs/reports/discovery_diagnostico_funil_2026-07-04.md` (entregue ao
+  humano ANTES desta mudança). Produção: 277 wallets analisadas, 274
+  REJEITADO, só 3 SUGERIDO (2 dos quais legado v1). 79% das mortes são
+  mérito (F5 106, F2b 52, F1 39) — o funil não está errado, mas "bom
+  trader ≠ boa cópia": nenhum aprovado passou por simulação com latência.
+- **O que mudou**:
+  - **ESTÁGIO 4 (novo — critério FINAL de ranking)**: para os sobreviventes
+    do score, replay dos fills (janela `copy_simulation.window_days: 60`)
+    com nosso sizing (ratio $1K/equity), taxas taker + slippage E custo de
+    latência (`latency_slippage_pct: 0.03`/perna ≈ deslocamento de preço em
+    200ms–2s, aproximado por bps fixos na ausência de tick data). Saídas:
+    PnL líquido, **expectância por trade** e **max DD da curva da cópia**.
+    - `ranking final = score × fator` onde `fator = 1 + ROI da cópia`,
+      clampado em [0.5, 1.2] (config).
+    - Net simulado ≤ 0 → **rebaixado a REJEITADO com motivo
+      `copy_sim_negativa`** mesmo com score alto (stats:
+      `rebaixados_copy_sim`).
+    - Relação com o F15 (v7): o F15 continua como hard filter barato SEM
+      latência na janela de 30d; o Estágio 4 é o veredito final com
+      latência em 60d. Se o F15 for desabilitado (null), o Estágio 4
+      segura a linha sozinho.
+  - **Fontes adicionais de candidatos (config `sources`, flags OFF por
+    default)**: `nansen_leaderboard` (API paga, janela de datas arbitrária,
+    exige `NANSEN_API_KEY`) e `apify_hl_scraper` (backup, exige
+    `APIFY_TOKEN` + actor). SEM dependência dura: sem flag/chave → lista
+    vazia. Terceiros só alimentam ENDEREÇOS; a HL pública continua a fonte
+    de verdade de todas as métricas e filtros.
+  - Novas colunas persistidas (migration 0006): `sim_expectancy_usd`,
+    `sim_max_dd_pct`, `sim_factor`. Migration Supabase é passo MANUAL
+    pós-deploy (incidente 1 do UPDATE-0006 do Hermes).
+- **O que NÃO mudou**: nenhum threshold de F1–F15 foi alterado (diretiva:
+  diagnóstico antes de calibração — recomendações 3/4/5 do relatório
+  aguardam decisão humana).
+- **Resultado esperado**: o topo do ranking passa a ser "melhor CÓPIA", não
+  "melhor trader"; sugestões manuais (Hermes, Copin/HyperX) entram via
+  `discovery inspect` e passam pela MESMA simulação.
