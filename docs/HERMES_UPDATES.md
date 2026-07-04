@@ -476,7 +476,7 @@ e no rationale do report. Racional completo: `docs/discovery_changelog.md`
 
 ---
 
-## UPDATE-0009 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0009 · 2026-07-04 · Status: APLICADO em 2026-07-04
 
 **Origem**: PR do Cursor "discovery v8 — Estágio 4 (simulação de cópia)"
 (diretiva humana pós-diagnóstico "poucos bons traders")
@@ -541,7 +541,7 @@ f) **Diagnóstico que motivou tudo**:
 
 ---
 
-## UPDATE-0010 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0010 · 2026-07-04 · Status: APLICADO em 2026-07-04
 
 **Origem**: PR do Cursor "discovery v9 — copiar a CÓPIA, com tudo documentado"
 (após laboratório offline e auditoria do top 1 irreal)

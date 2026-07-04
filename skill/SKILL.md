@@ -202,37 +202,37 @@ Contrato completo em `AGENTS.md` na raiz do repo.
 | Config operacional, skill/, crons, rotina de produção | Hermes |
 | Conflito genuíno | Ambos PARAM e notificam rtg003 |
 
-### Copy trade — discovery e traders (logic_version 7)
+### Copy trade — discovery e traders (logic_version 9)
 
 - Tabela `traders` é a fonte ÚNICA (ADR 0008). Sem YAMLs.
 - Gate: SUGERIDO → DRY_RUN/COPIANDO só com autorização humana explícita,
   inclusive em testnet. CLI: `trader approve <address>` (→ DRY_RUN),
   `trader approve <address> --live --evidence docs/<arquivo>` (→ COPIANDO).
-- Funil v7 (config: `config/discovery_config.yaml`):
-  - 4 janelas (7d/30d/60d/90d). Entrada: **≥2/4 com 30d obrigatória**.
-  - 15 hard filters (F1–F15):
-    - F3 (anti-scalper) OFF, F4 (TWRR≥5%) OFF, F5 (max DD) 40%.
-    - **F7b** (v7): alavancagem ATUAL ≤ 10x (max das posições abertas).
-    - **F12** (v7): margem disponível ≥ 10% — **OFF** pós-scan (null), código permanece.
-    - **F13** (v7): distância de liquidação ≥ 15% (do mark price, não entry).
-    - **F15** (v7): simulação retroativa de cópia com $1K — PnL líquido ≤ 0 reprova.
-    - **F11 corrigido** (v7): notional mediano real × (mirror_capital/equity) ≥ $10.
-  - Score 0–100 com ajustes (+5 consistência 4/4, −10 liquidação <15%,
-    −5 crowding top-20, −5 PF absurdo >10).
-  - Scalpers entram com score penalizado pela copiabilidade.
-  - Score mínimo 60 para SUGERIDO (abaixo = REJEITADO).
+- Funil v9 (config: `config/discovery_config.yaml`, ref: `docs/discovery_logic_v9.md`):
+  - **Ranking final = net da cópia simulada** (`sim_stage4_net_usd`), não score.
+    Score/TWRR/win-rate continuam no dossiê mas são informativos.
+  - 20 hard filters (F1–F20):
+    - F3 OFF, F4 OFF, F5 teto sanidade 80%, F7b (lev atual ≤10x), F12 OFF,
+      F13 (dist liq ≥15% do mark), F15 (sim cópia net ≤0 reprova).
+    - **F16** (v9): cobertura mínima 30d entre primeiro e último fill.
+    - **F17** (v9): cópia simulada > $10.
+    - **F18** (v9): edge só numa metade da janela = rejeita (sortudo).
+    - **F19** (v9): DD da curva da cópia ≤ 25%.
+    - **F20** (v9): equity do trader ≤ $150k (grande demais não espelha bem com $1k).
+    - **F11** (v7): notional mediano real × (mirror_capital/equity) ≥ $10.
+    - **Estágio 4** (v8): replay 60d com $1K, taxas+slippage+latência, teto 3x.
+  - Entry rule e score mínimo **desativados** na v9 (F5 vira teto 80%).
+  - Colunas de leitura: `sim_net_pnl_usd`, `sim_expectancy_usd`, `sim_max_dd_pct`,
+    `coverage_days`, `sim_half_old_net`, `sim_half_new_net`, `sim_factor`.
 - Profit factor: crédito integral até 3.0; meio-crédito 3.0–5.0 só com
-  n≥60; >5.0 não pontua. PF incl. PnL não realizado. PF exibido capado em 10.0.
-- Scan diário 05:00 SP (engine scheduler, não cron externo). Re-scan
-  automático quando logic_version avança.
-- CLI (quando registrada): `discovery scan`, `discovery inspect <address>`,
-  `discovery positioning`, `discovery token <ativo>`, `discovery report --last`.
-  Alternativa atual: `trader list` + `discovery.py` direto.
-- Reprovados ficam na tabela como REJEITADO com `reject_reason`.
-- Toda exibição de traders ordena por score DECRESCENTE.
-- **Ao sugerir wallet para Gate 2, citar PRIMEIRO** (v7): margem disponível,
-  alavancagem atual, cópia simulada (sim_net_pnl_usd) — ANTES do score.
-  Score alto sem esses três não existe mais por construção.
+  n≥60; >5.0 não pontua. PF exibido capado em 10.0.
+- Scan diário 05:00 SP (engine scheduler). Re-scan automático quando logic_version avança.
+- CLI (quando registrada): `discovery scan/inspect/positioning/token/report`.
+- Reprovados ficam como REJEITADO com `reject_reason`.
+- **Ordem ao sugerir Gate 2** (v9): net simulado → expectância → DD da cópia →
+  cobertura → metades → SÓ DEPOIS score, TWRR, DD do trader.
+- Sugestões manuais (Hermes ou humano via Copin/HyperX) entram por
+  `discovery inspect` e passam pela MESMA régua F1–F20 + simulação.
 
 Referências: `references/strategy_md_template.md` (template obrigatório de
 `strategy.md`), `references/lessons.md` (lições agregadas de post-mortems) e
