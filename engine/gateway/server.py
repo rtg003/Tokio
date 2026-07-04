@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from engine.core.config import Settings, get_settings
@@ -284,6 +285,14 @@ def build_app(state: GatewayState) -> FastAPI:
     app = FastAPI(title="tokio-gateway", docs_url=None, redoc_url=None)
     app.state.gateway = state
 
+    # CORS para o dashboard Next.js (localhost:3002) ler direto do SQLite (Bloco 1).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3002", "http://127.0.0.1:3002"],
+        allow_methods=["GET"],
+        allow_headers=["*"],
+    )
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         from engine.core.db import replication_lag_seconds
@@ -386,6 +395,187 @@ def build_app(state: GatewayState) -> FastAPI:
         state.enforcer.engage_kill_switch(reason)
         cancelled = state.handle_kill_engaged()
         return {"ok": True, "open_orders_cancelled": cancelled}
+
+    # ------------------------------------------------------------------
+    # Read-only API para o dashboard Next.js ler direto do SQLite (Bloco 1).
+    # NÃO substitui o Supabase — apenas adiciona um caminho de leitura
+    # local-first. O dashboard pode voltar para o Supabase a qualquer momento.
+    # ADR 0010: toda visão de módulo filtra por strategy_id/módulo.
+    # ------------------------------------------------------------------
+
+    # Status permitidos no filtro de traders (tabela traders, ADR 0008).
+    _TRADER_STATUSES = {
+        "SUGERIDO", "DRY_RUN", "COPIANDO", "PAUSADO", "REJEITADO", "ARQUIVADO",
+    }
+
+    @app.get("/api/traders")
+    def api_traders(status: str | None = None) -> list[dict[str, Any]]:
+        """Lista traders ordenados por score DESC.
+
+        Filtro opcional ?status= valida contra o CHECK da tabela (ADR 0008).
+        Retorna todas as colunas; JSON serializável (None -> null).
+        """
+        try:
+            if status is not None:
+                status_up = status.strip().upper()
+                if status_up not in _TRADER_STATUSES:
+                    raise HTTPException(
+                        400,
+                        f"status inválido: {status}. "
+                        f"Valores aceitos: {sorted(_TRADER_STATUSES)}",
+                    )
+                rows = state.db.query(
+                    "SELECT * FROM traders WHERE status = ? ORDER BY score DESC",
+                    (status_up,),
+                )
+            else:
+                rows = state.db.query(
+                    "SELECT * FROM traders ORDER BY score DESC"
+                )
+            return [dict(r) for r in rows]
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 — dashboard deve ver erro, não stacktrace
+            raise HTTPException(500, f"traders: {str(exc)[:200]}")
+
+    @app.get("/api/traders/{address}")
+    def api_trader(address: str) -> dict[str, Any]:
+        """Um trader específico por address (chave primária, ADR 0008)."""
+        try:
+            rows = state.db.query(
+                "SELECT * FROM traders WHERE address = ?", (address,)
+            )
+            if not rows:
+                raise HTTPException(404, f"trader não encontrado: {address}")
+            return dict(rows[0])
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"trader: {str(exc)[:200]}")
+
+    @app.get("/api/fills")
+    def api_fills(
+        strategy_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Fills ordenados por id DESC.
+
+        ADR 0010: ?strategy_id é OBRIGATÓRIO — dashboard de copy trade só
+        vê fills do módulo copy_trade (strategy_id começa com 'ct_').
+        Sem filtro = 400 (não expor dados cross-módulo).
+        """
+        try:
+            if not strategy_id or not strategy_id.strip():
+                raise HTTPException(
+                    400,
+                    "strategy_id é obrigatório (ADR 0010 — isolamento de módulo)",
+                )
+            # Clamp do limit para evitar scan full-table.
+            limit = max(1, min(int(limit), 500))
+            rows = state.db.query(
+                "SELECT * FROM fills WHERE strategy_id = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (strategy_id, limit),
+            )
+            return [dict(r) for r in rows]
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"fills: {str(exc)[:200]}")
+
+    @app.get("/api/strategies")
+    def api_strategies() -> list[dict[str, Any]]:
+        """Strategies ordenados por id (visão de sistema — sem filtro de módulo)."""
+        try:
+            rows = state.db.query("SELECT * FROM strategies ORDER BY id")
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"strategies: {str(exc)[:200]}")
+
+    @app.get("/api/events")
+    def api_events(
+        event_type: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Events ordenados por id DESC.
+
+        Filtro opcional ?event_type= (ex: discovery.scan_completed).
+        Visão de sistema: pode incluir events sem strategy_id (anomalia a
+        investigar, ADR 0010 §5.1) — estes são de discovery/sistema.
+        """
+        try:
+            limit = max(1, min(int(limit), 500))
+            if event_type:
+                rows = state.db.query(
+                    "SELECT * FROM events WHERE event_type = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (event_type, limit),
+                )
+            else:
+                rows = state.db.query(
+                    "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)
+                )
+            # payload é JSON em texto — já é serializável como string.
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"events: {str(exc)[:200]}")
+
+    @app.get("/api/stats")
+    def api_stats() -> dict[str, Any]:
+        """Estatísticas do discovery: último scan, aprovados, reprovados, funil.
+
+        Lê do último evento discovery.scan_completed (events) + contagem
+        atual de traders por status (tabela traders).
+        """
+        try:
+            # Último scan_completed.
+            scan_rows = state.db.query(
+                "SELECT ts, payload FROM events "
+                "WHERE event_type = 'discovery.scan_completed' "
+                "ORDER BY id DESC LIMIT 1"
+            )
+            last_scan: dict[str, Any] | None = None
+            if scan_rows:
+                import json as _json
+                try:
+                    payload = _json.loads(scan_rows[0]["payload"])
+                except Exception:  # noqa: BLE001 — payload quebrado não derruba o endpoint
+                    payload = {}
+                last_scan = {
+                    "ts": scan_rows[0]["ts"],
+                    "scan_id": payload.get("scan_id"),
+                    "logic_version": payload.get("logic_version"),
+                    "approved": payload.get("approved"),
+                    "rejected": payload.get("rejected"),
+                    "funnel_stats": payload.get("funnel_stats"),
+                    "requests_used": payload.get("requests_used"),
+                    "duration_s": payload.get("duration_s"),
+                    "reason": payload.get("reason"),
+                }
+
+            # Contagem por status (traders).
+            status_rows = state.db.query(
+                "SELECT status, COUNT(*) AS n FROM traders GROUP BY status"
+            )
+            by_status = {r["status"]: r["n"] for r in status_rows}
+
+            # Total de traders.
+            total_row = state.db.query(
+                "SELECT COUNT(*) AS n FROM traders"
+            )
+            total_traders = total_row[0]["n"] if total_row else 0
+
+            return {
+                "last_scan": last_scan,
+                "traders_total": total_traders,
+                "traders_by_status": by_status,
+                "aprovados": by_status.get("SUGERIDO", 0),
+                "reprovados": by_status.get("REJEITADO", 0),
+                "copiando": by_status.get("COPIANDO", 0),
+                "dry_run": by_status.get("DRY_RUN", 0),
+            }
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"stats: {str(exc)[:200]}")
 
     return app
 
