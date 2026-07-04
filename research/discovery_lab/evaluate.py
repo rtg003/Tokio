@@ -54,6 +54,7 @@ def sim_copy_in_b(conn, address: str, equity_at_qual: float, t_qual: float,
         taker_fee_pct=float(cost["taker_fee_pct"]),
         slippage_pct=float(cost["slippage_pct"]),
         latency_slippage_pct=float(stage4.get("latency_slippage_pct", 0)),
+        max_copy_leverage=stage4.get("max_copy_leverage"),   # v9: só cópia executável
         window_days=B_WINDOW_DAYS, now_ms=t_end)
 
 
@@ -99,13 +100,14 @@ def evaluate_cut(conn, t_end: float, cfg: dict[str, Any], *, top_k: int,
             key = reason.split(":")[0]
             deaths[key] = deaths.get(key, 0) + 1
             continue
-        rank_by = (cfg.get("lab") or {}).get("rank_by", "score_factor")
+        # v9: ranking padrão = net da cópia simulada (espelha run_scan)
+        rank_by = (cfg.get("lab") or {}).get("rank_by", "stage4_net")
         if rank_by == "expectancy":
             rank = c.sim_expectancy_usd if c.sim_expectancy_usd is not None else -1e9
-        elif rank_by == "stage4_net":
-            rank = c.sim_stage4_net_usd if c.sim_stage4_net_usd is not None else -1e9
-        else:
+        elif rank_by == "score_factor":
             rank = c.score * (c.sim_factor or 1.0)
+        else:
+            rank = c.sim_stage4_net_usd if c.sim_stage4_net_usd is not None else -1e9
         approved.append((c, rank))
 
     approved.sort(key=lambda x: -x[1])
