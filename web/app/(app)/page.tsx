@@ -1,17 +1,6 @@
 import DashboardControls, { AccountOption } from "@/components/DashboardControls";
 import StrategyActions from "@/components/StrategyActions";
 import TraderActions from "@/components/TraderActions";
-import {
-  fetchStrategies as apiFetchStrategies,
-  fetchTraders as apiFetchTraders,
-  fetchExchanges as apiFetchExchanges,
-  fetchMetricsForStrategies,
-  fetchOrdersForStrategies,
-  fetchFillsForStrategies,
-} from "@/lib/api";
-// Flag para voltar atrás: se USE_SUPABASE=true, usa o cliente Supabase
-// (código preservado abaixo); se false, usa o gateway do engine.
-const USE_SUPABASE = false;
 import { createClient } from "@/lib/supabase/server";
 import {
   fmtDateTime,
@@ -23,13 +12,6 @@ import {
   statusChip,
 } from "@/lib/format";
 
-// Refresh automático a cada 30s (ISR-like). Em SSR force-dynamic isto é
-// apenas uma dica para o Next; o refresh real em runtime vem do cliente
-// (ver note abaixo). Com Next 15 App Router, revalidate=30 faz o cache de
-// fetch invalidar a cada 30s quando não estamos em force-dynamic. Aqui
-// mantemos force-dynamic + cache:'no-store' no cliente HTTP, então cada
-// navegação/render é fresca; o 30s abaixo também cobre builds estáticos.
-export const revalidate = 30;
 export const dynamic = "force-dynamic";
 
 type Metrics = {
@@ -115,92 +97,55 @@ export default async function Dashboard({
   const sinceTs = `${sinceDay}T00:00:00Z`;
   const untilTs = `${untilDay}T23:59:59Z`;
 
+  const supabase = await createClient();
+
   // REGRA DE ISOLAMENTO DE OBSERVABILIDADE (AGENTS.md / ADR 0010): esta é a
   // visão do módulo COPY TRADE — toda query de exibição é filtrada pelos
   // strategy_ids do módulo. Fills/ordens sem atribuição (strategy_id NULL) ou
   // de outros módulos NUNCA aparecem aqui (visão de sistema = tela Logs).
+  const { data: strategies } = await supabase
+    .from("strategies")
+    .select("id, module, name, status, config_snapshot, created_at")
+    .neq("status", "archived")
+    .order("id");
+  const ctIds = (strategies ?? [])
+    .filter((s) => s.module === "copy_trade")
+    .map((s) => s.id);
 
-  // ---- Branch gateway (USE_SUPABASE=false) ----
-  let strategies: Awaited<ReturnType<typeof apiFetchStrategies>>;
-  let exchanges: Awaited<ReturnType<typeof apiFetchExchanges>>;
-  let traders: Awaited<ReturnType<typeof apiFetchTraders>>;
-  let metrics: Metrics[];
-  let orders: Awaited<ReturnType<typeof fetchOrdersForStrategies>>;
-  let fills: Awaited<ReturnType<typeof fetchFillsForStrategies>>;
-  let balance: Balance;
-
-  if (!USE_SUPABASE) {
-    strategies = await apiFetchStrategies();
-    const ctIds = strategies
-      .filter((s) => s.module === "copy_trade")
-      .map((s) => s.id);
-
-    // KPIs, tabelas e saldo em paralelo via gateway.
-    [balance, exchanges, traders, metrics, orders, fills] = await Promise.all([
+  // KPIs come from strategy_metrics_daily — dashboards never scan `events`.
+  const [balance, { data: exchanges }, { data: traders }, { data: metrics },
+         { data: orders }, { data: fills }] =
+    await Promise.all([
       fetchBalance(),
-      apiFetchExchanges(),
-      apiFetchTraders(),
-      fetchMetricsForStrategies(ctIds, sinceDay, untilDay),
-      fetchOrdersForStrategies(ctIds, sinceTs, untilTs, 15),
-      fetchFillsForStrategies(ctIds, sinceTs, untilTs, 15),
+      supabase.from("exchanges").select("name, network, status").order("id"),
+      supabase
+        .from("traders")
+        .select("*")
+        .not("status", "in", "(ARQUIVADO,REJEITADO)")
+        .order("score", { ascending: false, nullsFirst: false }),
+      supabase
+        .from("strategy_metrics_daily")
+        .select("net_pnl, win_rate, n_trades, fees, profit_factor, max_drawdown")
+        .in("strategy_id", ctIds)
+        .gte("day", sinceDay)
+        .lte("day", untilDay),
+      supabase
+        .from("orders")
+        .select("cloid, strategy_id, symbol, side, type, size, price, status, created_at, latency_ms, reject_reason")
+        .in("strategy_id", ctIds)
+        .gte("created_at", sinceTs)
+        .lte("created_at", untilTs)
+        .order("created_at", { ascending: false })
+        .limit(15),
+      supabase
+        .from("fills")
+        .select("cloid, strategy_id, symbol, side, price, size, fee, realized_pnl, ts")
+        .in("strategy_id", ctIds)
+        .gte("ts", sinceTs)
+        .lte("ts", untilTs)
+        .order("ts", { ascending: false })
+        .limit(15),
     ]);
-    metrics = (metrics ?? []) as Metrics[];
-  } else {
-    // ---- Branch Supabase (USE_SUPABASE=true) — código original preservado ----
-    const supabase = await createClient();
-    const { data: _strategies } = await supabase
-      .from("strategies")
-      .select("id, module, name, status, config_snapshot, created_at")
-      .neq("status", "archived")
-      .order("id");
-    strategies = (_strategies ?? []) as unknown as typeof strategies;
-    const ctIds = (_strategies ?? [])
-      .filter((s) => s.module === "copy_trade")
-      .map((s) => s.id);
-
-    // KPIs come from strategy_metrics_daily — dashboards never scan `events`.
-    const [_balance, { data: _exchanges }, { data: _traders },
-           { data: _metrics }, { data: _orders }, { data: _fills }] =
-      await Promise.all([
-        fetchBalance(),
-        supabase.from("exchanges").select("name, network, status").order("id"),
-        supabase
-          .from("traders")
-          .select("*")
-          .not("status", "in", "(ARQUIVADO,REJEITADO)")
-          .order("score", { ascending: false, nullsFirst: false }),
-        supabase
-          .from("strategy_metrics_daily")
-          .select("net_pnl, win_rate, n_trades, fees, profit_factor, max_drawdown")
-          .in("strategy_id", ctIds)
-          .gte("day", sinceDay)
-          .lte("day", untilDay),
-        supabase
-          .from("orders")
-          .select("cloid, strategy_id, symbol, side, type, size, price, status, created_at, latency_ms, reject_reason")
-          .in("strategy_id", ctIds)
-          .gte("created_at", sinceTs)
-          .lte("created_at", untilTs)
-          .order("created_at", { ascending: false })
-          .limit(15),
-        supabase
-          .from("fills")
-          .select("cloid, strategy_id, symbol, side, price, size, fee, realized_pnl, ts")
-          .in("strategy_id", ctIds)
-          .gte("ts", sinceTs)
-          .lte("ts", untilTs)
-          .order("ts", { ascending: false })
-          .limit(15),
-      ]);
-    balance = _balance;
-    exchanges = (_exchanges ?? []) as unknown as typeof exchanges;
-    traders = (_traders ?? []) as unknown as typeof traders;
-    metrics = (_metrics ?? []) as Metrics[];
-    orders = (_orders ?? []) as unknown as typeof orders;
-    fills = (_fills ?? []) as unknown as typeof fills;
-  }
-
-  // ---- Métricas derivadas (comuns aos dois branches) ----
 
   // value no formato exchange:conta:ambiente (parametriza as queries futuras)
   const accounts: AccountOption[] = (exchanges ?? []).length
