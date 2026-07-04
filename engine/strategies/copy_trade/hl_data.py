@@ -203,3 +203,67 @@ class HLDataClient:
         # 3. Limitar e retornar
         result = sorted(addresses)[:max_addresses]
         return result
+
+    # v8: fontes EXTERNAS opcionais — só alimentam endereços candidatos.
+    # HL pública continua a fonte de verdade das métricas; nada aqui é
+    # dependência dura (sem chave/flag → lista vazia, sem erro).
+    def external_candidates(self, sources_cfg: dict[str, Any]) -> list[str]:
+        import os
+
+        addresses: list[str] = []
+        nansen = sources_cfg.get("nansen_leaderboard") or {}
+        if nansen.get("enabled"):
+            key = os.environ.get(str(nansen.get("api_key_env", "NANSEN_API_KEY")), "")
+            if key:
+                addresses += self._nansen_leaderboard(
+                    key, max_addresses=int(nansen.get("max_addresses", 100)),
+                    window_days=int(nansen.get("window_days", 30)))
+        apify = sources_cfg.get("apify_hl_scraper") or {}
+        if apify.get("enabled"):
+            token = os.environ.get(str(apify.get("api_key_env", "APIFY_TOKEN")), "")
+            actor = apify.get("actor")
+            if token and actor:
+                addresses += self._apify_scraper(
+                    token, str(actor),
+                    max_addresses=int(apify.get("max_addresses", 100)))
+        # dedup preservando ordem
+        seen: set[str] = set()
+        out: list[str] = []
+        for a in addresses:
+            a = a.lower()
+            if a.startswith("0x") and len(a) == 42 and a not in seen:
+                seen.add(a)
+                out.append(a)
+        return out
+
+    def _nansen_leaderboard(self, api_key: str, *, max_addresses: int,
+                            window_days: int) -> list[str]:
+        """Leaderboard da Nansen (API paga) com janela de datas arbitrária."""
+        from datetime import date, timedelta as _td
+
+        end = date.today()
+        start = end - _td(days=window_days)
+        data = self._request(
+            f"nansen_lb:{start}:{end}",
+            lambda: self._http.post(
+                "https://api.nansen.ai/api/v1/perp/hyperliquid/leaderboard",
+                headers={"apiKey": api_key},
+                json={"parameters": {"date": {"from": str(start), "to": str(end)}},
+                      "pagination": {"page": 1, "recordsPerPage": max_addresses}},
+            ))
+        rows = data.get("data", data) if isinstance(data, dict) else data
+        return [str(r.get("address", r.get("trader_address", ""))).lower()
+                for r in rows if isinstance(r, dict)][:max_addresses]
+
+    def _apify_scraper(self, token: str, actor: str, *,
+                       max_addresses: int) -> list[str]:
+        """Backup: último dataset de um actor Apify que raspa wallets da HL."""
+        data = self._request(
+            f"apify:{actor}",
+            lambda: self._http.get(
+                f"https://api.apify.com/v2/acts/{actor}/runs/last/dataset/items",
+                params={"token": token, "limit": max_addresses, "status": "SUCCEEDED"},
+            ))
+        rows = data if isinstance(data, list) else []
+        return [str(r.get("address", "")).lower()
+                for r in rows if isinstance(r, dict)][:max_addresses]

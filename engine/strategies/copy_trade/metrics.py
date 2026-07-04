@@ -293,19 +293,25 @@ def net_expectancy_score(avg_trade_pnl_pct: float, cost_per_trade_pct: float,
     return min(1.0, net / saturation_pct)
 
 
-# --- Simulação retroativa de cópia (v7 — F15) --------------------------------
+# --- Simulação retroativa de cópia (v7 — F15 · v8 — Estágio 4) ----------------
 @dataclass
 class CopySimulation:
     gross_pnl_usd: float            # closedPnl da janela × ratio
-    cost_usd: float                 # Σ notional_fill × ratio × (fee+slip) por perna
+    cost_usd: float                 # Σ notional_fill × ratio × custo por perna
     net_pnl_usd: float              # gross − cost
     median_copy_notional_usd: float  # mediana do notional espelhado por fill
     n_fills: int
+    # v8 (Estágio 4): métricas da CÓPIA como carteira própria
+    latency_cost_usd: float = 0.0   # parcela do custo vinda da latência
+    expectancy_usd: float = 0.0     # net / nº de trades fechados na janela
+    max_dd_pct: float = 0.0         # max DD da curva de equity da cópia
+    n_closed: int = 0               # trades fechados (closedPnl != 0)
 
 
 def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
                   mirror_capital: float, *, taker_fee_pct: float = 0.045,
-                  slippage_pct: float = 0.02, window_days: float = 30.0,
+                  slippage_pct: float = 0.02, latency_slippage_pct: float = 0.0,
+                  window_days: float = 30.0,
                   now_ms: float | None = None) -> CopySimulation | None:
     """Espelhamento retroativo: "se tivéssemos copiado este trader com
     `mirror_capital` na janela, qual seria o PnL LÍQUIDO de taxas+slippage?"
@@ -314,6 +320,13 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     (ratio = mirror_capital / trader_equity); o PnL escala linearmente com o
     ratio, então o SINAL do net independe do capital — o capital afeta a
     executabilidade (notional mínimo por ordem, checada no F11).
+
+    v8 — Estágio 4: `latency_slippage_pct` modela o custo da latência de
+    espelhamento (200ms–2s entre o fill do trader e a nossa ordem) como
+    slippage EXTRA por perna — sem tick data histórico, o deslocamento de
+    preço nesse intervalo é aproximado por um custo fixo em bps (config).
+    A curva de equity da cópia (capital + PnL líquido acumulado, na ordem
+    cronológica dos fills) produz `max_dd_pct` e `expectancy_usd`.
 
     Aproximações documentadas: equity ATUAL como denominador (equity da janela
     não é conhecido ponto a ponto); só PnL REALIZADO (rejeitar lucro 100%
@@ -324,27 +337,63 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     import time as _time
     now_ms = now_ms or _time.time() * 1000
     cutoff = now_ms - window_days * DAY_MS
-    window = [f for f in fills if float(f.get("time", 0)) >= cutoff]
+    window = sorted((f for f in fills if float(f.get("time", 0)) >= cutoff),
+                    key=lambda f: float(f.get("time", 0)))
     if not window:
         return None
     ratio = mirror_capital / trader_equity
-    cost_rate = (taker_fee_pct + slippage_pct) / 100.0   # por perna
+    base_rate = (taker_fee_pct + slippage_pct) / 100.0        # por perna
+    lat_rate = latency_slippage_pct / 100.0                    # por perna
     gross = 0.0
     cost = 0.0
+    lat_cost = 0.0
+    n_closed = 0
     notionals = []
+    equity = mirror_capital
+    peak = equity
+    max_dd = 0.0
     for f in window:
         notional = abs(float(f.get("sz", 0) or 0) * float(f.get("px", 0) or 0))
         copy_notional = notional * ratio
         notionals.append(copy_notional)
-        cost += copy_notional * cost_rate
-        gross += float(f.get("closedPnl", 0) or 0) * ratio
+        leg_cost = copy_notional * base_rate
+        leg_lat = copy_notional * lat_rate
+        cost += leg_cost + leg_lat
+        lat_cost += leg_lat
+        pnl = float(f.get("closedPnl", 0) or 0) * ratio
+        gross += pnl
+        if pnl != 0.0:
+            n_closed += 1
+        equity += pnl - leg_cost - leg_lat
+        peak = max(peak, equity)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - equity) / peak)
+    net = gross - cost
     return CopySimulation(
         gross_pnl_usd=round(gross, 4),
         cost_usd=round(cost, 4),
-        net_pnl_usd=round(gross - cost, 4),
+        net_pnl_usd=round(net, 4),
         median_copy_notional_usd=round(statistics.median(notionals), 4),
         n_fills=len(window),
+        latency_cost_usd=round(lat_cost, 4),
+        expectancy_usd=round(net / n_closed, 4) if n_closed else 0.0,
+        max_dd_pct=round(max_dd * 100, 2),
+        n_closed=n_closed,
     )
+
+
+def copy_sim_factor(net_pnl_usd: float, mirror_capital: float,
+                    *, floor: float = 0.5, cap: float = 1.2) -> float:
+    """Fator multiplicativo do ranking final (Estágio 4, v8).
+
+    factor = 1 + ROI da cópia simulada, clampado em [floor, cap] — cópia que
+    rende 10% na janela multiplica o score por 1.10; cópia no zero fica
+    neutra (1.0). Net NEGATIVO nem chega aqui: o candidato é rebaixado a
+    REJEITADO (copy_sim_negativa) antes do ranking.
+    """
+    if mirror_capital <= 0:
+        return 1.0
+    return max(floor, min(cap, 1.0 + net_pnl_usd / mirror_capital))
 
 
 # --- Anti-MM / vault / arb ---------------------------------------------------

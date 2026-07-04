@@ -80,6 +80,11 @@ class Candidate:
     median_fill_notional: float | None = None    # mediana |sz×px| dos fills
     sim_net_pnl_usd: float | None = None         # F15: net da cópia simulada
     sim_copy_notional_usd: float | None = None   # mediana do notional espelhado
+    # v8 (Estágio 4): replay com latência — critério FINAL de ranking
+    sim_stage4_net_usd: float | None = None      # net do replay c/ latência
+    sim_expectancy_usd: float | None = None      # net / trade fechado
+    sim_max_dd_pct: float | None = None          # max DD da curva da cópia
+    sim_factor: float | None = None              # multiplicador do ranking
     top_assets: list[str] = field(default_factory=list)
     last_activity: str | None = None
     history_truncated: bool = False
@@ -325,6 +330,21 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
             c.sim_net_pnl_usd = sim.net_pnl_usd
             c.sim_copy_notional_usd = sim.median_copy_notional_usd
 
+    # -- v8: Estágio 4 — replay com custo de latência (critério final) ----------
+    stage4 = cfg.get("copy_simulation")
+    if fills and stage4 and c.equity > 0:
+        cost = cfg["cost_of_copy"]
+        sim4 = M.simulate_copy(
+            fills, c.equity, float(hf["f11_mirror_capital_usd"]),
+            taker_fee_pct=float(cost["taker_fee_pct"]),
+            slippage_pct=float(cost["slippage_pct"]),
+            latency_slippage_pct=float(stage4.get("latency_slippage_pct", 0)),
+            window_days=float(stage4.get("window_days", 60)), now_ms=now_ms)
+        if sim4 is not None:
+            c.sim_stage4_net_usd = sim4.net_pnl_usd
+            c.sim_expectancy_usd = sim4.expectancy_usd
+            c.sim_max_dd_pct = sim4.max_dd_pct
+
     c.style = classify_style(c.median_hold_hours)
 
 
@@ -554,6 +574,22 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
                 logger.warning("discovery.active_scan_failed",
                                {"error": str(exc)[:200]})
 
+    # v8: fontes externas opcionais (Nansen/Apify) — só alimentam ENDEREÇOS;
+    # métricas e filtros continuam 100% nossos (HL pública = fonte de verdade)
+    external_fn = getattr(client, "external_candidates", None)
+    if external_fn is not None and cfg.get("sources"):
+        try:
+            ext_addrs = external_fn(cfg["sources"])
+            existing_addrs = {c.address for c in candidates} | {c.address for c in deep}
+            new_ext = [a for a in ext_addrs if a not in existing_addrs]
+            stats["fontes_externas_novos"] = len(new_ext)
+            for addr in new_ext[:max(0, int(col["deep_dive_max"]) - len(deep))]:
+                deep.append(Candidate(address=addr))
+        except Exception as exc:  # noqa: BLE001
+            if logger:
+                logger.warning("discovery.external_sources_failed",
+                               {"error": str(exc)[:200]})
+
     # coorte de controle: perdedores consistentes (espelho invertido, barato)
     rekt = [c for c in candidates
             if c.windows_pnl.get("30d", 0.0) < 0 and c.windows_pnl.get("7d", 0.0) < 0]
@@ -615,7 +651,37 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
             continue
         approved.append(c)
 
-    approved.sort(key=lambda c: -c.score)
+    # v8: ESTÁGIO 4 — a simulação de cópia é o critério FINAL de ranking.
+    # "Bom trader ≠ boa cópia": net negativo rebaixa a REJEITADO mesmo com
+    # score alto; positivos são ordenados por score × fator da simulação.
+    stage4 = cfg.get("copy_simulation")
+    if stage4:
+        survivors: list[Candidate] = []
+        for c in approved:
+            if c.sim_stage4_net_usd is not None and c.sim_stage4_net_usd <= 0:
+                c.reject_reason = (
+                    f"copy_sim_negativa: replay {stage4.get('window_days', 60)}d "
+                    f"com US$ {cfg['hard_filters']['f11_mirror_capital_usd']:.0f} "
+                    f"→ net US$ {c.sim_stage4_net_usd:.2f} (score {c.score:.1f})")
+                rejected.append(c)
+                stats["rebaixados_copy_sim"] = stats.get("rebaixados_copy_sim", 0) + 1
+                continue
+            c.sim_factor = M.copy_sim_factor(
+                c.sim_stage4_net_usd if c.sim_stage4_net_usd is not None else 0.0,
+                float(cfg["hard_filters"]["f11_mirror_capital_usd"]),
+                floor=float(stage4.get("factor_floor", 0.5)),
+                cap=float(stage4.get("factor_cap", 1.2)))
+            c.rationale.append(
+                f"estágio 4: net US$ {c.sim_stage4_net_usd:+.2f}, "
+                f"expectância US$ {c.sim_expectancy_usd:+.2f}/trade, "
+                f"DD da cópia {c.sim_max_dd_pct:.1f}%, fator {c.sim_factor:.2f}"
+                if c.sim_stage4_net_usd is not None else
+                "estágio 4: sem dados de simulação (fator neutro 1.0)")
+            survivors.append(c)
+        approved = survivors
+        approved.sort(key=lambda c: -(c.score * (c.sim_factor or 1.0)))
+    else:
+        approved.sort(key=lambda c: -c.score)
     stats["aprovados"] = len(approved)
     return ScanResult(scan_id=scan_id, approved=approved, rejected=rejected,
                       funnel_stats=stats, rekt_sample=rekt,
@@ -651,6 +717,9 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
                 "max_current_leverage": c.max_current_leverage,
                 "available_margin_pct": c.available_margin_pct,
                 "sim_net_pnl_usd": c.sim_net_pnl_usd,
+                "sim_expectancy_usd": c.sim_expectancy_usd,
+                "sim_max_dd_pct": c.sim_max_dd_pct,
+                "sim_factor": c.sim_factor,
             },
         )
         if c.reject_reason:
@@ -724,6 +793,11 @@ def render_report(result: ScanResult, cfg: dict[str, Any]) -> tuple[str, str]:
             "available_margin_pct": c.available_margin_pct,
             "max_current_leverage": c.max_current_leverage,
             "sim_net_pnl_usd": c.sim_net_pnl_usd,
+            "sim_stage4_net_usd": c.sim_stage4_net_usd,
+            "sim_expectancy_usd": c.sim_expectancy_usd,
+            "sim_max_dd_pct": c.sim_max_dd_pct,
+            "sim_factor": c.sim_factor,
+            "final_rank_score": round(c.score * (c.sim_factor or 1.0), 2),
             "rationale": c.rationale,
         } for i, c in enumerate(top)],
         "rejected_reasons": {c.address: c.reject_reason for c in result.rejected},
