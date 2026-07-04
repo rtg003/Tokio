@@ -278,3 +278,37 @@ Lógica em produção desde a Fase 3 do build (registrada retroativamente):
 - **Resultado esperado**: o topo do ranking passa a ser "melhor CÓPIA", não
   "melhor trader"; sugestões manuais (Hermes, Copin/HyperX) entram via
   `discovery inspect` e passam pela MESMA simulação.
+
+## logic_version: 9 — copiar a CÓPIA, não o trader (2026-07-04)
+
+- **Autor**: Cursor (construtor), por diretiva humana explícita. Referência
+  canônica: `docs/discovery_logic_v9.md` (toda variável documentada; teste
+  automatizado trava config sem doc).
+- **Motivo (evidência do laboratório)**: laboratório offline com 934 wallets
+  reais, 1,78M fills e walk-forward fora da amostra mostrou que a v8 aprova
+  0–2 wallets por corte e perde dinheiro (medianas −$118/−$109). O DD do
+  trader (F5) tem sinal invertido para lucro da cópia (ρ +0.105), janelas de
+  PnL/TWRR/win rate são quase ruído, e a maior variável preditiva é equity do
+  trader (ρ −0.227: conta menor copia melhor). A simulação da cópia na janela
+  A é o melhor qualificador observável.
+- **Correções pré-integração**:
+  - Teto de alavancagem da cópia: `max_copy_leverage: 3.0`. Sem ele, o antigo
+    top 1 virava uma cópia de $128k de notional sobre $1k (128x) e inflava
+    +250% em 5 dias. Agora o fill é capado em $3k e o PnL escala junto.
+  - Cobertura mínima: F16 exige 30 dias entre primeiro e último fill. Wallet
+    de 5 dias não qualifica.
+- **O que mudou**:
+  - Novos gates formais sobre a CÓPIA: F16 cobertura, F17 net da cópia > $10,
+    F18 metades positivas, F19 DD da cópia ≤ 25%, F20 equity do trader ≤ $150k.
+  - Ranking final = `sim_stage4_net_usd` (score vira informativo).
+  - Entry rule por janelas de PnL e min score desligados; F5 vira teto de
+    sanidade em 80% (não aceita DD 99%+ mesmo se a cópia simular bem).
+  - HyperTracker ON como feed de endereços (sem chave = off silencioso); HL
+    pública continua fonte da verdade de métricas.
+  - Novas colunas persistidas (migration 0007): `coverage_days`,
+    `sim_half_old_net`, `sim_half_new_net`.
+- **Validação pós-correção**: `v9_final` no laboratório: cortes válidos com
+  medianas +$54.54, +$367.66, +$335.59; hit-rate 100%, 100%, 50%; todos batem
+  baselines em mediana/soma. Seleção atual: 10 aprovados com cobertura ≥30d,
+  metades positivas e cópia capada a 3x. Go controlado: PR draft e recomendação
+  de 1–2 semanas em sombra antes de qualquer Gate 2.
