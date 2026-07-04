@@ -538,3 +538,69 @@ f) **Diagnóstico que motivou tudo**:
   `copy_sim_negativa` em `reject_reason`.
 - Replicator sem PGRST204 após a migration 0006 no Supabase.
 - Skill atualizada via PR seu; este UPDATE marcado APLICADO.
+
+---
+
+## UPDATE-0010 · 2026-07-04 · Status: PENDENTE
+
+**Origem**: PR do Cursor "discovery v9 — copiar a CÓPIA, com tudo documentado"
+(após laboratório offline e auditoria do top 1 irreal)
+
+**Tipo**: logica_discovery + operacao + skill
+
+**Resumo**: `logic_version: 9`. A régua final mudou: **não sugerimos o melhor
+trader; sugerimos a melhor CÓPIA**. Score/TWRR/win-rate/janelas continuam no
+dossiê, mas o ranking final é o PnL líquido simulado da cópia com $1k, taxas,
+latência e teto de alavancagem 3x. Referência canônica de toda variável:
+`docs/discovery_logic_v9.md`.
+
+### O que você precisa entender para operar
+
+1. **Ranking novo**: a tabela vem ordenada por `sim_stage4_net_usd` (net da
+   cópia simulada), não por score. Score alto sem net simulado alto NÃO é
+   sugestão.
+2. **Motivos novos de rejeição**:
+   - `F16`: histórico curto — menos de 30 dias entre primeiro e último fill.
+   - `F17`: cópia simulada não rende mais de $10.
+   - `F18`: edge só aparece numa metade da janela (sortudo de uma perna).
+   - `F19`: DD da curva da cópia > 25%.
+   - `F20`: equity do trader > $150k (grande demais para espelhar bem com $1k).
+3. **Colunas novas de leitura obrigatória**:
+   - `coverage_days`: cobertura real do histórico de fills.
+   - `sim_half_old_net` / `sim_half_new_net`: lucro líquido da cópia nas duas
+     metades da janela de 60d.
+   - já existentes e agora centrais: `sim_net_pnl_usd`, `sim_expectancy_usd`,
+     `sim_max_dd_pct`.
+4. **Ordem obrigatória ao sugerir Gate 2**: net simulado → expectância/trade →
+   DD da cópia → cobertura → metades → só depois score, TWRR, DD do trader.
+5. **Sugestões manuais** (suas ou do humano via Copin/HyperX) entram por
+   `discovery inspect <address>` e passam pela MESMA régua F1–F20 + simulação.
+   Nenhuma via lateral de aprovação.
+
+### Passos manuais pós-deploy
+
+1. Aplicar migration Supabase 0007:
+   `psql "$DATABASE_URL" -f db/migrations/supabase/0007_discovery_v9.sql`
+2. Garantir `HYPERTRACKER_API_KEY` no `.env` da VPS (segredo fornecido pelo
+   humano; não registrar em docs/logs). Sem chave, o feed HyperTracker fica off
+   silenciosamente e o scan segue só com HL.
+3. Confirmar replicator sem PGRST204 nas colunas `coverage_days`,
+   `sim_half_old_net`, `sim_half_new_net`.
+
+### Ações do Hermes
+
+1. Atualizar a skill (`skill/SKILL.md`, área sua) para o funil F1–F20 e o
+   briefing v9: ranking por net simulado; score informativo.
+2. No primeiro briefing pós-deploy, citar para cada candidato: net simulado,
+   expectância, DD da cópia, cobertura e metades. Se o briefing ordenar por
+   score, está errado.
+3. Marcar este UPDATE como APLICADO após skill atualizada, migration aplicada e
+   primeiro briefing no novo formato.
+
+**Validação**:
+
+- Evento `logic_updated` (8→9) + `discovery.scan_completed` com
+  `logic_version: 9`.
+- Aprovados com `coverage_days >= 30`, metades positivas e DD da cópia <= 25%.
+- Replicator sem PGRST204 após migration 0007.
+- Skill atualizada via PR seu; este UPDATE marcado APLICADO.
