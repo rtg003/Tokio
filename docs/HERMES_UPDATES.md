@@ -607,7 +607,7 @@ latência e teto de alavancagem 3x. Referência canônica de toda variável:
 
 ---
 
-## UPDATE-0011 · 2026-07-05 · Status: PENDENTE
+## UPDATE-0011 · 2026-07-05 · Status: APLICADO em 2026-07-05
 
 **Origem**: diretiva humana rtg003 + execução Cursor na `main`
 
