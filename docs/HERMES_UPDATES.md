@@ -682,7 +682,7 @@ estratégia/funcionalidade tem página própria.
 
 ---
 
-## UPDATE-0012 · 2026-07-05 · Status: PENDENTE
+## UPDATE-0012 · 2026-07-05 · Status: APLICADO em 2026-07-05
 
 **Origem**: diretiva rtg003 + implementação Cursor "Reforma tela Copy Trade"
 
