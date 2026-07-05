@@ -30,8 +30,9 @@ pausar/ativar/arquivar estratégias e responder a incidentes.
 - 1 runner por estratégia (processos isolados): `copy_trade`, `tradingview`
   (webhook), `standalone/*`. Runners enviam intents ao gateway — nunca à
   corretora.
-- SQLite/JSONL locais são a fonte de verdade; Supabase é réplica assíncrona
-  para dashboards (`tokio.bz`). Outage do Supabase NÃO para o engine.
+- SQLite local é a ÚNICA fonte de verdade (diretiva rtg003 2026-07-05).
+  Supabase/replicator foram removidos. Dashboard lê do gateway do engine
+  via endpoints `/api/*`. Backup SQLite diário (cron 3am + offsite).
 
 ## Ambiente de produção (VPS)
 
@@ -57,7 +58,7 @@ Estados: `draft → dry_run → active → paused/auto_paused → archived`.
 ## Operação dos serviços (systemd — produção)
 
 ```bash
-# Engine (gateway + runners + replicator)
+# Engine (gateway + runners — sem replicator)
 sudo -n systemctl restart tokio-engine.service   # restart tudo
 sudo -n systemctl status tokio-engine.service     # status
 journalctl -u tokio-engine.service -f --no-pager # logs (engine)
@@ -164,7 +165,8 @@ automaticamente e notifica. Investigue antes de reativar.
 
 1. `sudo -n systemctl status tokio-engine.service` e `tokio.service` = active (running).
 2. `curl -s http://127.0.0.1:8700/health` — `ok: true`, `kill_switch: false`,
-   `replication_lag_s` baixo (< 60s com Supabase configurado).
+   `kill_switch` false, `circuit_breaker` false, `network` testnet.
+   Sem `replication_*` (SQLite único BD).
 3. `python -m engine.cli strategy list` — estados esperados.
 4. Logs sem erros novos: `tail -20 /home/tokio/Tokio/logs/gateway-*.jsonl | grep -i error`.
 
@@ -202,35 +204,50 @@ Contrato completo em `AGENTS.md` na raiz do repo.
 | Config operacional, skill/, crons, rotina de produção | Hermes |
 | Conflito genuíno | Ambos PARAM e notificam rtg003 |
 
-### Copy trade — discovery e traders (logic_version 9)
+### Copy trade — discovery e traders (logic_version 10)
 
 - Tabela `traders` é a fonte ÚNICA (ADR 0008). Sem YAMLs.
 - Gate: SUGERIDO → DRY_RUN/COPIANDO só com autorização humana explícita,
   inclusive em testnet. CLI: `trader approve <address>` (→ DRY_RUN),
   `trader approve <address> --live --evidence docs/<arquivo>` (→ COPIANDO).
-- Funil v9 (config: `config/discovery_config.yaml`, ref: `docs/discovery_logic_v9.md`):
+- Funil v10 (config: `config/discovery_config.yaml`, ref: `docs/discovery_logic_v9.md`):
   - **Ranking final = net da cópia simulada** (`sim_stage4_net_usd`), não score.
     Score/TWRR/win-rate continuam no dossiê mas são informativos.
   - 20 hard filters (F1–F20):
+    - F1 (v10): atividade nos últimos **7d** (era 21d na v9).
+    - F2c (v10 NOVO): min 5 trades fechados nos últimos 7d (inativo = rejeita).
     - F3 OFF, F4 OFF, F5 teto sanidade 80%, F7b (lev atual ≤10x), F12 OFF,
       F13 (dist liq ≥15% do mark), F15 (sim cópia net ≤0 reprova).
     - **F16** (v9): cobertura mínima 30d entre primeiro e último fill.
     - **F17** (v9): cópia simulada > $10.
     - **F18** (v9): edge só numa metade da janela = rejeita (sortudo).
     - **F19** (v9): DD da curva da cópia ≤ 25%.
-    - **F20** (v9): equity do trader ≤ $150k (grande demais não espelha bem com $1k).
+    - **F20** (v10): equity do trader ≤ **$50k** (era $150k — sweet spot para cópia $1K).
     - **F11** (v7): notional mediano real × (mirror_capital/equity) ≥ $10.
     - **Estágio 4** (v8): replay 60d com $1K, taxas+slippage+latência, teto 3x.
   - Entry rule e score mínimo **desativados** na v9 (F5 vira teto 80%).
+  - win_rate_30d (v10): win rate calculado só sobre últimos 30d (era 60d inflado).
   - Colunas de leitura: `sim_net_pnl_usd`, `sim_expectancy_usd`, `sim_max_dd_pct`,
-    `coverage_days`, `sim_half_old_net`, `sim_half_new_net`, `sim_factor`.
+    `coverage_days`, `sim_half_old_net`, `sim_half_new_net`, `sim_factor`,
+    `n_trades_7d`, `win_rate_30d`, `copy_pinned`.
+- **copy_pinned** (v10): flag inviolável. set_status DRY_RUN/COPIANDO seta
+  copy_pinned=1. Re-scans NUNCA rebaixam pinned (só atualizam métricas).
+  Remoção exige dois atos humanos: pausar + `trader unpin --yes`.
+- **inspect --persist** (v10): `discovery inspect <addr> --persist --origin
+  {manual,hermes,copin,hyperx}` roda a régua e grava na tabela. Pinned: só
+  métricas. Reprovado: REJEITADO com motivo.
 - Profit factor: crédito integral até 3.0; meio-crédito 3.0–5.0 só com
-  n≥60; >5.0 não pontua. PF exibido capado em 10.0.
+  n≥60; >5.0 não pontua. PF exibido capado em 10.0. PF>10 penalizado (-5).
 - Scan diário 05:00 SP (engine scheduler). Re-scan automático quando logic_version avança.
-- CLI (quando registrada): `discovery scan/inspect/positioning/token/report`.
+- CLI: `discovery scan/inspect/positioning/token/report`.
+  `inspect <addr> --persist --origin hermes` grava na tabela.
 - Reprovados ficam como REJEITADO com `reject_reason`.
 - **Ordem ao sugerir Gate 2** (v9): net simulado → expectância → DD da cópia →
   cobertura → metades → SÓ DEPOIS score, TWRR, DD do trader.
+- **Sizing**: mode=percent, value=1.0 (100% da nossa banca, ratio proporcional).
+  max_leverage=3.0 (teto coerente com simulação). NÃO usar fixed_usdc.
+- **Dashboard**: em `/copy-trade` (auth por senha DASHBOARD_PASSWORD).
+  Lê do gateway do engine via `/api/*`. SQLite é único BD.
 - Sugestões manuais (Hermes ou humano via Copin/HyperX) entram por
   `discovery inspect` e passam pela MESMA régua F1–F20 + simulação.
 
