@@ -6,13 +6,14 @@ import OrdersTable from "@/components/copy-trade/OrdersTable";
 import TradersTable from "@/components/copy-trade/TradersTable";
 import {
   accountOptions,
+  environmentFromAccount,
   getBalance,
-  getCopyStrategyIds,
   getExchanges,
   getFills,
   getMetrics,
   getOrders,
   getTraders,
+  traderOptions,
 } from "@/lib/copy-trade/data";
 
 export const dynamic = "force-dynamic";
@@ -37,7 +38,7 @@ export default async function CopyTradeDashboard({
   searchParams,
 }: {
   searchParams: Promise<{
-    period?: string; from?: string; to?: string; account?: string; cols?: string;
+    period?: string; from?: string; to?: string; account?: string; trader?: string; cols?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -64,20 +65,31 @@ export default async function CopyTradeDashboard({
   const sinceTs = `${sinceDay}T00:00:00Z`;
   const untilTs = `${untilDay}T23:59:59Z`;
 
-  const [balance, exchanges, ctIds, traders] = await Promise.all([
-    getBalance(),
+  const [exchanges, traders] = await Promise.all([
     getExchanges(),
-    getCopyStrategyIds(),
     getTraders(),
   ]);
-  const copyStrategyIds = ctIds ?? [];
+  const accounts = accountOptions(exchanges);
+  const account = params.account ?? "all";
+  const selectedEnv = environmentFromAccount(account);
+  const selectedTrader = params.trader ?? "all";
+  const allTraders = traders ?? [];
+  const filteredTraders = allTraders.filter((t) => {
+    const envOk = selectedEnv === "all" || t.environment === selectedEnv;
+    const traderOk = selectedTrader === "all" || t.address === selectedTrader;
+    return envOk && traderOk;
+  });
+  const copyStrategyIds = filteredTraders
+    .map((t) => t.strategy_id)
+    .filter((id): id is string => Boolean(id));
+  const balanceEnv = selectedEnv === "all" ? null : selectedEnv;
+  const balance = await getBalance(balanceEnv);
   const [metrics, orders, fills] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
     getOrders(copyStrategyIds, sinceTs, untilTs),
     getFills(copyStrategyIds, sinceTs, untilTs),
   ]);
-  const accounts = accountOptions(exchanges);
-  const account = params.account ?? accounts[0].value;
+  const traderFilterOptions = traderOptions(allTraders);
 
   return (
     <section>
@@ -93,11 +105,13 @@ export default async function CopyTradeDashboard({
           period={period}
           from={params.from ?? ""}
           to={params.to ?? ""}
+          trader={selectedTrader}
+          traders={traderFilterOptions}
         />
       </div>
 
       <KpiRow balance={balance} metrics={metrics} periodLabel={PERIOD_LABEL[period]} />
-      <TradersTable traders={traders} expanded={expanded} toggleHref={toggleHref} />
+      <TradersTable traders={filteredTraders} expanded={expanded} toggleHref={toggleHref} />
       <OrdersTable orders={orders} />
       <FillsTable fills={fills} />
     </section>

@@ -489,7 +489,18 @@ def build_app(state: GatewayState) -> FastAPI:
                 rows = state.db.query(
                     "SELECT * FROM traders ORDER BY score DESC"
                 )
-            return [dict(r) for r in rows]
+            from engine.strategies.copy_trade.traders_store import (
+                environment_for_status,
+                strategy_id_for,
+            )
+
+            enriched = []
+            for r in rows:
+                row = dict(r)
+                row["strategy_id"] = strategy_id_for(row["address"], row.get("name"))
+                row["environment"] = environment_for_status(row["status"])
+                enriched.append(row)
+            return enriched
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001 — dashboard deve ver erro, não stacktrace

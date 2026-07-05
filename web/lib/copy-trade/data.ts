@@ -5,6 +5,11 @@ export type AccountOption = {
   label: string;
 };
 
+export type TraderOption = {
+  value: string;
+  label: string;
+};
+
 export type Strategy = {
   id: string;
   module: string;
@@ -36,6 +41,9 @@ export type Trader = Record<string, any> & {
   address: string;
   name?: string | null;
   status: string;
+  strategy_id: string;
+  environment?: "testnet" | "mainnet" | null;
+  copy_pinned?: number | null;
 };
 
 export type Order = Record<string, any> & {
@@ -64,8 +72,9 @@ export type Fill = Record<string, any> & {
   ts: string;
 };
 
-export async function getBalance(): Promise<Balance> {
-  const data = await gatewayGet<{ ok?: boolean; equity_usd: number; network: string }>("/balance");
+export async function getBalance(env?: string | null): Promise<Balance> {
+  const q = env && env !== "all" ? `?env=${encodeURIComponent(env)}` : "";
+  const data = await gatewayGet<{ ok?: boolean; equity_usd: number; network: string }>(`/balance${q}`);
   if (!data?.ok) return null;
   return { equity_usd: data.equity_usd, network: data.network };
 }
@@ -87,17 +96,42 @@ export async function getExchanges(): Promise<Exchange[] | null> {
 }
 
 export function accountOptions(exchanges: Exchange[] | null): AccountOption[] {
-  return exchanges?.length
-    ? exchanges.map((e) => ({
+  const live = (exchanges ?? []).filter((e) => e.network === "testnet" || e.network === "mainnet");
+  const options = live.length
+    ? live.map((e) => ({
         value: `${e.name === "hyperliquid" ? "hl" : e.name}:master:${e.network}`,
-        label: `${e.name === "hyperliquid" ? "Hyperliquid" : e.name} · master (${e.network})`,
+        label: `${e.name === "hyperliquid" ? "Hyperliquid" : e.name} · master (${e.network}${e.status === "unconfigured" ? " · não config." : ""})`,
       }))
-    : [{ value: "hl:master:testnet", label: "Hyperliquid · master (testnet)" }];
+    : [
+        { value: "hl:master:testnet", label: "Hyperliquid · master (testnet)" },
+        { value: "hl:master:mainnet", label: "Hyperliquid · master (mainnet · não config.)" },
+      ];
+  return [{ value: "all", label: "Todos ambientes" }, ...options];
 }
 
 export async function getTraders(): Promise<Trader[] | null> {
   const rows = await gatewayGet<Trader[]>("/api/traders");
   return rows?.filter((t) => t.status !== "REJEITADO") ?? rows;
+}
+
+export function environmentFromAccount(account: string | undefined): "testnet" | "mainnet" | "all" {
+  if (!account || account === "all") return "all";
+  if (account.endsWith(":mainnet")) return "mainnet";
+  if (account.endsWith(":testnet")) return "testnet";
+  return "all";
+}
+
+export function traderOptions(traders: Trader[] | null): TraderOption[] {
+  const rows = (traders ?? []).filter((t) =>
+    t.copy_pinned === 1 || ["SALVO", "TESTNET", "MAINNET"].includes(t.status),
+  );
+  return [
+    { value: "all", label: "Todos traders acompanhados" },
+    ...rows.map((t) => ({
+      value: t.address,
+      label: `${t.name ?? t.address.slice(0, 10)} · ${t.address.slice(0, 10)}…${t.address.slice(-4)}`,
+    })),
+  ];
 }
 
 export async function getMetrics(

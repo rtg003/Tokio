@@ -9,6 +9,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 // (?account&period&from&to) — o server component refaz as queries a partir dela.
 
 export type AccountOption = { value: string; label: string };
+export type TraderOption = { value: string; label: string };
 
 const PRESETS: { key: string; label: string }[] = [
   { key: "today", label: "Hoje" },
@@ -30,12 +31,16 @@ export default function DashboardControls({
   period,
   from,
   to,
+  trader,
+  traders,
 }: {
   accounts: AccountOption[];
   account: string;
   period: string;
   from: string;
   to: string;
+  trader: string;
+  traders: TraderOption[];
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -70,6 +75,19 @@ export default function DashboardControls({
         {accounts.map((a) => (
           <option key={a.value} value={a.value}>
             {a.label}
+          </option>
+        ))}
+      </select>
+
+      <select
+        className="select"
+        aria-label="Trader acompanhado"
+        value={trader}
+        onChange={(e) => push({ trader: e.target.value === "all" ? null : e.target.value })}
+      >
+        {traders.map((t) => (
+          <option key={t.value} value={t.value}>
+            {t.label}
           </option>
         ))}
       </select>
