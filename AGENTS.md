@@ -32,22 +32,24 @@ Antes de INICIAR qualquer mudança em código/config/lógica:
 2. **Ler o próprio inbox** e aplicar/ackar as entradas `PENDENTE` ANTES de
    qualquer trabalho novo (Cursor lê `docs/CURSOR_UPDATES.md`; Hermes lê
    `docs/HERMES_UPDATES.md`).
-3. **Listar PRs abertos**: `gh pr list --state open`. Se a área que você vai
-   tocar sobrepõe um PR aberto do OUTRO agente: **NÃO inicie** — comente no
-   PR dele ou escreva entrada no inbox dele, e aguarde.
-4. **Trabalhar em branch e abrir DRAFT PR imediatamente ao começar** — o
-   draft PR é a trava de área visível para o outro agente.
+3. **Trabalhar direto na `main`**: diretiva humana de rtg003 em 2026-07-05
+   autoriza Cursor e Hermes a editar, commitar e pushar direto na `main` sem
+   branch/PR. Antes de cada push, fazer novo `git pull origin main`; preferir
+   commits pequenos e frequentes para reduzir conflito entre agentes.
+4. **Respeitar áreas e inboxes**: o desempate da seção 4 continua valendo.
+   Se a mudança afetar o outro agente, registrar entrada no inbox dele no
+   mesmo commit (seção 3).
 
-## 3. Regra do mesmo PR (bilateral)
+## 3. Regra do mesmo commit (bilateral)
 
-- PR do **Cursor** cujo merge exija ação, conhecimento novo ou mudança de
-  comportamento do Hermes → entrada em `docs/HERMES_UPDATES.md` **no mesmo
-  PR**.
-- PR do **Hermes** que afete o Cursor (mudança de código/config/convenção
+- Commit do **Cursor** cujo merge/push exija ação, conhecimento novo ou
+  mudança de comportamento do Hermes → entrada em `docs/HERMES_UPDATES.md`
+  **no mesmo commit**.
+- Commit do **Hermes** que afete o Cursor (mudança de código/config/convenção
   que sessões futuras do construtor precisam conhecer) → entrada em
-  `docs/CURSOR_UPDATES.md` **no mesmo PR**.
-- Em review, cada agente **EXIGE** do outro a entrada faltante: PR aplicável
-  sem entrada = PR incompleto — não aprovar até a entrada existir.
+  `docs/CURSOR_UPDATES.md` **no mesmo commit**.
+- Em review/checagem de histórico, cada agente **EXIGE** do outro a entrada
+  faltante: mudança aplicável sem entrada = mudança incompleta.
 
 ## 4. Desempate de área
 
@@ -80,12 +82,46 @@ seção 2 nem a regra do mesmo PR da seção 3.
 - A atribuição é sempre via `cloid` → `strategy_id` (ledger); nenhum dado
   entra numa visão de módulo por inferência ou "parece ser".
 
+### 5.2 Estratégias não se misturam (diretiva rtg003, 2026-07-05)
+
+Toda regra, ordem, trade e especificação de uma estratégia vale somente para
+ela mesma. Isso inclui, sem exceção:
+
+- ordens, filas, fills/trades, métricas, tabelas, cards, relatórios,
+  briefings e respostas de agente;
+- configurações, thresholds, limites, bloqueios de ativos, caps e parâmetros
+  operacionais;
+- qualquer dado derivado de execução, discovery, auditoria ou monitoramento.
+
+É proibido exibir dados de uma estratégia na dashboard, relatório ou resposta
+de outra estratégia. Configuração de uma estratégia nunca é herdada, aplicada
+ou inferida para outra porque "parece semelhante".
+
+### 5.3 Dashboards por estratégia e por funcionalidade
+
+A única dashboard existente hoje é a de **Copy Trade**. Ela NÃO é dashboard
+geral e exibe exclusivamente dados do módulo `copy_trade`: `strategy_id`
+`ct_*` e a tabela `traders` (que é própria do módulo). Uma dashboard geral
+de sistema poderá existir no futuro, mas será uma página separada.
+
+A estrutura web deve seguir uma página por estratégia/módulo ou funcionalidade:
+rotas próprias (por exemplo, `/copy-trade`), componentes próprios e camada de
+dados própria. Código/queries de estratégias diferentes não devem se misturar
+na mesma página. Telas de sistema como configurações, logs e futura dashboard
+geral também devem ter páginas próprias.
+
+### 5.4 Banco de dados único
+
+Por diretiva humana de rtg003 em 2026-07-05, o SQLite local da VPS é o único
+banco de dados do Tokio. A antiga réplica Supabase e o Supabase Auth foram
+removidos da arquitetura; novas telas e relatórios devem ler do SQLite via
+gateway interno. Backup local e offsite do SQLite é obrigatório.
+
 ## 6. Persistência deste protocolo
 
 - Registrado como decisão em
   `docs/decisions/0009-protocolo-bilateral-cursor-hermes.md`.
-- Referenciado no `README.md` e embutido no checklist de PR
-  (`.github/PULL_REQUEST_TEMPLATE.md`).
+- Referenciado no `README.md` e nos inboxes bilaterais.
 - Sessões do Cursor carregam este `AGENTS.md` automaticamente: execute o
   ritual da seção 2 como primeira ação. O Hermes tem o mesmo dever via
   `docs/HANDOFF_HERMES.md` §8 e via a entrada correspondente em
