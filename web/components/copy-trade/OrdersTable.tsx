@@ -2,12 +2,10 @@ import { fmtDateTime, fmtNotional, fmtNum, shortAddr, statusChip } from "@/lib/f
 import { Order } from "@/lib/copy-trade/data";
 
 export default function OrdersTable({ orders }: { orders: Order[] | null }) {
-  // Filtrar só ordens em aberto (não filled/closed)
   const allRows = orders ?? [];
   const rows = allRows
     .filter((o) => o.status !== "filled" && o.status !== "closed" && o.status !== "cancelled")
     .sort((a, b) => {
-      // Ordem decrescente por created_at
       const da = a.created_at ? new Date(a.created_at).getTime() : 0;
       const db = b.created_at ? new Date(b.created_at).getTime() : 0;
       return db - da;
@@ -15,7 +13,7 @@ export default function OrdersTable({ orders }: { orders: Order[] | null }) {
   return (
     <div className="card">
       <div className="cardhead">
-        <h2>Ordens</h2>
+        <h2>Ordens Abertas</h2>
         <span className="cardnote">ordens em aberto · atribuição por cloid · fonte: tabela orders</span>
       </div>
       <div className="tablewrap tablewrap-orders">
@@ -48,8 +46,8 @@ export default function OrdersTable({ orders }: { orders: Order[] | null }) {
                     </span>
                   </td>
                   <td className="num">{fmtNum(o.size, 4)}</td>
-                  <td className="num">{o.price ? fmtNum(o.price) : "MKT"}</td>
-                  <td className="num">{fmtNotional(o.size, o.price)}</td>
+                  <td className="num">{o.price ? `$${fmtNum(o.price)}` : "MKT"}</td>
+                  <td className="num">${fmtNotional(o.size, o.price)}</td>
                   <td>{String(o.type).toUpperCase()}</td>
                   <td>
                     <span className={`chip ${statusChip[o.status] ?? "dry"}`}>

@@ -5,7 +5,6 @@ export default function FillsTable({ fills }: { fills: Fill[] | null }) {
   const rows = (fills ?? [])
     .slice()
     .sort((a, b) => {
-      // Ordem decrescente por ts
       const da = a.ts ? new Date(a.ts).getTime() : 0;
       const db = b.ts ? new Date(b.ts).getTime() : 0;
       return db - da;
@@ -45,11 +44,11 @@ export default function FillsTable({ fills }: { fills: Fill[] | null }) {
                     </span>
                   </td>
                   <td className="num">{fmtNum(f.size, 4)}</td>
-                  <td className="num">{fmtNum(f.price)}</td>
-                  <td className="num">{fmtNotional(f.size, f.price)}</td>
-                  <td className="num">{fmtNum(f.fee, 4)}</td>
+                  <td className="num">${fmtNum(f.price)}</td>
+                  <td className="num">${fmtNotional(f.size, f.price)}</td>
+                  <td className="num">${fmtNum(f.fee, 4)}</td>
                   <td className={`num ${pnlClass(f.realized_pnl)}`}>
-                    {f.realized_pnl === null || f.realized_pnl === undefined ? "—" : fmtSigned(f.realized_pnl)}
+                    {f.realized_pnl === null || f.realized_pnl === undefined ? "—" : `$${fmtSigned(f.realized_pnl)}`}
                   </td>
                   <td className="addr">{shortAddr(f.cloid)}</td>
                 </tr>

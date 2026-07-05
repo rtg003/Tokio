@@ -152,11 +152,23 @@ class HyperliquidAdapter(ExchangeAdapter):
         return out
 
     def balances(self, address: str | None = None) -> dict[str, float]:
-        state = self.info.user_state(address or self.account_address)
+        addr = address or self.account_address
+        state = self.info.user_state(addr)
         summary = state.get("marginSummary", {})
+        perp_equity = float(summary.get("accountValue", 0))
+        # Somar saldo spot USDC (HL unificado — spot + perp)
+        try:
+            spot_state = self.info.spot_user_state(addr)
+            spot_usdc = 0.0
+            for b in spot_state.get("balances", []):
+                if b.get("coin") == "USDC":
+                    spot_usdc = float(b.get("total", 0))
+                    break
+        except Exception:
+            spot_usdc = 0.0
         return {
-            "USDC": float(summary.get("accountValue", 0)),
-            "withdrawable": float(state.get("withdrawable", 0)),
+            "USDC": perp_equity + spot_usdc,
+            "withdrawable": float(state.get("withdrawable", 0)) + spot_usdc,
         }
 
     def subscribe_own_fills(self, callback: FillCallback) -> None:

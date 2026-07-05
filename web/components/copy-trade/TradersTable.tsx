@@ -142,7 +142,7 @@ export default function TradersTable({
                     </td>
                     <td>{t.cohort ?? "—"}</td>
                     <td className={`num ${pnlClass(t.pnl_30d)}`}>
-                      {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : fmtSigned(t.pnl_30d, 2)}
+                      {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : `$${fmtSigned(t.pnl_30d, 2)}`}
                     </td>
                     <td className="num">
                       {t.win_rate === null || t.win_rate === undefined
@@ -191,7 +191,7 @@ export default function TradersTable({
                     <td className={`num ${pnlClass(t.sim_net_pnl_usd)}`}>
                       {t.sim_net_pnl_usd === null || t.sim_net_pnl_usd === undefined
                         ? "—"
-                        : fmtSigned(t.sim_net_pnl_usd, 2)}
+                        : `$${fmtSigned(t.sim_net_pnl_usd, 2)}`}
                     </td>
                     <td className="num">
                       {t.coverage_days === null || t.coverage_days === undefined
@@ -201,7 +201,7 @@ export default function TradersTable({
                     <td className="num">
                       {t.sim_half_new_net === null || t.sim_half_new_net === undefined
                         ? "—"
-                        : `${t.sim_half_old_net === null || t.sim_half_old_net === undefined ? "n/d" : fmtSigned(t.sim_half_old_net, 0)} / ${fmtSigned(t.sim_half_new_net, 0)}`}
+                        : `${t.sim_half_old_net === null || t.sim_half_old_net === undefined ? "n/d" : `$${fmtSigned(t.sim_half_old_net, 0)}`} / $${fmtSigned(t.sim_half_new_net, 0)}`}
                     </td>
                     <td className="num">
                       {t.equity === null || t.equity === undefined ? "—" : fmtNum(t.equity, 0)}
