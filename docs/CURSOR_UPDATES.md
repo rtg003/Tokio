@@ -1016,3 +1016,184 @@ com uma flag.
 ### Skill:
 - `skill/SKILL.md` atualizada com: dashboard lê do gateway, backup SQLite
   diário, flag USE_SUPABASE.
+
+## UPDATE-0013 · 2026-07-05 · Status: PENDENTE
+
+Origem: operação do Hermes (sessão completa de copy trade + dashboard)
+Tipo: operacao + logica_discovery + infra + web + skill
+
+Resumo executivo: o Hermes operou uma sessão extensa cobrindo discovery
+v4→v10, operacionalização do copy trade (Blocos 1-9), flag copy_pinned,
+inspeção --persist, migrations Supabase automaticas, endpoints /api/ no
+gateway, tentativa de migrar dashboard para SQLite (revertida), e primeira
+cópia ativa em testnet.
+
+### 1. Discovery — evolução v4 → v10 (PRs #14, #15, #26)
+
+O Hermes implementou 6 versões do funil de discovery em uma sessão:
+
+- **v4** (PR #14): DD piecewise (0-20%=1.0, 20-30%=0.7, 30-40%=0.4), score
+  min 60, request_budget 800→1100, min_equity $5000→$2000, PF>10 penalizado
+- **v5** (PR #15): F2b (min_trades_30d=5), win_rate_30d, varredura ativa
+  (active_addresses), deep_dive_max 100→150
+- **v6**: coleta por PnL 7d (era all-time), leaderboard_top_n 500→5000
+- **v10** (PR #26): F1 21d→7d, F2c (min_trades_7d=5), F20 $150K→$50K,
+  win_rate_30d calculado só sobre 30d (era 60d inflado)
+- **Scan v10 final**: 5000 coletados → 150 aprofundados → 1 aprovado
+  (0x4829...7404, score 82, sim_net +$666)
+
+Arquivos: config/discovery_config.yaml, engine/strategies/copy_trade/
+funnel.py, engine/strategies/copy_trade/metrics.py, engine/strategies/
+copy_trade/hl_data.py, db/migrations/0008_discovery_v10.sql + Supabase
+
+### 2. Operacionalização copy trade (PR #27 — Blocos 1-9)
+
+Implementação completa do prompt de operacionalização:
+
+**Bloco 1**: `discovery inspect <addr> --persist --origin {manual,hermes,
+copin,hyperx}` — roda régua completa e grava na tabela traders.
+Reprovado persiste como REJEITADO. Pinned: só atualiza métricas.
+
+**Bloco 2**: `deploy/apply_supabase_migrations.sh` — migrations Supabase
+agora automáticas no autodeploy. Cria tabela schema_migrations_supabase
+para tracking. Falha não derruba o deploy (exit 0).
+
+**Bloco 3**: Flag `copy_pinned` (migration 0009):
+- `set_status` DRY_RUN/COPIANDO seta copy_pinned=1
+- `unpin_trader()` exige human_gate=True + status fora DRY_RUN/COPIANDO
+- `persist_scan` NUNCA rebaixa pinned (só atualiza métricas)
+- CLI: `trader unpin <addr> --yes`
+- Dashboard: chip 📌
+- Testes: 4 cenários obrigatórios passando
+
+**Blocos 4-5**: Cron de briefing atualizado com tabela v10 (ranking por
+sim_net), estatísticas do funil, e seção "RECOMENDAÇÃO DO DIA" (até 2
+traders, análise de mesa proprietária).
+
+**Bloco 6**: Fluxo de cópia por comando humano (interativo).
+
+**Bloco 7**: Cron "Tokio Copy Trade Monitor" (15 min) — verifica fills
+ct_* e notifica o humano de cada trade espelhado.
+
+**Bloco 8**: 159 testes passando, PR merged, deploy na VPS.
+
+Arquivos: engine/strategies/copy_trade/discovery.py, traders_store.py,
+funnel.py, engine/cli.py, engine/gateway/server.py, web/app/(app)/page.tsx,
+web/app/globals.css, tests/test_traders_store.py, tests/test_discovery_funnel.py,
+db/migrations/0009_copy_pinned.sql + Supabase, deploy/apply_supabase_migrations.sh,
+deploy/autodeploy.sh, docs/discovery_changelog.md, docs/discovery_logic_v9.md
+
+### 3. Endpoints /api/ no gateway (PR #28 + fixes)
+
+Adicionados 8 endpoints REST no gateway FastAPI para leitura direta do
+SQLite:
+- GET /api/traders (?status= filtro)
+- GET /api/traders/{address}
+- GET /api/fills (?strategy_id= OBRIGATÓRIO, ?limit=)
+- GET /api/strategies
+- GET /api/events (?event_type=, ?limit=)
+- GET /api/stats (último scan + funil)
+- GET /api/exchanges
+- GET /api/orders (?strategy_id=, ?limit=)
+- CORS habilitado para localhost:3002
+
+**IMPORTANTE**: O dashboard NÃO está usando estes endpoints ainda. O PR #28
+modificou page.tsx para ler do gateway mas quebrou o layout (erro client-side).
+Foi revertido — dashboard continua lendo do Supabase. Os endpoints estão
+disponíveis para uso futuro quando a migração for feita corretamente
+(mantendo auth via Supabase, só trocando leitura de dados).
+
+Arquivo: engine/gateway/server.py (+190 linhas)
+
+### 4. Dashboard — revertido para Supabase
+
+O PR #28 tentou migrar o dashboard para ler do gateway do engine. Problemas:
+1. `web/.env.local` foi criado com chaves Supabase truncadas (bug do terminal)
+2. O `page.tsx` modificado quebrou o render client-side
+3. No modo `standalone` do Next.js, arquivos estáticos não são copiados
+   automaticamente para `.next/standalone/` — precisa `cp -r .next/static
+   .next/standalone/.next/static` (já está no autodeploy.sh mas não foi
+   executado no rebuild manual)
+
+**Estado atual**: dashboard lendo do Supabase, funcionando normalmente.
+`web/.env.local` corrigido com chaves completas.
+
+**Para reverter para o gateway no futuro**:
+1. Manter auth via Supabase (layout.tsx e middleware.ts)
+2. Só trocar a leitura de dados em page.tsx (traders, fills, etc.)
+3. NÃO mexer na estrutura visual
+4. Garantir que .env.local tenha todas as vars (Supabase + API_BASE)
+5. Rodar `cp -r .next/static .next/standalone/.next/static` após build
+
+### 5. Primeira cópia ativa em testnet
+
+Trader `0x482954976e8778433e9446309e37b52648bd7404` aprovado para COPIANDO:
+- Status: COPIANDO
+- Mode: percent (proporcional)
+- Value: 1.0 (100% da nossa banca)
+- dry_run: false (ordens reais em testnet)
+- max_leverage: 3.0x
+- copy_pinned: 1 (protegido contra rebaixamento)
+- Nossa equity: $998.87 (testnet)
+- Ratio: ~0.029x ($999/$34K)
+- Evidence: docs/decisions/copy_48295497_evidence.md
+- Executor rodando (PID 31145, poll 60s)
+
+### 6. Backup SQLite diário
+
+Cron job "Tokio SQLite Backup" (3am daily):
+- Script: ~/.hermes/scripts/tokio_sqlite_backup.sh
+- Cria backup em /home/tokio/Tokio/data/backups/
+- Mantém últimos 7 dias
+
+### 7. Cron jobs ativos
+
+| Job | Schedule | Função |
+|-----|----------|--------|
+| Health Check | 15 min | Watchdog silencioso |
+| Resumo Diário | 07:00 SP | Resumo de mercado |
+| Briefing | 12:00 SP | Tabela v10 + funil + recomendação do dia |
+| Semanal | Seg 08:00 SP | Revisão semanal |
+| Inbox Bilateral | 06:00 SP | Verifica HERMES_UPDATES.md |
+| Copy Monitor | 15 min | Notifica trades espelhados |
+| SQLite Backup | 03:00 SP | Backup diário |
+
+### 8. Skill atualizada
+
+`skill/SKILL.md` atualizada com:
+- logic_version 10 (F1-F20 + F2c)
+- inspect --persist --origin
+- copy_pinned (fluxo completo)
+- Ranking por net simulado (não score)
+- Formato do briefing/recomendação
+- Cron de monitoramento de trades
+
+### Semânticas que o Cursor DEVE preservar:
+
+1. **copy_pinned**: setada em DRY_RUN/COPIANDO. Re-scans NUNCA rebaixam.
+   Remoção exige dois atos humanos (pausar + unpin).
+2. **apply_supabase_migrations.sh**: migrations Supabase automáticas no
+   autodeploy. Novas migrations em db/migrations/supabase/ são aplicadas
+   sem intervenção manual.
+3. **inspect --persist**: roda régua e grava. Pinned: só métricas.
+   Reprovado: REJEITADO com motivo.
+4. **Dashboard ainda no Supabase**: os endpoints /api/ existem mas não são
+   usados pelo dashboard. Migração futura deve manter auth via Supabase.
+5. **Modo standalone do Next.js**: após `npm run build`, é preciso copiar
+   `.next/static` para `.next/standalone/.next/static` (já no autodeploy.sh).
+6. **web/.env.local**: deve ter NEXT_PUBLIC_SUPABASE_URL,
+   NEXT_PUBLIC_SUPABASE_ANON_KEY e NEXT_PUBLIC_API_BASE (todas completas).
+
+### Migrations aplicadas:
+- 0008_discovery_v10 (n_trades_7d, win_rate_30d)
+- 0009_copy_pinned (copy_pinned INTEGER NOT NULL DEFAULT 0)
+- 0009_test_tracking (teste do Bloco 2 — tabela _migration_test)
+- Todas aplicadas em SQLite e Supabase (tracking em schema_migrations_supabase)
+
+### Validação:
+- 159 testes passando (pytest tests/ -q)
+- Engine running, testnet, COPIANDO
+- Dashboard funcional em https://tokio.bz
+- Executor ativo (poll 60s)
+- Cron jobs ativos (7 jobs)
+- Backup SQLite testado
