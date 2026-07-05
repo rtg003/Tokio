@@ -1,4 +1,4 @@
-import { fmtNum, fmtTime, shortAddr, statusChip } from "@/lib/format";
+import { fmtNum, fmtDateTime, shortAddr, statusChip } from "@/lib/format";
 import { Order } from "@/lib/copy-trade/data";
 
 export default function OrdersTable({ orders }: { orders: Order[] | null }) {
@@ -31,7 +31,7 @@ export default function OrdersTable({ orders }: { orders: Order[] | null }) {
             <tbody>
               {rows.map((o) => (
                 <tr key={o.cloid}>
-                  <td>{fmtTime(o.created_at)}</td>
+                  <td>{fmtDateTime(o.created_at)}</td>
                   <td>{o.strategy_id}</td>
                   <td>{o.symbol}</td>
                   <td>
