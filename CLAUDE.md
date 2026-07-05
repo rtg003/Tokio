@@ -14,8 +14,9 @@ ou outros).
 
 Destaques inegociáveis (detalhes no AGENTS.md):
 
-- **Gates humanos** (Gate 2 de traders, dry_run→active, mainnet, caps de
-  risco): nunca contornáveis — `docs/HANDOFF_HERMES.md` §7.
+- **Gates humanos** (promoção de traders para TESTNET/MAINNET, mainnet, caps
+  de risco): nunca contornáveis. A dashboard autenticada é ato humano para o
+  combobox de status; mainnet sem credenciais configuradas é recusada.
 - **Isolamento de observabilidade** (§5.1): cada estratégia/módulo só enxerga
   os próprios dados; filtro por `strategy_id`/módulo é obrigatório em toda
   query de exibição; dados sem atribuição só em visão de sistema.

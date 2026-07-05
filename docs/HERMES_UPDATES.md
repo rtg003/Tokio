@@ -679,3 +679,96 @@ estratégia/funcionalidade tem página própria.
   cards/tabelas da dashboard carregam do gateway.
 - `bash deploy/backup_sqlite.sh --verify` passa e o artefato aparece no destino
   offsite configurado.
+
+---
+
+## UPDATE-0012 · 2026-07-05 · Status: PENDENTE
+
+**Origem**: diretiva rtg003 + implementação Cursor "Reforma tela Copy Trade"
+
+**Tipo**: operacao + web + config + infra
+
+**Resumo**: a dashboard de Copy Trade ganhou novo ciclo operacional de traders,
+combobox de status com execução imediata, filtros funcionais por ambiente e por
+trader acompanhado, e suporte de engine para roteamento por ambiente
+TESTNET/MAINNET. Os status antigos de trader foram aposentados.
+
+### Novo ciclo de status
+
+Status válidos da tabela `traders`:
+
+- `SUGERIDO`: aguardando decisão humana.
+- `SALVO`: trader em observação/acompanhamento, ainda sem cópia.
+- `TESTNET`: trader copiado em ambiente testnet.
+- `MAINNET`: trader copiado em ambiente mainnet (dinheiro real).
+- `REJEITADO`: pronto para sair da lista na próxima atualização.
+
+Mapeamento aplicado pela migration `0012_trader_status_v2.sql`:
+
+- `DRY_RUN` → `TESTNET`
+- `COPIANDO` → `TESTNET`
+- `PAUSADO` → `SALVO`
+- `ARQUIVADO` → `REJEITADO`
+
+`DRY_RUN`, `COPIANDO`, `PAUSADO` e `ARQUIVADO` não devem mais ser usados para
+traders. A nomenclatura `dry_run` de `strategies.status` permanece apenas para
+outros módulos legados; copy trade passa a ser controlado pelo status do trader.
+
+### Dashboard
+
+- Rota continua `/copy-trade`.
+- Coluna Status agora é um combobox. Ao mudar o valor, a ação é executada
+  imediatamente pelo gateway.
+- A dashboard autenticada por senha é considerada ato humano para esse combobox.
+  `TESTNET` e `MAINNET` pedem confirmação no browser antes de chamar o gateway.
+- O chip/termo `pinned` saiu da coluna Status.
+- Endereço do trader:
+  - branco: `SUGERIDO`;
+  - amarelo: `SALVO`;
+  - verde: `TESTNET`/`MAINNET`.
+- Score virou barra compacta com tooltip numérico.
+- Todos os cabeçalhos da tabela Traders têm tooltip explicativo.
+- PnL 30d agora mostra 2 casas decimais.
+- Scrollbar horizontal da tabela foi estilizada no tema.
+- Filtros combináveis:
+  - exchange/ambiente: todos, testnet, mainnet;
+  - trader acompanhado (`copy_pinned=1` ou status SALVO/TESTNET/MAINNET);
+  - período.
+
+### Engine / ambiente
+
+- `IntentRequest` aceita `environment`.
+- Gateway roteia ordens para o adapter do ambiente do trader.
+- `/balance` aceita `?env=testnet|mainnet`.
+- `/api/exchanges` passa a ser populado no startup do gateway:
+  - testnet ativo;
+  - mainnet ativo se credenciais existirem, senão `unconfigured`.
+- `config/settings.yaml` ganhou `copy_trade.watch_network: mainnet` para ler os
+  fills dos alvos na mainnet pública, independentemente do ambiente de execução.
+
+### Ações do Hermes
+
+1. Atualizar skill/memória: remover status antigos de traders e usar
+   `SUGERIDO/SALVO/TESTNET/MAINNET/REJEITADO`.
+2. Coletar com o humano, se ele quiser habilitar MAINNET:
+   - `HL_MAINNET_ACCOUNT_ADDRESS`
+   - `HL_MAINNET_AGENT_PRIVATE_KEY`
+   Gravar no `/home/tokio/Tokio/.env` sem logar segredos.
+3. Enquanto essas envs não existirem, promoção para `MAINNET` retorna
+   `mainnet_nao_configurado`. Isso é esperado e seguro.
+4. Atualizar briefings/crons para reportar `TESTNET`/`MAINNET` em vez de
+   `DRY_RUN`/`COPIANDO`/`PAUSADO`.
+5. Validar após deploy:
+   - `python -m engine.cli trader list` mostra status novos;
+   - `curl http://127.0.0.1:8700/api/exchanges` mostra testnet e mainnet;
+   - dashboard `/copy-trade` mostra combobox, cores, filtros e tooltips;
+   - `ct_48295497` fica `TESTNET` após migration e segue copiando.
+
+### Validação esperada
+
+- `python -m engine.cli db migrate` aplica `0012_trader_status_v2`.
+- `curl -s http://127.0.0.1:8700/api/traders` retorna `strategy_id` e
+  `environment` por trader.
+- Filtro ambiente/trader na dashboard altera KPIs, ordens e trades.
+- Sem credenciais mainnet, combobox `MAINNET` recusa com
+  `mainnet_nao_configurado`.

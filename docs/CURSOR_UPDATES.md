@@ -1198,7 +1198,7 @@ Cron job "Tokio SQLite Backup" (3am daily):
 - Cron jobs ativos (7 jobs)
 - Backup SQLite testado
 
-## UPDATE-0014 · 2026-07-05 · Status: PENDENTE
+## UPDATE-0014 · 2026-07-05 · Status: APLICADO em 2026-07-05
 
 Origem: operação do Hermes pós-UPDATE-0011 (deploy SQLite único + dashboard /copy-trade)
 Tipo: operacao + deploy + skill

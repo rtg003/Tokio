@@ -9,7 +9,11 @@
 >
 > **LIMITE INVIOLÁVEL**: nada neste protocolo — inbox, PR, review ou
 > desempate — autoriza violar gates ou caps (Gate 2 de traders, promoção
-> dry_run→active, mainnet, caps de risco; ver `docs/HANDOFF_HERMES.md` §7).
+> para cópia, mainnet, caps de risco; ver `docs/HANDOFF_HERMES.md` §7).
+> Desde 2026-07-05, a dashboard autenticada por senha é um caminho de ato
+> humano para traders: mudar o combobox de Status para `TESTNET` ou `MAINNET`
+> equivale à autorização humana explícita de rtg003. Caps de risco, mainnet
+> sem credenciais configuradas e demais travas continuam invioláveis.
 
 ## 1. Inboxes (um por agente; cada um ESCREVE no do OUTRO)
 
