@@ -940,7 +940,7 @@ layout mobile, tooltips, espaçamento e alturas das tabelas.
 
 ---
 
-## UPDATE-0015 · 2026-07-05 · Status: PENDENTE
+## UPDATE-0015 · 2026-07-05 · Status: APLICADO em 2026-07-05
 
 Origem: Cursor — contagem de trades, filtro de ambiente e colunas das tabelas
 
