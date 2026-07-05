@@ -1197,3 +1197,110 @@ Cron job "Tokio SQLite Backup" (3am daily):
 - Executor ativo (poll 60s)
 - Cron jobs ativos (7 jobs)
 - Backup SQLite testado
+
+## UPDATE-0014 · 2026-07-05 · Status: PENDENTE
+
+Origem: operação do Hermes pós-UPDATE-0011 (deploy SQLite único + dashboard /copy-trade)
+Tipo: operacao + deploy + skill
+
+Resumo executivo: o Hermes finalizou o deploy da mudança do Cursor (commit
+862def8), corrigiu o autodeploy, atualizou a SKILL.md para v10, validou o
+scan v10, e confirmou que o copy trade está ativo em testnet.
+
+### 1. Deploy da mudança SQLite único (commit 862def8)
+
+O autodeploy estava quebrado (erro 203/EXEC). O Hermes fez deploy manual:
+- git pull → 862def8
+- pip install -e .
+- db migrate (0010_purge_dry_run_strategies + 0011_drop_replication_queue)
+- npm ci + npm run build + cp standalone assets
+- restart tokio-engine + tokio
+
+**Validação**:
+- `/health` sem `replication_queue_depth` nem `replication_lag_s` ✅
+- `/api/strategies` só retorna `ct_48295497` (ct_whale01, dm_pulse,
+  tv_funding_extreme, tv_gap_fade removidos) ✅
+- Dashboard em `/copy-trade` com auth por senha (DASHBOARD_PASSWORD) ✅
+- Card "Estratégias de espelhamento" removido ✅
+- Só aparecem KPIs, Traders, Ordens, Trades (copy trade) ✅
+
+### 2. Autodeploy corrigido
+
+- Problema: `deploy/autodeploy.sh` perdeu permissão de execução
+- Solução: `chmod +x deploy/autodeploy.sh`
+- Testado via systemd: "Finished" sem erros ✅
+- Timer ativo (a cada 2 min) ✅
+
+### 3. .env — variáveis novas preenchidas
+
+- `DASHBOARD_PASSWORD` adicionada (senha definida pelo humano)
+- `DASHBOARD_AUTH_SECRET` adicionada (secreto forte aleatório)
+- `GATEWAY_CONTROL_TOKEN`, `HL_ACCOUNT_ADDRESS`, `HL_AGENT_PRIVATE_KEY` já presentes
+
+### 4. SKILL.md atualizada para v10 (commit d38190b)
+
+Mudanças na skill:
+- Supabase/replicator removidos da descrição
+- SQLite único BD com backup diário
+- Dashboard em `/copy-trade` (auth por senha DASHBOARD_PASSWORD)
+- logic_version 9→10 (F1 7d, F2c min_trades_7d=5, F20 $50K, win_rate_30d)
+- copy_pinned (flag inviolável, dois atos humanos para remover)
+- inspect --persist --origin
+- Sizing: mode=percent, value=1.0, max_leverage=3.0 (NÃO usar fixed_usdc)
+- /health sem replication_*
+
+### 5. Copy trade ativo em testnet
+
+Trader `0x482954976e8778433e9446309e37b52648bd7404`:
+- Status: COPIANDO
+- Mode: percent (proporcional, value=1.0)
+- dry_run: false (ordens reais em testnet)
+- max_leverage: 3.0x
+- copy_pinned: 1 (protegido)
+- Nossa equity: $998.80 (testnet)
+- Executor rodando (poll 60s via WebSocket)
+- Teste de execução manual OK (compra+venda BTC 0.001 testnet)
+
+### 6. Scan v10 validado
+
+Disparado manualmente, completou em 469s (7.8 min), 305 requests:
+- 5000 coletados → 150 aprofundados → 1 aprovado
+- O único aprovado é o trader que já copiamos (pinned, status preservado)
+- copy_pinned funcionou: métricas atualizadas, status não rebaixado
+
+### 7. Backup SQLite
+
+- `deploy/backup_sqlite.sh` existe e funciona
+- Backup local em `data/backups/` (212MB gz)
+- `BACKUP_REMOTE` ainda não configurado (offsite pendente)
+- Cron de backup diário 3am ativo
+
+### 8. UPDATE-0011 marcado APLICADO
+
+`docs/HERMES_UPDATES.md` UPDATE-0011 marcado como APLICADO em 2026-07-05.
+
+### Semânticas que o Cursor DEVE preservar (acumulado):
+
+1. **SQLite único BD** (AGENTS.md §5.4): sem Supabase, sem replicator.
+   Dashboard lê do gateway via `/api/*`.
+2. **copy_pinned**: setada em DRY_RUN/COPIANDO. Re-scans NUNCA rebaixam.
+   Remoção exige dois atos humanos (pausar + unpin).
+3. **Dashboard em /copy-trade**: auth por senha (DASHBOARD_PASSWORD).
+   Cada estratégia deve ter página própria (AGENTS.md §5.3).
+4. **Sizing percent mode**: value=1.0 (100% banca), max_leverage=3.0.
+   NÃO usar fixed_usdc.
+5. **Autodeploy**: precisa `chmod +x deploy/autodeploy.sh` se perder
+   permissão. Roda como root, usa `sudo -u tokio` para builds.
+6. **Next.js standalone**: após `npm run build`, copiar
+   `.next/static` para `.next/standalone/.next/static`
+   (autodeploy faz, rebuild manual não).
+7. **web/.env.local não existe mais** (removido pelo Cursor).
+   As vars NEXT_PUBLIC são lidas do `.env` raiz.
+
+### Validação:
+- `curl -s http://127.0.0.1:8700/health` → ok:true, sem replication_*
+- `curl -s http://127.0.0.1:8700/api/strategies` → só ct_48295497
+- `curl -s http://127.0.0.1:8700/api/traders` → 344 traders
+- Dashboard https://tokio.bz → /copy-trade com login por senha
+- `python -m engine.cli strategy list` → só ct_48295497 active
+- Scan v10: 1 aprovado (pinned), 149 reprovados
