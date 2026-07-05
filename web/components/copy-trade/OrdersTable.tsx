@@ -1,4 +1,4 @@
-import { fmtNum, fmtDateTime, shortAddr, statusChip } from "@/lib/format";
+import { fmtDateTime, fmtNotional, fmtNum, shortAddr, statusChip } from "@/lib/format";
 import { Order } from "@/lib/copy-trade/data";
 
 export default function OrdersTable({ orders }: { orders: Order[] | null }) {
@@ -17,12 +17,12 @@ export default function OrdersTable({ orders }: { orders: Order[] | null }) {
             <thead>
               <tr>
                 <th>Hora</th>
-                <th>Estratégia</th>
                 <th>Par</th>
                 <th>Lado</th>
-                <th>Tipo</th>
                 <th className="num">Qtd</th>
                 <th className="num">Preço</th>
+                <th className="num">Valor</th>
+                <th>Tipo</th>
                 <th>Status</th>
                 <th className="num">Latência</th>
                 <th>cloid</th>
@@ -32,16 +32,16 @@ export default function OrdersTable({ orders }: { orders: Order[] | null }) {
               {rows.map((o) => (
                 <tr key={o.cloid}>
                   <td>{fmtDateTime(o.created_at)}</td>
-                  <td>{o.strategy_id}</td>
                   <td>{o.symbol}</td>
                   <td>
                     <span className={`side ${o.side === "buy" ? "long" : "short"}`}>
                       {o.side === "buy" ? "LONG" : "SHORT"}
                     </span>
                   </td>
-                  <td>{String(o.type).toUpperCase()}</td>
                   <td className="num">{fmtNum(o.size, 4)}</td>
                   <td className="num">{o.price ? fmtNum(o.price) : "MKT"}</td>
+                  <td className="num">{fmtNotional(o.size, o.price)}</td>
+                  <td>{String(o.type).toUpperCase()}</td>
                   <td>
                     <span className={`chip ${statusChip[o.status] ?? "dry"}`}>
                       {o.status.toUpperCase()}

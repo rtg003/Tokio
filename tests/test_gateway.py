@@ -153,6 +153,121 @@ def test_intent_routes_by_environment(settings, db) -> None:
     assert mainnet.placed_orders[0].size == 0.001
 
 
+def test_api_fills_and_orders_filter_by_network(settings, db) -> None:
+    from fastapi.testclient import TestClient
+
+    from engine.core.logger import EventLogger
+    from engine.exchanges.paper import PaperAdapter
+    from engine.gateway.server import GatewayState, build_app
+
+    testnet = PaperAdapter(prices={"BTC": 100_000.0})
+    testnet.name = "hyperliquid"
+    testnet.network = "testnet"
+    mainnet = PaperAdapter(prices={"BTC": 200_000.0})
+    mainnet.name = "hyperliquid"
+    mainnet.network = "mainnet"
+    state = GatewayState(
+        settings,
+        testnet,
+        db,
+        adapters={"testnet": testnet, "mainnet": mainnet},
+        logger=EventLogger("gateway-net-filter", settings.logs_dir, db=db),
+    )
+    register_strategy(db, "ct_net", module="copy_trade")
+
+    testnet_ex = db.query(
+        "SELECT id FROM exchanges WHERE name = 'hyperliquid' AND network = 'testnet'"
+    )[0]["id"]
+    mainnet_ex = db.query(
+        "SELECT id FROM exchanges WHERE name = 'hyperliquid' AND network = 'mainnet'"
+    )[0]["id"]
+
+    for i in range(6):
+        db.insert("orders", {
+            "cloid": f"0xtest{i}",
+            "strategy_id": "ct_net",
+            "exchange_id": testnet_ex,
+            "symbol": "BTC",
+            "side": "buy",
+            "type": "market",
+            "size": 0.001,
+            "price": 100_000.0,
+            "status": "filled",
+        })
+        db.insert("fills", {
+            "cloid": f"0xtest{i}",
+            "strategy_id": "ct_net",
+            "symbol": "BTC",
+            "side": "buy",
+            "price": 100_000.0,
+            "size": 0.001,
+            "fee": 0.01,
+            "ts": "2026-07-05T10:00:00Z",
+        })
+    for i in range(2):
+        db.insert("orders", {
+            "cloid": f"0xmain{i}",
+            "strategy_id": "ct_net",
+            "exchange_id": mainnet_ex,
+            "symbol": "BTC",
+            "side": "buy",
+            "type": "market",
+            "size": 0.001,
+            "price": 200_000.0,
+            "status": "filled",
+        })
+        db.insert("fills", {
+            "cloid": f"0xmain{i}",
+            "strategy_id": "ct_net",
+            "symbol": "BTC",
+            "side": "buy",
+            "price": 200_000.0,
+            "size": 0.001,
+            "fee": 0.02,
+            "ts": "2026-07-05T11:00:00Z",
+        })
+
+    with TestClient(build_app(state)) as c:
+        all_fills = c.get("/api/fills?strategy_id=ct_net&limit=50").json()
+        assert len(all_fills) == 8
+
+        testnet_fills = c.get(
+            "/api/fills?strategy_id=ct_net&network=testnet&limit=50"
+        ).json()
+        assert len(testnet_fills) == 6
+
+        mainnet_fills = c.get(
+            "/api/fills?strategy_id=ct_net&network=mainnet&limit=50"
+        ).json()
+        assert len(mainnet_fills) == 2
+
+        all_orders = c.get("/api/orders?strategy_id=ct_net&limit=50").json()
+        assert len(all_orders) == 8
+
+        testnet_orders = c.get(
+            "/api/orders?strategy_id=ct_net&network=testnet&limit=50"
+        ).json()
+        assert len(testnet_orders) == 6
+
+        mainnet_orders = c.get(
+            "/api/orders?strategy_id=ct_net&network=mainnet&limit=50"
+        ).json()
+        assert len(mainnet_orders) == 2
+
+        summary_all = c.get("/api/fills/summary?strategy_id=ct_net").json()
+        assert summary_all["n_trades"] == 8
+
+        summary_testnet = c.get(
+            "/api/fills/summary?strategy_id=ct_net&network=testnet"
+        ).json()
+        assert summary_testnet["n_trades"] == 6
+
+        summary_mainnet = c.get(
+            "/api/fills/summary?strategy_id=ct_net&network=mainnet"
+        ).json()
+        assert summary_mainnet["n_trades"] == 2
+
+
 def test_fill_attribution_falls_back_to_order_strategy(client, gateway_state) -> None:
     register_strategy(gateway_state.db, "ct_48295497")
     gateway_state.db.insert("orders", {

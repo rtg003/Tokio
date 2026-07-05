@@ -1,4 +1,4 @@
-import { fmtDateTime, fmtNum, fmtSigned, pnlClass, shortAddr } from "@/lib/format";
+import { fmtDateTime, fmtNotional, fmtNum, fmtSigned, pnlClass, shortAddr } from "@/lib/format";
 import { Fill } from "@/lib/copy-trade/data";
 
 export default function FillsTable({ fills }: { fills: Fill[] | null }) {
@@ -17,11 +17,11 @@ export default function FillsTable({ fills }: { fills: Fill[] | null }) {
             <thead>
               <tr>
                 <th>Hora</th>
-                <th>Estratégia</th>
                 <th>Par</th>
                 <th>Lado</th>
                 <th className="num">Qtd</th>
                 <th className="num">Preço</th>
+                <th className="num">Valor</th>
                 <th className="num">Fee</th>
                 <th className="num">PnL líquido</th>
                 <th>cloid</th>
@@ -31,7 +31,6 @@ export default function FillsTable({ fills }: { fills: Fill[] | null }) {
               {rows.map((f, i) => (
                 <tr key={`${f.cloid}-${i}`}>
                   <td>{fmtDateTime(f.ts)}</td>
-                  <td>{f.strategy_id ?? "—"}</td>
                   <td>{f.symbol}</td>
                   <td>
                     <span className={`side ${f.side === "buy" ? "long" : "short"}`}>
@@ -40,6 +39,7 @@ export default function FillsTable({ fills }: { fills: Fill[] | null }) {
                   </td>
                   <td className="num">{fmtNum(f.size, 4)}</td>
                   <td className="num">{fmtNum(f.price)}</td>
+                  <td className="num">{fmtNotional(f.size, f.price)}</td>
                   <td className="num">{fmtNum(f.fee, 4)}</td>
                   <td className={`num ${pnlClass(f.realized_pnl)}`}>
                     {f.realized_pnl === null || f.realized_pnl === undefined ? "—" : fmtSigned(f.realized_pnl)}

@@ -8,8 +8,10 @@ import {
   accountOptions,
   environmentFromAccount,
   getBalance,
+  getCopyStrategyIds,
   getExchanges,
   getFills,
+  getFillsSummary,
   getMetrics,
   getOrders,
   getTraders,
@@ -82,12 +84,21 @@ export default async function CopyTradeDashboard({
   const copyStrategyIds = filteredTraders
     .map((t) => t.strategy_id)
     .filter((id): id is string => Boolean(id));
+  const ledgerStrategyIds =
+    selectedTrader === "all"
+      ? (await getCopyStrategyIds()) ?? []
+      : allTraders
+          .filter((t) => t.address === selectedTrader)
+          .map((t) => t.strategy_id)
+          .filter((id): id is string => Boolean(id));
+  const network = selectedEnv === "all" ? null : selectedEnv;
   const balanceEnv = selectedEnv === "all" ? null : selectedEnv;
   const balance = await getBalance(balanceEnv);
-  const [metrics, orders, fills] = await Promise.all([
+  const [metrics, fillsSummary, orders, fills] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
-    getOrders(copyStrategyIds, sinceTs, untilTs),
-    getFills(copyStrategyIds, sinceTs, untilTs),
+    getFillsSummary(ledgerStrategyIds, sinceTs, untilTs, network),
+    getOrders(ledgerStrategyIds, sinceTs, untilTs, network),
+    getFills(ledgerStrategyIds, sinceTs, untilTs, network),
   ]);
   const traderFilterOptions = traderOptions(allTraders);
 
@@ -110,7 +121,13 @@ export default async function CopyTradeDashboard({
         />
       </div>
 
-      <KpiRow balance={balance} metrics={metrics} periodLabel={PERIOD_LABEL[period]} tradeCount={fills?.length ?? 0} />
+      <KpiRow
+        balance={balance}
+        metrics={metrics}
+        fillsSummary={fillsSummary}
+        periodLabel={PERIOD_LABEL[period]}
+        envFiltered={selectedEnv !== "all"}
+      />
       <TradersTable traders={filteredTraders} expanded={expanded} toggleHref={toggleHref} />
       <OrdersTable orders={orders} />
       <FillsTable fills={fills} />

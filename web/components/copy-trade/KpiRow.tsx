@@ -1,23 +1,34 @@
 import { fmtNum, fmtSigned, pnlClass } from "@/lib/format";
-import { Balance, Metrics } from "@/lib/copy-trade/data";
+import { Balance, FillsSummary, Metrics } from "@/lib/copy-trade/data";
 
 type Props = {
   balance: Balance;
   metrics: Metrics[] | null;
+  fillsSummary: FillsSummary | null;
   periodLabel: string;
-  tradeCount?: number;
+  envFiltered?: boolean;
 };
 
-export default function KpiRow({ balance, metrics, periodLabel, tradeCount }: Props) {
+export default function KpiRow({
+  balance,
+  metrics,
+  fillsSummary,
+  periodLabel,
+  envFiltered = false,
+}: Props) {
   const m = metrics ?? [];
-  const netPnl = m.reduce((s, r) => s + (r.net_pnl ?? 0), 0);
-  // KPI de trades: usa metrics.n_trades se houver; senão usa o count de fills
-  const metricsTrades = m.reduce((s, r) => s + (r.n_trades ?? 0), 0);
-  const nTrades = metricsTrades > 0 ? metricsTrades : (tradeCount ?? 0);
+  const summary = fillsSummary ?? { n_trades: 0, net_pnl: 0, fees: 0, win_rate: null };
+  const metricsPnl = m.reduce((s, r) => s + (r.net_pnl ?? 0), 0);
+  const netPnl = envFiltered ? summary.net_pnl : metricsPnl;
+  const nTrades = summary.n_trades;
   const withWr = m.filter((r) => r.win_rate !== null);
-  const winRate = withWr.length
+  const metricsWinRate = withWr.length
     ? (withWr.reduce((s, r) => s + (r.win_rate ?? 0), 0) / withWr.length) * 100
     : null;
+  const winRate =
+    envFiltered && summary.win_rate !== null
+      ? summary.win_rate * 100
+      : metricsWinRate;
   const maxDd = m.reduce((worst, r) => Math.max(worst, Math.abs(r.max_drawdown ?? 0)), 0);
   const pfVals = m.filter((r) => r.profit_factor !== null);
   const profitFactor = pfVals.length
@@ -48,7 +59,7 @@ export default function KpiRow({ balance, metrics, periodLabel, tradeCount }: Pr
       <div className="kpi">
         <div className="lab">Win rate</div>
         <div className="val">{winRate === null ? "—" : `${fmtNum(winRate, 1)}%`}</div>
-        <div className="sub">média diária ponderada</div>
+        <div className="sub">{envFiltered ? "fills no ambiente" : "média diária ponderada"}</div>
       </div>
       <div className="kpi">
         <div className="lab">Drawdown</div>

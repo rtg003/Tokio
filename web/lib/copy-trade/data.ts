@@ -72,6 +72,13 @@ export type Fill = Record<string, any> & {
   ts: string;
 };
 
+export type FillsSummary = {
+  n_trades: number;
+  net_pnl: number;
+  fees: number;
+  win_rate: number | null;
+};
+
 export async function getBalance(env?: string | null): Promise<Balance> {
   const q = env && env !== "all" ? `?env=${encodeURIComponent(env)}` : "";
   const data = await gatewayGet<{ ok?: boolean; equity_usd: number; network: string }>(`/balance${q}`);
@@ -148,10 +155,32 @@ export async function getMetrics(
   return gatewayGet<Metrics[]>(`/api/metrics?${q.toString()}`);
 }
 
+function networkParam(network?: "testnet" | "mainnet" | null): string {
+  return network ? `&network=${encodeURIComponent(network)}` : "";
+}
+
+export async function getFillsSummary(
+  strategyIds: string[],
+  since: string,
+  until: string,
+  network?: "testnet" | "mainnet" | null,
+): Promise<FillsSummary | null> {
+  if (strategyIds.length === 0) {
+    return { n_trades: 0, net_pnl: 0, fees: 0, win_rate: null };
+  }
+  const q = new URLSearchParams({
+    strategy_id: strategyIds.join(","),
+    since,
+    until,
+  });
+  return gatewayGet<FillsSummary>(`/api/fills/summary?${q.toString()}${networkParam(network)}`);
+}
+
 export async function getOrders(
   strategyIds: string[],
   since: string,
   until: string,
+  network?: "testnet" | "mainnet" | null,
 ): Promise<Order[] | null> {
   if (strategyIds.length === 0) return [];
   const q = new URLSearchParams({
@@ -160,13 +189,14 @@ export async function getOrders(
     until,
     limit: "15",
   });
-  return gatewayGet<Order[]>(`/api/orders?${q.toString()}`);
+  return gatewayGet<Order[]>(`/api/orders?${q.toString()}${networkParam(network)}`);
 }
 
 export async function getFills(
   strategyIds: string[],
   since: string,
   until: string,
+  network?: "testnet" | "mainnet" | null,
 ): Promise<Fill[] | null> {
   if (strategyIds.length === 0) return [];
   const q = new URLSearchParams({
@@ -175,5 +205,5 @@ export async function getFills(
     until,
     limit: "15",
   });
-  return gatewayGet<Fill[]>(`/api/fills?${q.toString()}`);
+  return gatewayGet<Fill[]>(`/api/fills?${q.toString()}${networkParam(network)}`);
 }

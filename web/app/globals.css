@@ -135,6 +135,13 @@ h1 { font: 600 22px/1.2 var(--sans); }
 .tablewrap-orders { max-height: calc(41px + 6 * 42px); }
 .tablewrap-fills { max-height: calc(41px + 8 * 42px); }
 table { width: 100%; border-collapse: collapse; font: 400 12.5px var(--mono); font-feature-settings: "tnum"; }
+.tablewrap-traders table.traders-table {
+  width: max-content;
+}
+.traders-table th:last-child,
+.traders-table td:last-child {
+  padding-right: 8px;
+}
 th {
   font: 600 10px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint);
   text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap;

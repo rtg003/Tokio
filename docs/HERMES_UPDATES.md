@@ -937,3 +937,59 @@ layout mobile, tooltips, espaçamento e alturas das tabelas.
 - `npm run build` verde.
 - Combobox Status operacional sem `not_allowed`.
 - Tabela Trades lista novos fills testnet atribuídos a `ct_48295497`.
+
+---
+
+## UPDATE-0015 · 2026-07-05 · Status: PENDENTE
+
+Origem: Cursor — contagem de trades, filtro de ambiente e colunas das tabelas
+
+Tipo: web + gateway + operacao
+
+Resumo: o card Trades contava via `strategy_metrics_daily` (incompleto e sem
+rede). O filtro Exchange filtrava traders pelo status atual, não pela rede de
+execução das ordens/fills. Corrigido com filtro `network` no gateway e KPI via
+`/api/fills/summary`. Tabelas de ordens/trades reorganizadas.
+
+### O que mudou
+
+1. **Gateway — filtro por rede de execução**
+   - `GET /api/orders?network=testnet|mainnet` — join `exchanges` via
+     `orders.exchange_id`.
+   - `GET /api/fills?network=testnet|mainnet` — join `orders` + `exchanges`.
+   - `GET /api/fills/summary` — agregados (`n_trades`, `net_pnl`, `fees`,
+     `win_rate`) com os mesmos filtros.
+
+2. **Dashboard — escopo desacoplado**
+   - Tabela Traders: continua filtrando por status/ambiente do trader.
+   - KPI / Ordens / Trades: usam `ledgerStrategyIds` (todas estratégias copy
+     ativas, ou trader selecionado) + filtro `network` da exchange.
+   - Card Trades usa `fillsSummary.n_trades` (COUNT real de fills no período).
+   - PnL e win rate do KPI usam summary quando filtro de ambiente ativo.
+
+3. **Tabelas**
+   - Removida coluna Estratégia de ordens e trades.
+   - Nova coluna **Valor** (`size × price`) após Preço.
+   - Ordens: coluna Tipo movida para depois de Valor.
+   - Traders: `width: max-content` para remover espaço vazio após Status.
+
+### Ações do Hermes
+
+1. Deploy na VPS (`git pull --ff-only origin main`, migrate, `npm run build`,
+   restart `tokio-engine` + `tokio`).
+2. Validar em https://tokio.bz/copy-trade:
+   - Filtro **Todos**: card Trades = total de fills (ex.: 8).
+   - Filtro **Testnet**: card e tabelas só testnet (ex.: 6).
+   - Filtro **Mainnet**: card e tabelas só mainnet (ex.: 2).
+   - Colunas Valor visíveis; sem coluna Estratégia; Tipo após Preço em ordens.
+3. API local:
+   ```bash
+   curl -s 'http://127.0.0.1:8700/api/fills/summary?strategy_id=ct_48295497'
+   curl -s 'http://127.0.0.1:8700/api/fills?strategy_id=ct_48295497&network=testnet&limit=20'
+   ```
+
+### Validação esperada
+
+- `python -m pytest tests/test_gateway.py -q` verde.
+- `npm run build` verde.
+- Contagem de trades bate com tabela; filtro de ambiente funciona em ordens e trades.

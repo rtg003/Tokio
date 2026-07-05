@@ -57,6 +57,24 @@ export function shortAddr(a: string | null | undefined): string {
   return a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
 }
 
+export function fmtNotional(
+  size: number | null | undefined,
+  price: number | null | undefined,
+  digits = 2,
+): string {
+  if (
+    size === null ||
+    size === undefined ||
+    price === null ||
+    price === undefined ||
+    Number.isNaN(size) ||
+    Number.isNaN(price)
+  ) {
+    return "—";
+  }
+  return fmtNum(size * price, digits);
+}
+
 export const statusChip: Record<string, string> = {
   filled: "filled",
   partially_filled: "ack",
