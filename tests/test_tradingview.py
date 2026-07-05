@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from engine.strategies.tradingview.webhook_server import build_app
 
 TOKEN = "secret-tv-token"
-STRATS = Path(__file__).resolve().parents[1] / "engine/strategies/tradingview/strategies"
+STRATS = Path(__file__).resolve().parent / "fixtures/tv_strategies"
 
 
 class RecordingGateway:
