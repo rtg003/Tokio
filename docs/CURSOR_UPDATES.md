@@ -75,7 +75,7 @@ Ações aplicadas:
 
 Validação: HERMES_UPDATES.md com UPDATEs 0003-0005 marcados APLICADO.
 
-## UPDATE-0003 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0003 · 2026-07-03 · Status: APLICADO em 2026-07-05
 
 Origem: PR do Hermes "discovery v4 — refinamento do funil"
 Tipo: logica_discovery + operacao
@@ -99,7 +99,7 @@ Se for evoluir o discovery no futuro, trabalhar sobre a v4.
 Validação: scan v4 dispara automaticamente no próximo start do engine
 (logic_version avançou). Verificar events por logic_updated (3→4).
 
-## UPDATE-0004 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0004 · 2026-07-03 · Status: APLICADO em 2026-07-05
 
 Origem: PR do Hermes "discovery v5 — refinamento profundo + varredura ativa"
 Tipo: logica_discovery + operacao
@@ -137,7 +137,7 @@ Ações do Cursor:
 Validação: scan v5 dispara automaticamente no próximo start do engine
 (logic_version avançou). Verificar events por logic_updated (4→5).
 
-## UPDATE-0005 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0005 · 2026-07-03 · Status: APLICADO em 2026-07-05
 
 Origem: PR do Hermes "discovery v6 — coleta por atividade recente"
 Tipo: logica_discovery + operacao
@@ -166,7 +166,7 @@ paginação ou cache.
 Validação: scan v6 dispara automaticamente no próximo start do engine.
 Verificar events por logic_updated (5→6) e comparar aprovados com v5.
 
-## UPDATE-0006 · 2026-07-03 · Status: PENDENTE
+## UPDATE-0006 · 2026-07-03 · Status: APLICADO em 2026-07-05
 
 Origem: operação do Hermes (setup de produção + 6 logic_versions em um dia)
 Tipo: infra + operacao
@@ -692,7 +692,7 @@ notificando o Hermes das novas leituras e filtros.
 - Filtros atuais não olham posições abertas no momento do scan
 - A simulação retroativa é a mudança de maior impacto estrutural
 
-## UPDATE-0008 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0008 · 2026-07-04 · Status: APLICADO em 2026-07-05
 
 Origem: PR do Hermes "discovery v10 — filtros de atividade + win_rate realista"
 Tipo: logica_discovery + operacao
@@ -730,7 +730,7 @@ Ações do Cursor:
 Validação: scan v10 dispara automaticamente no próximo start do engine.
 Verificar events por logic_updated (9→10).
 
-## UPDATE-0009 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0009 · 2026-07-04 · Status: APLICADO em 2026-07-05
 
 Origem: PR do Hermes "feat(deploy): migrations Supabase automáticas no
 autodeploy (Bloco 2)"
@@ -776,7 +776,7 @@ em Postgres.
 
 ### UPDATE-0011 — Bloco 3 copy_pinned + migration 0008 (schema fix)
 
-**Status:** PENDENTE
+**Status:** APLICADO em 2026-07-05
 
 **Contexto:** Implementação do Bloco 3 (flag inviolável copy_pinned) na branch
 `feat/copy-trade-operacional`. A maior parte do código já estava commitada em
@@ -824,7 +824,7 @@ imports do teste.
 pré-existentes (não relacionadas ao Bloco 3 — falham no commit `f19c54c`
 original; são ligadas ao schema/config de discovery v10).
 
-## UPDATE-0010 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0010 · 2026-07-04 · Status: APLICADO em 2026-07-05
 
 Origem: PR #27 do Hermes "operacionalizar copy trade (Blocos 1-9)"
 Tipo: operacao + logica_discovery + infra + skill
@@ -934,7 +934,7 @@ trade sobre o discovery v10. Oito blocos de mudança (código + config + infra
 - `skill/SKILL.md` atualizada com: inspect --persist, copy_pinned, fluxo
   de cópia por comando humano, formato do relatório/recomendação.
 
-## UPDATE-0012 · 2026-07-04 · Status: PENDENTE
+## UPDATE-0012 · 2026-07-04 · Status: APLICADO em 2026-07-05
 
 Origem: PR do Hermes "dashboard lê direto do SQLite (sem Supabase)"
 Tipo: arquitetura + infra + web
@@ -1017,7 +1017,7 @@ com uma flag.
 - `skill/SKILL.md` atualizada com: dashboard lê do gateway, backup SQLite
   diário, flag USE_SUPABASE.
 
-## UPDATE-0013 · 2026-07-05 · Status: PENDENTE
+## UPDATE-0013 · 2026-07-05 · Status: APLICADO em 2026-07-05
 
 Origem: operação do Hermes (sessão completa de copy trade + dashboard)
 Tipo: operacao + logica_discovery + infra + web + skill

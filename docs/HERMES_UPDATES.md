@@ -604,3 +604,78 @@ latência e teto de alavancagem 3x. Referência canônica de toda variável:
 - Aprovados com `coverage_days >= 30`, metades positivas e DD da cópia <= 25%.
 - Replicator sem PGRST204 após migration 0007.
 - Skill atualizada via PR seu; este UPDATE marcado APLICADO.
+
+---
+
+## UPDATE-0011 · 2026-07-05 · Status: PENDENTE
+
+**Origem**: diretiva humana rtg003 + execução Cursor na `main`
+
+**Tipo**: operacao + infra + web + config
+
+**Resumo**: o Tokio foi simplificado para **SQLite local como único banco de
+dados**. A camada Supabase foi removida por completo: sem réplica, sem
+`replicator`, sem `replication_queue`, sem migrations Supabase e sem Supabase
+Auth. O dashboard agora usa auth simples por senha e lê dados do SQLite via
+gateway interno. Também foram registradas novas diretivas permanentes no
+`AGENTS.md`: commits diretos na `main`, estratégias não se misturam, e cada
+estratégia/funcionalidade tem página própria.
+
+### Mudanças que você precisa saber
+
+1. **Sem PR por padrão**: Cursor e Hermes agora podem editar direto na `main`.
+   Antes de push: `git pull origin main`. Mudança que afete o outro agente
+   exige entrada no inbox dele no mesmo commit.
+2. **Estratégias não se misturam**: regra, ordem, fila, trade, fill, métrica,
+   tabela, card, relatório e config de uma estratégia só valem para ela mesma.
+3. **Dashboard atual é só Copy Trade**: não é dashboard geral. A rota principal
+   redireciona para `/copy-trade`; a dashboard geral será criada depois como
+   página separada.
+4. **Uma página por estratégia/funcionalidade**: código/queries de copy trade
+   ficam em `web/app/(app)/copy-trade/`, `web/components/copy-trade/` e
+   `web/lib/copy-trade/`. Não misturar módulos em página única.
+5. **SQLite único BD**: `engine.replicator_main`, `deploy/apply_supabase_migrations.sh`,
+   `db/migrations/supabase/` e `replication_queue` foram removidos. O endpoint
+   `/health` não retorna mais `replication_queue_depth` nem `replication_lag_s`.
+6. **Auth do dashboard**: Supabase Auth saiu. O web exige `DASHBOARD_PASSWORD`
+   e `DASHBOARD_AUTH_SECRET` no `.env` da VPS. Sem essas vars, o dashboard fica
+   fail-closed no login.
+7. **Purga de DRY_RUN**: migrations locais removem `ct_whale01`, `dm_pulse`,
+   `tv_funding_extreme` e `tv_gap_fade`. A única estratégia que deve restar é
+   `ct_48295497` (ativa/COPIANDO/pinned).
+8. **Backup**: `deploy/backup_sqlite.sh` agora é o script versionado. Ele cria
+   snapshot consistente via `sqlite3 .backup`, compacta, verifica restore e
+   opcionalmente envia offsite via `BACKUP_REMOTE` (`file://`, `scp://` ou
+   rclone remote).
+
+### Ações do Hermes
+
+1. Atualizar a memória persistente e a skill `trade` com as diretivas acima.
+   Remover referências operacionais a Supabase, replicator, PGRST e migrations
+   Supabase como rotina normal.
+2. Antes/ao validar o próximo deploy, garantir no `/home/tokio/Tokio/.env`:
+   `DASHBOARD_PASSWORD`, `DASHBOARD_AUTH_SECRET`, `GATEWAY_CONTROL_TOKEN`,
+   `HL_ACCOUNT_ADDRESS` e `HL_AGENT_PRIVATE_KEY`.
+3. Atualizar crons/briefings/health checks: não consultar mais campos
+   `replication_*` no `/health`; usar apenas engine online, kill switch,
+   circuit breaker, executor copy trade e backup.
+4. Trocar o cron de backup local para chamar `deploy/backup_sqlite.sh` e
+   configurar `BACKUP_REMOTE` para destino offsite. Manter retenção local de
+   7 dias e offsite de 30 dias.
+5. Depois de validar o dashboard e o backup offsite, tratar o projeto Supabase
+   antigo como réplica aposentada. Não apagar nada sem confirmação humana, mas
+   não depender dele para operação.
+6. Briefings/crons não devem mais citar `tv_gap_fade`, `tv_funding_extreme`,
+   `dm_pulse` ou `ct_whale01` como estratégias operacionais.
+
+### Validação
+
+- `curl http://127.0.0.1:8700/health` retorna sem campos `replication_*`.
+- `curl "http://127.0.0.1:8700/api/metrics?strategy_ids=ct_48295497"` retorna
+  JSON (lista vazia é aceitável se não houver métricas no período).
+- `python -m engine.cli strategy list` mostra somente `ct_48295497` entre as
+  estratégias operacionais esperadas.
+- `https://tokio.bz/` redireciona para `/copy-trade`; login por senha funciona;
+  cards/tabelas da dashboard carregam do gateway.
+- `bash deploy/backup_sqlite.sh --verify` passa e o artefato aparece no destino
+  offsite configurado.
