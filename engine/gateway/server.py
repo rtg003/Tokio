@@ -169,6 +169,21 @@ class GatewayState:
         strategy_id = self.ledger.strategy_for_cloid(cloid) or (
             order_rows[0]["strategy_id"] if order_rows else None
         )
+        network = fill.get("_network")
+        if network not in ("testnet", "mainnet") and cloid:
+            ex_rows = self.db.query(
+                "SELECT e.network FROM orders o "
+                "JOIN exchanges e ON o.exchange_id = e.id WHERE o.cloid = ?",
+                (cloid,),
+            )
+            if ex_rows:
+                network = ex_rows[0]["network"]
+        if network not in ("testnet", "mainnet"):
+            network = (
+                self.adapter.network
+                if self.adapter.network in ("testnet", "mainnet")
+                else "testnet"
+            )
         self.db.insert("fills", {
             "order_id": order_rows[0]["id"] if order_rows else None,
             "cloid": cloid,
@@ -180,6 +195,7 @@ class GatewayState:
             "fee": fee,
             "fee_asset": fill.get("feeToken", "USDC"),
             "realized_pnl": realized,
+            "network": network,
             "ts": utcnow(),
         })
         if cloid:
@@ -263,6 +279,10 @@ class GatewayState:
             return {"ok": False, "reason": verdict.reason, "cloid": cloid}
 
         self.ledger.register_order(cloid, intent.strategy_id)
+        exchange_id = self._exchange_id_for(adapter)
+        if exchange_id is None and adapter.network in {"testnet", "mainnet"}:
+            self._seed_exchanges()
+            exchange_id = self._exchange_id_for(adapter)
         order_row = {
             "cloid": cloid,
             "strategy_id": intent.strategy_id,
@@ -273,7 +293,7 @@ class GatewayState:
             "price": intent.price,
             "status": "dry_run" if intent.dry_run else "created",
             "created_at": utcnow(),
-            "exchange_id": self._exchange_id_for(adapter),
+            "exchange_id": exchange_id,
         }
         self.db.insert("orders", order_row)
 
@@ -548,49 +568,31 @@ def build_app(state: GatewayState) -> FastAPI:
         """Agregados de fills no período (contagem, PnL, fees, win rate).
 
         ADR 0010: ?strategy_id é OBRIGATÓRIO.
-        ?network=testnet|mainnet filtra pela rede de execução (orders.exchange_id).
+        ?network=testnet|mainnet filtra pela coluna fills.network.
         """
         try:
             strategy_ids = _strategy_ids_csv(strategy_id)
             network_filter = _parse_network(network)
+            where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
+            params: list[Any] = [*strategy_ids]
             if network_filter:
-                where = [f"f.strategy_id IN ({_in_clause(strategy_ids)})", "e.network = ?"]
-                params: list[Any] = [*strategy_ids, network_filter]
-                if since:
-                    where.append("f.ts >= ?")
-                    params.append(since)
-                if until:
-                    where.append("f.ts <= ?")
-                    params.append(until)
-                sql = f"""
-                    SELECT COUNT(*) AS n_trades,
-                           COALESCE(SUM(f.realized_pnl), 0) AS net_pnl,
-                           COALESCE(SUM(f.fee), 0) AS fees,
-                           AVG(CASE WHEN f.realized_pnl IS NOT NULL AND f.realized_pnl > 0
-                                    THEN 1.0 ELSE 0.0 END) AS win_rate
-                    FROM fills f
-                    JOIN orders o ON f.cloid = o.cloid
-                    JOIN exchanges e ON o.exchange_id = e.id
-                    WHERE {' AND '.join(where)}
-                """
-            else:
-                where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
-                params = [*strategy_ids]
-                if since:
-                    where.append("ts >= ?")
-                    params.append(since)
-                if until:
-                    where.append("ts <= ?")
-                    params.append(until)
-                sql = f"""
-                    SELECT COUNT(*) AS n_trades,
-                           COALESCE(SUM(realized_pnl), 0) AS net_pnl,
-                           COALESCE(SUM(fee), 0) AS fees,
-                           AVG(CASE WHEN realized_pnl IS NOT NULL AND realized_pnl > 0
-                                    THEN 1.0 ELSE 0.0 END) AS win_rate
-                    FROM fills
-                    WHERE {' AND '.join(where)}
-                """
+                where.append("network = ?")
+                params.append(network_filter)
+            if since:
+                where.append("ts >= ?")
+                params.append(since)
+            if until:
+                where.append("ts <= ?")
+                params.append(until)
+            sql = f"""
+                SELECT COUNT(*) AS n_trades,
+                       COALESCE(SUM(realized_pnl), 0) AS net_pnl,
+                       COALESCE(SUM(fee), 0) AS fees,
+                       AVG(CASE WHEN realized_pnl IS NOT NULL AND realized_pnl > 0
+                                THEN 1.0 ELSE 0.0 END) AS win_rate
+                FROM fills
+                WHERE {' AND '.join(where)}
+            """
             rows = state.db.query(sql, params)
             row = dict(rows[0]) if rows else {}
             return {
@@ -617,48 +619,29 @@ def build_app(state: GatewayState) -> FastAPI:
         ADR 0010: ?strategy_id é OBRIGATÓRIO — dashboard de copy trade só
         vê fills do módulo copy_trade (strategy_id começa com 'ct_').
         Sem filtro = 400 (não expor dados cross-módulo).
-        ?network=testnet|mainnet filtra pela rede de execução da ordem.
+        ?network=testnet|mainnet filtra pela coluna fills.network.
         """
         try:
             strategy_ids = _strategy_ids_csv(strategy_id)
             network_filter = _parse_network(network)
             limit = max(1, min(int(limit), 500))
+            where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
+            params: list[Any] = [*strategy_ids]
             if network_filter:
-                where = [
-                    f"f.strategy_id IN ({_in_clause(strategy_ids)})",
-                    "e.network = ?",
-                ]
-                params: list[Any] = [*strategy_ids, network_filter]
-                if since:
-                    where.append("f.ts >= ?")
-                    params.append(since)
-                if until:
-                    where.append("f.ts <= ?")
-                    params.append(until)
-                params.append(limit)
-                rows = state.db.query(
-                    f"SELECT f.* FROM fills f "
-                    f"JOIN orders o ON f.cloid = o.cloid "
-                    f"JOIN exchanges e ON o.exchange_id = e.id "
-                    f"WHERE {' AND '.join(where)} "
-                    "ORDER BY f.id DESC LIMIT ?",
-                    params,
-                )
-            else:
-                where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
-                params = [*strategy_ids]
-                if since:
-                    where.append("ts >= ?")
-                    params.append(since)
-                if until:
-                    where.append("ts <= ?")
-                    params.append(until)
-                params.append(limit)
-                rows = state.db.query(
-                    f"SELECT * FROM fills WHERE {' AND '.join(where)} "
-                    "ORDER BY id DESC LIMIT ?",
-                    params,
-                )
+                where.append("network = ?")
+                params.append(network_filter)
+            if since:
+                where.append("ts >= ?")
+                params.append(since)
+            if until:
+                where.append("ts <= ?")
+                params.append(until)
+            params.append(limit)
+            rows = state.db.query(
+                f"SELECT * FROM fills WHERE {' AND '.join(where)} "
+                "ORDER BY id DESC LIMIT ?",
+                params,
+            )
             return [dict(r) for r in rows]
         except HTTPException:
             raise
@@ -782,42 +765,29 @@ def build_app(state: GatewayState) -> FastAPI:
             limit = max(1, min(500, limit))
             strategy_ids = _strategy_ids_csv(strategy_id)
             network_filter = _parse_network(network)
+            where = [f"o.strategy_id IN ({_in_clause(strategy_ids)})"]
+            params: list[Any] = [*strategy_ids]
             if network_filter:
-                where = [
-                    f"o.strategy_id IN ({_in_clause(strategy_ids)})",
-                    "e.network = ?",
-                ]
-                params: list[Any] = [*strategy_ids, network_filter]
-                if since:
-                    where.append("o.created_at >= ?")
-                    params.append(since)
-                if until:
-                    where.append("o.created_at <= ?")
-                    params.append(until)
-                params.append(limit)
-                rows = state.db.query(
-                    f"SELECT o.* FROM orders o "
-                    f"JOIN exchanges e ON o.exchange_id = e.id "
-                    f"WHERE {' AND '.join(where)} "
-                    "ORDER BY o.id DESC LIMIT ?",
-                    params,
-                )
-            else:
-                where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
-                params = [*strategy_ids]
-                if since:
-                    where.append("created_at >= ?")
-                    params.append(since)
-                if until:
-                    where.append("created_at <= ?")
-                    params.append(until)
-                params.append(limit)
-                rows = state.db.query(
-                    f"SELECT * FROM orders WHERE {' AND '.join(where)} "
-                    "ORDER BY id DESC LIMIT ?",
-                    params,
-                )
-            return rows
+                where.append("e.network = ?")
+                params.append(network_filter)
+            if since:
+                where.append("o.created_at >= ?")
+                params.append(since)
+            if until:
+                where.append("o.created_at <= ?")
+                params.append(until)
+            params.append(limit)
+            join = "JOIN exchanges e ON o.exchange_id = e.id" if network_filter else (
+                "LEFT JOIN exchanges e ON o.exchange_id = e.id"
+            )
+            rows = state.db.query(
+                f"SELECT o.*, e.network AS network FROM orders o "
+                f"{join} "
+                f"WHERE {' AND '.join(where)} "
+                "ORDER BY o.id DESC LIMIT ?",
+                params,
+            )
+            return [dict(r) for r in rows]
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001

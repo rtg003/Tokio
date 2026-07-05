@@ -993,3 +993,58 @@ execução das ordens/fills. Corrigido com filtro `network` no gateway e KPI via
 - `python -m pytest tests/test_gateway.py -q` verde.
 - `npm run build` verde.
 - Contagem de trades bate com tabela; filtro de ambiente funciona em ordens e trades.
+
+---
+
+## UPDATE-0016 · 2026-07-05 · Status: PENDENTE
+
+Origem: Cursor — filtro de ambiente definitivo (fills.network)
+
+Tipo: schema + gateway + operacao
+
+Resumo: o filtro Exchange ainda falhava porque fills legados não tinham rede
+atribuída e muitas ordens tinham `exchange_id NULL` — o JOIN por
+`orders.exchange_id` excluía registros testnet. Agora cada fill tem coluna
+`network` própria; migração faz backfill; novos fills gravam rede na inserção.
+
+### O que mudou
+
+1. **Migração `0013_fills_network.sql`**
+   - Coluna `fills.network` (`testnet` | `mainnet`).
+   - Backfill `orders.exchange_id` NULL → hyperliquid testnet.
+   - Backfill `fills.network` via ordem vinculada; órfãos → testnet.
+   - Índice `idx_fills_network`.
+
+2. **Gateway**
+   - `on_own_fill` grava `network` (do adapter `_network` ou da ordem).
+   - `handle_intent` garante `exchange_id` (re-seed se necessário).
+   - `/api/fills` e `/api/fills/summary` filtram por `fills.network`.
+   - `/api/orders` retorna campo `network` e filtra via `exchanges.network`.
+
+3. **Dashboard**
+   - Parâmetro `network` via `URLSearchParams.set` (sem concatenação manual).
+
+### Ações do Hermes
+
+1. **Obrigatório:** rodar migração na VPS:
+   ```bash
+   cd /home/tokio/Tokio
+   git pull --ff-only origin main
+   .venv/bin/python -m engine.cli db migrate
+   sudo systemctl restart tokio-engine.service tokio.service
+   ```
+2. Validar filtro Exchange em https://tokio.bz/copy-trade:
+   - **Todos** → 8 trades (exemplo atual).
+   - **Hyperliquid - Testnet** → 6 trades + ordens testnet.
+   - **Hyperliquid - Mainnet** → 2 trades + ordens mainnet.
+3. Conferir backfill:
+   ```bash
+   sqlite3 data/tokio.db "SELECT network, COUNT(*) FROM fills GROUP BY network;"
+   sqlite3 data/tokio.db "SELECT COUNT(*) FROM orders WHERE exchange_id IS NULL;"
+   ```
+   Esperado: fills com `testnet`/`mainnet`; orders com `exchange_id` preenchido.
+
+### Validação esperada
+
+- `python -m pytest tests/test_gateway.py -q` verde.
+- Filtro de ambiente funciona em KPI, ordens e trades.

@@ -58,6 +58,7 @@ export type Order = Record<string, any> & {
   created_at: string;
   latency_ms?: number | null;
   reject_reason?: string | null;
+  network?: "testnet" | "mainnet" | null;
 };
 
 export type Fill = Record<string, any> & {
@@ -70,6 +71,7 @@ export type Fill = Record<string, any> & {
   fee: number;
   realized_pnl?: number | null;
   ts: string;
+  network?: "testnet" | "mainnet" | null;
 };
 
 export type FillsSummary = {
@@ -155,8 +157,12 @@ export async function getMetrics(
   return gatewayGet<Metrics[]>(`/api/metrics?${q.toString()}`);
 }
 
-function networkParam(network?: "testnet" | "mainnet" | null): string {
-  return network ? `&network=${encodeURIComponent(network)}` : "";
+function withNetwork(
+  q: URLSearchParams,
+  network?: "testnet" | "mainnet" | null,
+): URLSearchParams {
+  if (network) q.set("network", network);
+  return q;
 }
 
 export async function getFillsSummary(
@@ -168,12 +174,15 @@ export async function getFillsSummary(
   if (strategyIds.length === 0) {
     return { n_trades: 0, net_pnl: 0, fees: 0, win_rate: null };
   }
-  const q = new URLSearchParams({
-    strategy_id: strategyIds.join(","),
-    since,
-    until,
-  });
-  return gatewayGet<FillsSummary>(`/api/fills/summary?${q.toString()}${networkParam(network)}`);
+  const q = withNetwork(
+    new URLSearchParams({
+      strategy_id: strategyIds.join(","),
+      since,
+      until,
+    }),
+    network,
+  );
+  return gatewayGet<FillsSummary>(`/api/fills/summary?${q.toString()}`);
 }
 
 export async function getOrders(
@@ -183,13 +192,16 @@ export async function getOrders(
   network?: "testnet" | "mainnet" | null,
 ): Promise<Order[] | null> {
   if (strategyIds.length === 0) return [];
-  const q = new URLSearchParams({
-    strategy_id: strategyIds.join(","),
-    since,
-    until,
-    limit: "15",
-  });
-  return gatewayGet<Order[]>(`/api/orders?${q.toString()}${networkParam(network)}`);
+  const q = withNetwork(
+    new URLSearchParams({
+      strategy_id: strategyIds.join(","),
+      since,
+      until,
+      limit: "15",
+    }),
+    network,
+  );
+  return gatewayGet<Order[]>(`/api/orders?${q.toString()}`);
 }
 
 export async function getFills(
@@ -199,11 +211,14 @@ export async function getFills(
   network?: "testnet" | "mainnet" | null,
 ): Promise<Fill[] | null> {
   if (strategyIds.length === 0) return [];
-  const q = new URLSearchParams({
-    strategy_id: strategyIds.join(","),
-    since,
-    until,
-    limit: "15",
-  });
-  return gatewayGet<Fill[]>(`/api/fills?${q.toString()}${networkParam(network)}`);
+  const q = withNetwork(
+    new URLSearchParams({
+      strategy_id: strategyIds.join(","),
+      since,
+      until,
+      limit: "15",
+    }),
+    network,
+  );
+  return gatewayGet<Fill[]>(`/api/fills?${q.toString()}`);
 }

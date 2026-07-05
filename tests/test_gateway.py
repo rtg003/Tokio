@@ -202,6 +202,7 @@ def test_api_fills_and_orders_filter_by_network(settings, db) -> None:
             "price": 100_000.0,
             "size": 0.001,
             "fee": 0.01,
+            "network": "testnet",
             "ts": "2026-07-05T10:00:00Z",
         })
     for i in range(2):
@@ -224,6 +225,7 @@ def test_api_fills_and_orders_filter_by_network(settings, db) -> None:
             "price": 200_000.0,
             "size": 0.001,
             "fee": 0.02,
+            "network": "mainnet",
             "ts": "2026-07-05T11:00:00Z",
         })
 
@@ -266,6 +268,72 @@ def test_api_fills_and_orders_filter_by_network(settings, db) -> None:
             "/api/fills/summary?strategy_id=ct_net&network=mainnet"
         ).json()
         assert summary_mainnet["n_trades"] == 2
+
+
+def test_network_filter_backfills_legacy_orders_without_exchange_id(
+    settings, db,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from engine.core.logger import EventLogger
+    from engine.exchanges.paper import PaperAdapter
+    from engine.gateway.server import GatewayState, build_app
+
+    testnet = PaperAdapter(prices={"BTC": 100_000.0})
+    testnet.name = "hyperliquid"
+    testnet.network = "testnet"
+    state = GatewayState(
+        settings,
+        testnet,
+        db,
+        adapters={"testnet": testnet},
+        logger=EventLogger("gateway-legacy-net", settings.logs_dir, db=db),
+    )
+    register_strategy(db, "ct_legacy", module="copy_trade")
+
+    # Ordem legada sem exchange_id + fill sem network (cenário pré-migração).
+    db.insert("orders", {
+        "cloid": "0xlegacy1",
+        "strategy_id": "ct_legacy",
+        "symbol": "BTC",
+        "side": "buy",
+        "type": "market",
+        "size": 0.001,
+        "price": 100_000.0,
+        "status": "filled",
+    })
+    db.insert("fills", {
+        "cloid": "0xlegacy1",
+        "strategy_id": "ct_legacy",
+        "symbol": "BTC",
+        "side": "buy",
+        "price": 100_000.0,
+        "size": 0.001,
+        "fee": 0.01,
+        "ts": "2026-07-05T12:00:00Z",
+    })
+
+    # Simula backfill da migração 0013.
+    testnet_ex = db.query(
+        "SELECT id FROM exchanges WHERE name = 'hyperliquid' AND network = 'testnet'"
+    )[0]["id"]
+    db.execute(
+        "UPDATE orders SET exchange_id = ? WHERE cloid = '0xlegacy1'",
+        (testnet_ex,),
+    )
+    db.execute(
+        "UPDATE fills SET network = 'testnet' WHERE cloid = '0xlegacy1'",
+    )
+
+    with TestClient(build_app(state)) as c:
+        rows = c.get(
+            "/api/fills?strategy_id=ct_legacy&network=testnet&limit=20"
+        ).json()
+        assert len(rows) == 1
+        assert rows[0]["network"] == "testnet"
+        assert c.get(
+            "/api/fills?strategy_id=ct_legacy&network=mainnet&limit=20"
+        ).json() == []
 
 
 def test_fill_attribution_falls_back_to_order_strategy(client, gateway_state) -> None:
