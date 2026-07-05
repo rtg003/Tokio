@@ -97,7 +97,7 @@ export function accountOptions(exchanges: Exchange[] | null): AccountOption[] {
 
 export async function getTraders(): Promise<Trader[] | null> {
   const rows = await gatewayGet<Trader[]>("/api/traders");
-  return rows?.filter((t) => !["ARQUIVADO", "REJEITADO"].includes(t.status)) ?? rows;
+  return rows?.filter((t) => t.status !== "REJEITADO") ?? rows;
 }
 
 export async function getMetrics(

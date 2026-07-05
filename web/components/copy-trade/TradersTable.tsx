@@ -1,14 +1,34 @@
-import TraderActions from "@/components/TraderActions";
 import { fmtDateTime, fmtNum, fmtSigned, pnlClass, shortAddr } from "@/lib/format";
 import { Trader } from "@/lib/copy-trade/data";
+import StatusSelect from "@/components/copy-trade/StatusSelect";
 
-const traderChip: Record<string, string> = {
-  COPIANDO: "live",
-  DRY_RUN: "dry",
-  SUGERIDO: "sug",
-  PAUSADO: "ack",
-  REJEITADO: "rej",
-  ARQUIVADO: "dry",
+const COLUMN_TIPS: Record<string, string> = {
+  "#": "Posição atual na lista filtrada.",
+  Trader: "Nome e endereço da carteira analisada. Amarelo = salvo; verde = copiando.",
+  Score: "Nota composta 0-100 do funil. Use como leitura rápida; a cópia simulada pesa mais.",
+  Coorte: "Grupo operacional do trader conforme perfil de holding, risco e comportamento.",
+  "TWRR 30d": "Retorno ponderado pelo tempo nos últimos 30 dias.",
+  "PnL 30d": "Lucro ou prejuízo do trader nos últimos 30 dias, em USDC.",
+  Janelas: "Quantidade de janelas positivas. Ajuda a separar consistência de sorte pontual.",
+  PF: "Profit factor: lucro bruto dividido por perda bruta. Acima de 1 indica edge.",
+  "Win rate": "Percentual de trades vencedores. Deve ser interpretado junto com PF e DD.",
+  "Max DD": "Maior drawdown observado. Mede o quanto o trader já afundou no período.",
+  Status: "Ação operacional imediata. SALVO observa; TESTNET copia em testnet; MAINNET usa dinheiro real.",
+  "Trades 30d": "Número de trades fechados nos últimos 30 dias. Pouca amostra reduz confiança.",
+  "Hold méd.": "Tempo médio de posição. Ajuda a filtrar scalpers que não sobrevivem à latência.",
+  "Alav. méd.": "Alavancagem média histórica.",
+  "Alav. atual": "Maior alavancagem em posições abertas no scan.",
+  "Margem disp.": "Percentual de margem livre. Baixo valor aumenta risco de liquidação.",
+  "Cópia sim.": "PnL líquido simulado copiando com $1k, taxas, slippage e teto 3x.",
+  Cobertura: "Dias cobertos pelo histórico analisado. Histórico curto é menos confiável.",
+  "Metades A": "Resultado simulado nas duas metades da janela; ambas positivas indicam persistência.",
+  Equity: "Equity do trader. Traders grandes demais podem não espelhar bem com banca pequena.",
+  Ativos: "Principais ativos operados. Ajuda a avaliar concentração e compatibilidade.",
+  "Últ. atividade": "Último trade observado. Inatividade reduz copiabilidade.",
+  Sizing: "Modo e valor de espelhamento configurados para o trader.",
+  "Dist. liq.": "Menor distância até liquidação nas posições abertas.",
+  Origem: "Fonte do candidato: discovery, manual, Hermes, Copin ou HyperX.",
+  Lógica: "Versão da régua de discovery que produziu as métricas.",
 };
 
 function parseTopAssets(value: unknown): string[] {
@@ -17,6 +37,26 @@ function parseTopAssets(value: unknown): string[] {
   } catch {
     return [];
   }
+}
+
+function Th({
+  label,
+  className,
+}: {
+  label: string;
+  className?: string;
+}) {
+  return (
+    <th className={`${className ?? ""} th-tip`} data-tip={COLUMN_TIPS[label] ?? label}>
+      {label}
+    </th>
+  );
+}
+
+function traderAddrClass(status: string): string {
+  if (status === "SALVO") return "trader-watch";
+  if (status === "TESTNET" || status === "MAINNET") return "trader-copying";
+  return "";
 }
 
 export default function TradersTable({
@@ -50,55 +90,56 @@ export default function TradersTable({
           <table>
             <thead>
               <tr>
-                <th className="num">#</th>
-                <th>Trader</th>
-                <th>Score</th>
-                <th>Coorte</th>
-                <th className="num">TWRR 30d</th>
-                <th className="num">PnL 30d</th>
-                <th>Janelas</th>
-                <th className="num">PF</th>
-                <th className="num">Win rate</th>
-                <th className="num">Max DD</th>
-                <th>Status</th>
+                <Th label="#" className="num" />
+                <Th label="Trader" />
+                <Th label="Score" />
+                <Th label="Coorte" />
+                <Th label="TWRR 30d" className="num" />
+                <Th label="PnL 30d" className="num" />
+                <Th label="Janelas" />
+                <Th label="PF" className="num" />
+                <Th label="Win rate" className="num" />
+                <Th label="Max DD" className="num" />
+                <Th label="Status" />
                 {expanded && (
                   <>
-                    <th className="num">Trades 30d</th>
-                    <th className="num">Hold méd.</th>
-                    <th className="num">Alav. méd.</th>
-                    <th className="num">Alav. atual</th>
-                    <th className="num">Margem disp.</th>
-                    <th className="num">Cópia sim.</th>
-                    <th className="num">Cobertura</th>
-                    <th className="num">Metades A</th>
-                    <th className="num">Equity</th>
-                    <th>Ativos</th>
-                    <th>Últ. atividade</th>
-                    <th>Sizing</th>
-                    <th className="num">Dist. liq.</th>
-                    <th>Origem</th>
-                    <th className="num">Lógica</th>
+                    <Th label="Trades 30d" className="num" />
+                    <Th label="Hold méd." className="num" />
+                    <Th label="Alav. méd." className="num" />
+                    <Th label="Alav. atual" className="num" />
+                    <Th label="Margem disp." className="num" />
+                    <Th label="Cópia sim." className="num" />
+                    <Th label="Cobertura" className="num" />
+                    <Th label="Metades A" className="num" />
+                    <Th label="Equity" className="num" />
+                    <Th label="Ativos" />
+                    <Th label="Últ. atividade" />
+                    <Th label="Sizing" />
+                    <Th label="Dist. liq." className="num" />
+                    <Th label="Origem" />
+                    <Th label="Lógica" className="num" />
                   </>
                 )}
-                <th />
               </tr>
             </thead>
             <tbody>
               {rows.map((t, i) => {
                 const topAssets = parseTopAssets(t.top_assets);
+                const score = Math.max(0, Math.min(100, Number(t.score ?? 0)));
+                const addrClass = traderAddrClass(t.status);
                 return (
                   <tr key={t.address}>
                     <td className="num">{i + 1}</td>
-                    <td>
-                      {t.name ?? shortAddr(t.address)}
-                      <span className="sub addr">{shortAddr(t.address)}</span>
+                    <td className={addrClass}>
+                      <span className="trader-name">{t.name ?? shortAddr(t.address)}</span>
+                      <span className={`sub addr ${addrClass}`}>{shortAddr(t.address)}</span>
                     </td>
                     <td>
-                      <span className="score">
-                        {t.score === null || t.score === undefined ? "—" : Math.round(t.score)}
-                        <span className="scorebar">
-                          <i style={{ width: `${Math.min(100, t.score ?? 0)}%` }} />
-                        </span>
+                      <span
+                        className="scorebar scorebar-compact"
+                        title={t.score === null || t.score === undefined ? "sem score" : `${fmtNum(t.score, 1)}`}
+                      >
+                        <i style={{ width: `${score}%` }} />
                       </span>
                     </td>
                     <td>{t.cohort ?? "—"}</td>
@@ -108,7 +149,7 @@ export default function TradersTable({
                         : `${fmtNum(t.twrr_30d, 1)}%`}
                     </td>
                     <td className={`num ${pnlClass(t.pnl_30d)}`}>
-                      {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : fmtSigned(t.pnl_30d, 0)}
+                      {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : fmtSigned(t.pnl_30d, 2)}
                     </td>
                     <td>{t.windows_positive ?? "—"}</td>
                     <td className="num">
@@ -127,12 +168,7 @@ export default function TradersTable({
                         : `−${fmtNum(t.max_drawdown, 1)}%`}
                     </td>
                     <td>
-                      <span className={`chip ${traderChip[t.status] ?? "dry"}`}>{t.status}</span>
-                      {t.copy_pinned === 1 && (
-                        <span className="chip pinned" title="copy_pinned — protegido do re-scan">
-                          pinned
-                        </span>
-                      )}
+                      <StatusSelect address={t.address} status={t.status} />
                     </td>
                     {expanded && (
                       <>
@@ -189,9 +225,6 @@ export default function TradersTable({
                         <td className="num">v{t.logic_version}</td>
                       </>
                     )}
-                    <td>
-                      <TraderActions address={t.address} status={t.status} />
-                    </td>
                   </tr>
                 );
               })}

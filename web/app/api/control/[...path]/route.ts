@@ -4,12 +4,12 @@ import { authConfigured, SESSION_COOKIE, verifySession } from "@/lib/auth";
 
 // Server-side proxy to the gateway control API. The gateway lives ONLY on the
 // internal compose network; the web is its single authenticated client. The
-// browser never sees GATEWAY_CONTROL_TOKEN. The web can never send orders and
-// can never switch accounts to mainnet — those routes simply don't exist here.
+// browser never sees GATEWAY_CONTROL_TOKEN. Status changes still go through the
+// gateway, which refuses MAINNET unless credentials are configured.
 const ALLOWED_GET = new Set(["health", "ledger", "positions", "balance", "traders"]);
 const ALLOWED_POST_PATTERNS = [
   /^control\/strategy\/[\w-]+\/(pause|activate)$/,
-  // trader status/config: operacional apenas — o gateway recusa Gate 2
+  // trader status/config: status changes are explicit authenticated human acts
   /^control\/trader\/0x[0-9a-fA-F]{40}\/(status|config)$/,
 ];
 
