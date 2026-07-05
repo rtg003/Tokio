@@ -44,11 +44,11 @@ export default async function CopyTradeDashboard({
   }>;
 }) {
   const params = await searchParams;
-  const expanded = params.cols === "all";
+  const expanded = params.cols !== "core"; // padrão: expandido (todas colunas)
   const baseQuery = new URLSearchParams(
     Object.entries(params).filter(([k, v]) => k !== "cols" && v) as [string, string][],
   ).toString();
-  const toggleHref = expanded ? `?${baseQuery}` : `?${baseQuery}${baseQuery ? "&" : ""}cols=all`;
+  const toggleHref = expanded ? `?${baseQuery}${baseQuery ? "&" : ""}cols=core` : `?${baseQuery}`;
   const period = ["today", "7d", "30d", "custom"].includes(params.period ?? "")
     ? (params.period as string)
     : "30d";

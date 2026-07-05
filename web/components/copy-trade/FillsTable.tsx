@@ -2,7 +2,14 @@ import { fmtDateTime, fmtNotional, fmtNum, fmtSigned, pnlClass, shortAddr } from
 import { Fill } from "@/lib/copy-trade/data";
 
 export default function FillsTable({ fills }: { fills: Fill[] | null }) {
-  const rows = fills ?? [];
+  const rows = (fills ?? [])
+    .slice()
+    .sort((a, b) => {
+      // Ordem decrescente por ts
+      const da = a.ts ? new Date(a.ts).getTime() : 0;
+      const db = b.ts ? new Date(b.ts).getTime() : 0;
+      return db - da;
+    });
   return (
     <div className="card">
       <div className="cardhead">

@@ -2,16 +2,25 @@ import { fmtDateTime, fmtNotional, fmtNum, shortAddr, statusChip } from "@/lib/f
 import { Order } from "@/lib/copy-trade/data";
 
 export default function OrdersTable({ orders }: { orders: Order[] | null }) {
-  const rows = orders ?? [];
+  // Filtrar só ordens em aberto (não filled/closed)
+  const allRows = orders ?? [];
+  const rows = allRows
+    .filter((o) => o.status !== "filled" && o.status !== "closed" && o.status !== "cancelled")
+    .sort((a, b) => {
+      // Ordem decrescente por created_at
+      const da = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return db - da;
+    });
   return (
     <div className="card">
       <div className="cardhead">
         <h2>Ordens</h2>
-        <span className="cardnote">ciclo completo · atribuição por cloid · fonte: tabela orders</span>
+        <span className="cardnote">ordens em aberto · atribuição por cloid · fonte: tabela orders</span>
       </div>
       <div className="tablewrap tablewrap-orders">
         {rows.length === 0 ? (
-          <div className="empty">nenhuma ordem de copy trade no período</div>
+          <div className="empty">nenhuma ordem em aberto</div>
         ) : (
           <table>
             <thead>

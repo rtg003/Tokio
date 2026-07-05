@@ -159,8 +159,8 @@ th.num { text-align: right; }
 .pos { color: var(--pos); }
 .neg { color: var(--neg); }
 .addr { color: var(--muted); }
-.trader-watch, .trader-watch.addr { color: var(--amber); }
-.trader-copying, .trader-copying.addr { color: var(--pos); }
+.trader-name.trader-watch { color: var(--amber); }
+.trader-name.trader-copying { color: var(--pos); }
 .trader-name { font-weight: 600; }
 .side { font-weight: 600; font-size: 11px; letter-spacing: 0.08em; }
 .side.long { color: var(--pos); }
