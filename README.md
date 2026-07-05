@@ -35,9 +35,9 @@ gateway ── risk_enforcer (caps, circuit breaker, kill switch)
         ── ExchangeAdapter ──► Hyperliquid (SDK oficial, testnet default)
         │
 SQLite + JSONL (fonte de verdade local)
-        │ replicação assíncrona em lote
+        │ leitura interna via gateway /api
         ▼
-Supabase ──► web (Next.js · tokio.bz)
+web (Next.js · tokio.bz)
 ```
 
 Regras inegociáveis:
@@ -45,7 +45,7 @@ Regras inegociáveis:
 - Runners **nunca** falam direto com a corretora; o banco **nunca** é
   barramento de ordens.
 - O gateway é o **único signatário** (agent wallet `engine_gateway`).
-- Local-first: outage do Supabase não para o engine (fila local + retry).
+- SQLite local é o único banco operacional; o dashboard lê via gateway interno.
 - Nenhuma estratégia sai de `dry_run` sem evidência de expectância positiva
   líquida de taxas registrada em `docs/`.
 
@@ -125,7 +125,7 @@ Procedimento completo, DNS, gates e troubleshooting:
 
 - `.env` está no `.gitignore` desde o commit 0; nenhum secret é commitado,
   impresso ou logado — em nenhum nível.
-- `service_role` do Supabase existe apenas nos containers do engine; o web usa
-  anon key com RLS ligado em todas as tabelas.
+- Dashboard usa auth simples por senha (`DASHBOARD_PASSWORD` +
+  `DASHBOARD_AUTH_SECRET`) e cookie HttpOnly; não há Supabase Auth.
 - Mainnet, aumento de caps e ativação de estratégias são **gates humanos**
   (ver `docs/HANDOFF_HERMES.md`).

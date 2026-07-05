@@ -20,8 +20,6 @@ Duas camadas:
      `standalone/<nome>`. Todos herdam `base_runner` (lifecycle draft →
      dry_run → active → paused/auto_paused → archived; heartbeat; auto-pausa
      por threshold). Runners **nunca** falam com a corretora nem assinam.
-   - **Replicador**: worker assíncrono SQLite → Supabase, em lote, com fila
-     local e retry. O hot path escreve APENAS localmente (local-first).
 2. **SKILL do Hermes** (`skill/`): runbook agentskills.io (< 5.000 tokens,
    progressive disclosure) que ensina o Hermes a operar o sistema. Descoberta
    de estratégias sempre dinâmica via `strategy list` (lê do banco).
@@ -44,8 +42,7 @@ flowchart LR
   RE --> LG --> AD
   AD -->|SDK oficial, WS| HL[Hyperliquid testnet]
   gw --> DB[(SQLite local + JSONL)]
-  DB -->|replicacao assincrona em lote| SB[(Supabase)]
-  SB --> WEB[web Next.js - tokio.bz]
+  DB -->|leitura interna via /api| WEB[web Next.js - tokio.bz]
   WEB -->|API de controle interna| gw
 ```
 
@@ -57,7 +54,7 @@ flowchart LR
 | 0002 | **Isolamento financeiro em duas fases**: Fase A (dia 1) ledger virtual no gateway; Fase B (pós US$ 100k de volume) subaccounts por bucket de risco/módulo via `vaultAddress`, assinadas pelo gateway. Adapter e configs nascem com `subaccount_address` opcional. |
 | 0003 | **SDK oficial `hyperliquid-python-sdk`, não CCXT**: copy trade exige subscrição WS de fills de endereços arbitrários, fora da API unificada do CCXT. Corretoras futuras podem usar CCXT atrás do mesmo `ExchangeAdapter`. |
 | 0004 | **TradingView via webhook de alertas**: não existe API oficial de sinais nem MCP oficial. Webhook HTTPS com token secreto e payload JSON padronizado. |
-| 0005 | **Local-first + Supabase assíncrono**: SQLite/JSONL são a fonte de verdade operacional; Supabase é análise/dashboard. Outage do Supabase nunca para o engine. |
+| 0005 | **Local-first**: SQLite/JSONL são a fonte de verdade operacional; dashboard lê do gateway interno. Backup local/offsite do SQLite é obrigatório. |
 | 0006 | **Proxy na VPS**: antes de subir o Caddy verificar portas 80/443 (`ss -tlnp`); se houver proxy existente, adicionar vhost `tokio.bz` a ele em vez de subir um segundo. |
 
 Validações da Fase 0 (documentação oficial da Hyperliquid, jul/2026):
@@ -82,16 +79,16 @@ Validações da Fase 0 (documentação oficial da Hyperliquid, jul/2026):
 | Overtrading que destrói PnL líquido | Toda métrica é líquida de taxas (0,045% taker / 0,015% maker); auto-pausa por threshold; relatórios por exceção. |
 | Contaminação entre estratégias | Processo separado + limites CPU/mem; orçamento de rate limit por estratégia no gateway; ledger virtual + `cloid`; caps de capital por estratégia. |
 | Nonce/replay | Único signatário (gateway) com contador atômico; endereços desregistrados nunca reutilizados. |
-| Supabase fora do ar | Fila local com retry; engine nunca bloqueia; teste de outage é critério de aceite da Fase 1. |
+| Perda do SQLite local | Backup local + offsite com restore verificado; engine nunca depende de banco remoto no hot path. |
 | Latência do copy trade | Filtro de scalpers no discovery; latência alvo→espelho logada em todo trade; drift check periódico. |
-| Vazamento de segredos | `.env` fora do repo desde o commit 0; proibido logar chaves; service_role só nos containers do engine; RLS em todas as tabelas. |
+| Vazamento de segredos | `.env` fora do repo desde o commit 0; proibido logar chaves; auth do dashboard por senha + cookie HttpOnly. |
 
 ## 4. Plano por fases
 
 | Fase | Entrega | Aceite |
 |---|---|---|
 | 0 | Este PLAN.md + ADRs + mockup em `docs/design/` + bootstrap do repo | Gate 1 aprovado |
-| 1 | Core, migrations, gateway, adapter HL testnet, base_runner + runner dummy, compose, skill v1, CLI, testes | `pytest` verde; matar runner não afeta gateway; outage do Supabase não para o engine |
+| 1 | Core, migrations, gateway, adapter HL testnet, base_runner + runner dummy, compose, skill v1, CLI, testes | `pytest` verde; matar runner não afeta gateway; SQLite local é fonte única |
 | 2 | Copy trade (runner próprio) | Fills espelhados (dry-run/testnet), sizing fixo e percentual, drift check e latência logados, ledger atribuindo via cloid |
 | 3 | Discovery | Relatório ranqueado com métricas reais via CLI |
 | 4 | TradingView (runner próprio) | 2 sub-estratégias simultâneas; exceção em uma não derruba o servidor |
@@ -101,7 +98,7 @@ Validações da Fase 0 (documentação oficial da Hyperliquid, jul/2026):
 | 8 | HANDOFF | `docs/HANDOFF_HERMES.md` completo; `strategy archive` ponta a ponta; revisão da skill |
 
 **Limites deste ambiente de build (cloud agent):** sem acesso à VPS, ao DNS da
-Hostinger, a credenciais reais (Supabase/HL) ou a alertas reais do TV. Testes
+Hostinger, a credenciais reais (HL/dashboard) ou a alertas reais do TV. Testes
 live em testnet e o deploy físico ficam documentados no HANDOFF como passos do
 humano/Hermes; aqui tudo é validado com pytest, fakes do exchange e dry-run.
 

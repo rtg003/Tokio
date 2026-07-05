@@ -393,9 +393,8 @@ def build_app(state: GatewayState) -> FastAPI:
         return {"ok": True, "open_orders_cancelled": cancelled}
 
     # ------------------------------------------------------------------
-    # Read-only API para o dashboard Next.js ler direto do SQLite (Bloco 1).
-    # NÃO substitui o Supabase — apenas adiciona um caminho de leitura
-    # local-first. O dashboard pode voltar para o Supabase a qualquer momento.
+    # Read-only API para o dashboard Next.js ler direto do SQLite.
+    # SQLite é o único banco operacional; não há camada Supabase.
     # ADR 0010: toda visão de módulo filtra por strategy_id/módulo.
     # ------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 -- 0001_initial — core operational schema (SQLite local, source of truth).
--- Mirrored in db/migrations/supabase/0001_initial.sql (Postgres) for analytics.
+-- Supabase was retired; SQLite is the only operational database.
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version TEXT PRIMARY KEY,
@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS strategy_metrics_daily (
     PRIMARY KEY (strategy_id, day)
 );
 
--- Local outbox for async batch replication to Supabase (local-first, ADR 0005).
+-- Historical outbox table. It is dropped by 0011_drop_replication_queue after
+-- the SQLite-only architecture decision.
 CREATE TABLE IF NOT EXISTS replication_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     table_name TEXT NOT NULL,
