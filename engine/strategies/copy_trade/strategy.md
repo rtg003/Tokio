@@ -2,7 +2,7 @@
 
 - id: ct_* (uma estratégia por trader copiado — fonte única: tabela `traders`, ADR 0008)
 - module: copy_trade
-- status: por trader (default: dry_run — sem exceção)
+- status: por trader (default: SUGERIDO)
 - hipótese: traders com histórico auditável de expectância positiva em swing/
   posição mantêm o edge quando espelhados com segundos de atraso; o edge de
   scalpers NÃO sobrevive à latência estrutural do espelhamento (por isso o
@@ -12,11 +12,12 @@
 - parâmetros-chave (colunas da tabela `traders`; mudanças só via API de
   controle/CLI, logadas em `events`):
   - `address`: endereço-alvo na Hyperliquid (chave de upsert)
-  - `status`: SUGERIDO → DRY_RUN → COPIANDO (Gate 2 humano) · PAUSADO/REJEITADO/ARQUIVADO
+  - `status`: SUGERIDO → SALVO/TESTNET/MAINNET/REJEITADO
   - `mode`: `fixed_usdc` (notional fixo por posição) | `percent`
     (proporcional: equity do alvo vs. a sua)
   - `value`: USDC (fixed) ou fração (percent)
-  - `max_leverage`, `blocked_assets`, `dry_run` (default true)
+  - `max_leverage`, `blocked_assets`; `dry_run` é legado, status TESTNET/MAINNET
+    decide execução
 - thresholds: por trader (`min_net_pnl`, `min_trades`, `eval_window_days`)
 
 ## Regras de decisão (100% determinísticas)

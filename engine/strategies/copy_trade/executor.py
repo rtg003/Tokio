@@ -2,7 +2,7 @@
 
 One isolated process for the module; each copied trader is its own strategy
 (`ct_<name>`). A fonte ÚNICA de traders é a tabela `traders` (ADR 0008):
-o executor espelha quem está em DRY_RUN/COPIANDO e recarrega a tabela
+o executor espelha quem está em TESTNET/MAINNET e recarrega a tabela
 periodicamente (mudanças via API de controle entram sem restart). Reading
 target fills over WebSocket is public market data; every ORDER goes to the
 gateway as an intent — never straight to the venue.
@@ -29,7 +29,11 @@ from engine.core.config import Settings, get_settings
 from engine.core.db import Database
 from engine.core.logger import EventLogger
 from engine.strategies.base_runner import GatewayClient
-from engine.strategies.copy_trade.traders_store import operable_traders, strategy_id_for
+from engine.strategies.copy_trade.traders_store import (
+    environment_for_status,
+    operable_traders,
+    strategy_id_for,
+)
 
 DRIFT_TOLERANCE = 0.05
 
@@ -42,7 +46,7 @@ class TraderConfig(BaseModel):
     max_leverage: float = 3.0
     blocked_assets: list[str] = Field(default_factory=list)
     status: str = "SUGERIDO"      # da tabela traders
-    dry_run: bool = True          # DEFAULT for every new trader — no exceptions
+    dry_run: bool = True          # legado: status TESTNET/MAINNET decide execução
     thresholds: dict[str, float] = Field(default_factory=dict)
 
     @property
@@ -122,7 +126,7 @@ class CopyTradeExecutor:
 
     # -- setup ---------------------------------------------------------------
     def reload_traders(self) -> None:
-        """Recarrega da tabela `traders` (fonte única). Novos DRY_RUN/COPIANDO
+        """Recarrega da tabela `traders` (fonte única). Novos TESTNET/MAINNET
         ganham subscrição WS; quem saiu desses estados para de ser espelhado
         (o status é checado a cada fill de qualquer forma)."""
         for row in operable_traders(self.db):
@@ -145,7 +149,7 @@ class CopyTradeExecutor:
                 "id": cfg.strategy_id,
                 "module": "copy_trade",
                 "name": cfg.name,
-                "status": "dry_run",   # default state, no exceptions
+                "status": "active",
                 "config_snapshot": json.dumps(cfg.model_dump(), ensure_ascii=False),
                 "thresholds": json.dumps(cfg.thresholds, ensure_ascii=False),
             }, ("id",))
@@ -157,13 +161,12 @@ class CopyTradeExecutor:
     def _trader_status(self, address: str) -> str:
         rows = self.db.query("SELECT status FROM traders WHERE address = ?",
                              (address.lower(),))
-        return rows[0]["status"] if rows else "ARQUIVADO"
+        return rows[0]["status"] if rows else "REJEITADO"
 
     def _is_dry_run(self, cfg: TraderConfig) -> bool:
-        # Ordem real só quando o trader está COPIANDO com dry_run desligado
-        # (Gate 2 humano) E a estratégia correspondente está ativa.
-        return (cfg.dry_run
-                or self._trader_status(cfg.address) != "COPIANDO"
+        # O combobox da dashboard é o ato humano. Uma vez em TESTNET/MAINNET,
+        # a ordem é real no respectivo ambiente se a strategy ct_* estiver ativa.
+        return (self._trader_status(cfg.address) not in ("TESTNET", "MAINNET")
                 or self._strategy_status(cfg.strategy_id) != "active")
 
     # -- mirroring core ----------------------------------------------------------
@@ -172,7 +175,7 @@ class CopyTradeExecutor:
         cfg = self.traders[strategy_id]
         symbol = str(fill.get("coin", ""))
         trader_status = self._trader_status(cfg.address)
-        if trader_status not in ("DRY_RUN", "COPIANDO"):
+        if trader_status not in ("TESTNET", "MAINNET"):
             self.logger.debug("signal.ignored_status", {"trader_status": trader_status},
                               strategy_id=strategy_id)
             return None
@@ -228,6 +231,7 @@ class CopyTradeExecutor:
             reduce_only=reduce_only,
             leverage=cfg.max_leverage,
             dry_run=self._is_dry_run(cfg),
+            environment=environment_for_status(trader_status),
         )
         if result.get("ok"):
             self._my_pos[key] = my_new
@@ -284,7 +288,7 @@ class CopyTradeExecutor:
                          {"module": "copy_trade",
                           "traders": [t.strategy_id for t in self.traders.values()],
                           "copying": [t.strategy_id for t in self.traders.values()
-                                      if t.status == "COPIANDO"]})
+                                      if t.status in ("TESTNET", "MAINNET")]})
         last_drift = 0.0
         last_reload = 0.0
         while True:

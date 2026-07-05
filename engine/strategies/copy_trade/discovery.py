@@ -248,7 +248,7 @@ def cmd_token(args: argparse.Namespace) -> int:
         print("- sem posicionamento registrado no último scan")
     holders = db.query(
         "SELECT address, score, status, top_assets FROM traders "
-        "WHERE status NOT IN ('REJEITADO','ARQUIVADO') ORDER BY score DESC")
+        "WHERE status != 'REJEITADO' ORDER BY score DESC")
     with_asset = [h for h in holders
                   if asset in json.loads(h["top_assets"] or "[]")]
     if with_asset:

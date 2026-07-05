@@ -1,9 +1,8 @@
 """Tabela `traders` — fonte ÚNICA de verdade para candidatos e copiados (ADR 0008).
 
 Candidatos do discovery e traders copiados vivem na MESMA tabela, distinguidos
-por `status`: SUGERIDO → (Gate 2, humano) → DRY_RUN/COPIANDO → PAUSADO /
-REJEITADO / ARQUIVADO. Upsert por `address` (lowercase). Config de execução
-são colunas; YAMLs por trader foram eliminados.
+por `status`: SUGERIDO → SALVO/TESTNET/MAINNET/REJEITADO. Upsert por `address`
+(lowercase). Config de execução são colunas; YAMLs por trader foram eliminados.
 
 Toda mudança de status/config é logada em `events` (event_type `trader.*`).
 """
@@ -14,22 +13,31 @@ from typing import Any
 
 from engine.core.db import Database, utcnow
 
-VALID_STATUSES = {"SUGERIDO", "DRY_RUN", "COPIANDO", "PAUSADO", "REJEITADO", "ARQUIVADO"}
-# Gate 2: sair de SUGERIDO para operação exige autorização humana (CLI).
-HUMAN_GATE_TRANSITIONS = {("SUGERIDO", "DRY_RUN"), ("SUGERIDO", "COPIANDO"),
-                          ("DRY_RUN", "COPIANDO")}
-# Transições operacionais permitidas via API de controle do gateway.
-CONTROL_API_TRANSITIONS = {("DRY_RUN", "PAUSADO"), ("COPIANDO", "PAUSADO"),
-                           ("PAUSADO", "DRY_RUN"), ("PAUSADO", "COPIANDO"),
-                           ("SUGERIDO", "REJEITADO"),
-                           # re-scan pode reabilitar um rejeitado que voltou a
-                           # passar no funil (vira candidato de novo)
-                           ("REJEITADO", "SUGERIDO")}
+VALID_STATUSES = {"SUGERIDO", "SALVO", "TESTNET", "MAINNET", "REJEITADO"}
+OPERATING_STATUSES = {"TESTNET", "MAINNET"}
+WATCHLIST_STATUSES = {"SALVO", "TESTNET", "MAINNET"}
+AUTOMATED_TRANSITIONS = {
+    ("SUGERIDO", "REJEITADO"),
+    ("REJEITADO", "SUGERIDO"),
+}
 
 
 def strategy_id_for(address: str, name: str | None = None) -> str:
     slug = (name or address[2:10]).lower().replace(" ", "_")
     return f"ct_{slug}"
+
+
+def is_human_actor(by: str, human_gate: bool = False) -> bool:
+    b = by.lower()
+    return human_gate or "human" in b or "humano" in b or "gate" in b or "dashboard" in b
+
+
+def environment_for_status(status: str) -> str | None:
+    if status == "TESTNET":
+        return "testnet"
+    if status == "MAINNET":
+        return "mainnet"
+    return None
 
 
 def upsert_candidate(db: Database, *, address: str, name: str | None = None,
@@ -41,7 +49,7 @@ def upsert_candidate(db: Database, *, address: str, name: str | None = None,
                      origin: str = "discovery", logic_version: int = 1,
                      extras: dict[str, Any] | None = None) -> None:
     """Upsert de candidato SEM tocar em status/config de execução existentes
-    (um re-scan nunca rebaixa um trader COPIANDO para SUGERIDO).
+    (um re-scan nunca rebaixa um trader em TESTNET/MAINNET para SUGERIDO).
     `extras`: colunas adicionais da logic_version 2 (migration 0004)."""
     address = address.lower()
     row = db.query("SELECT address FROM traders WHERE address = ?", (address,))
@@ -58,7 +66,7 @@ def upsert_candidate(db: Database, *, address: str, name: str | None = None,
         db.execute(f"UPDATE traders SET {sets} WHERE address = ?",
                    [*metrics.values(), address])
         updated = db.query("SELECT * FROM traders WHERE address = ?", (address,))[0]
-        db.upsert("traders", updated, ("address",))  # re-enfileira p/ replicação
+        db.upsert("traders", updated, ("address",))
     else:
         db.upsert("traders", {"address": address, "status": "SUGERIDO", **metrics},
                   ("address",))
@@ -69,7 +77,7 @@ def import_yaml_trader(db: Database, cfg: dict[str, Any]) -> None:
     address = str(cfg["address"]).lower()
     status = "SUGERIDO"
     if cfg.get("active"):
-        status = "DRY_RUN" if cfg.get("dry_run", True) else "COPIANDO"
+        status = "TESTNET"
     db.upsert("traders", {
         "address": address,
         "name": cfg.get("name"),
@@ -93,16 +101,16 @@ def list_traders(db: Database, statuses: set[str] | None = None) -> list[dict[st
 
 
 def operable_traders(db: Database) -> list[dict[str, Any]]:
-    """Traders que o executor deve espelhar (DRY_RUN e COPIANDO)."""
-    return list_traders(db, {"DRY_RUN", "COPIANDO"})
+    """Traders que o executor deve espelhar (TESTNET e MAINNET)."""
+    return list_traders(db, OPERATING_STATUSES)
 
 
 def set_status(db: Database, address: str, new_status: str, *, by: str,
                logger: Any | None = None, human_gate: bool = False) -> dict[str, Any]:
-    """Transição de status com enforcement do Gate 2.
+    """Transição de status com enforcement do ator humano.
 
-    human_gate=True marca que a chamada veio do caminho humano (CLI). A API de
-    controle NUNCA passa human_gate — logo transições de Gate 2 são recusadas lá.
+    A dashboard autenticada é o caminho humano para operar status. Processos
+    automáticos ficam restritos a SUGERIDO↔REJEITADO.
     """
     address = address.lower()
     if new_status not in VALID_STATUSES:
@@ -115,33 +123,42 @@ def set_status(db: Database, address: str, new_status: str, *, by: str,
         return {"ok": True, "noop": True, "status": current}
 
     transition = (current, new_status)
-    if transition in HUMAN_GATE_TRANSITIONS and not human_gate:
-        return {"ok": False, "reason": "gate2_requer_autorizacao_humana",
-                "transition": f"{current}->{new_status}"}
-    if not human_gate and transition not in CONTROL_API_TRANSITIONS \
-            and new_status != "ARQUIVADO":
+    human = is_human_actor(by, human_gate)
+    if not human and transition not in AUTOMATED_TRANSITIONS:
         return {"ok": False, "reason": "transicao_nao_permitida",
                 "transition": f"{current}->{new_status}"}
 
-    db.execute("UPDATE traders SET status = ?, updated_at = ? WHERE address = ?",
-               (new_status, utcnow(), address))
-
-    # Bloco 3 — flag inviolável: ao entrar em DRY_RUN/COPIANDO via gate humano
-    # (by contém 'human' ou 'gate'), fixa copy_pinned = 1. O re-scan passa a
-    # atualizar métricas sem jamais rebaixar/rejeitar o trader. Só removido
-    # por unpin_trader(human_gate=True) com a cópia pausada.
-    if new_status in ("DRY_RUN", "COPIANDO") and (
-            "human" in by.lower() or "gate" in by.lower() or human_gate):
-        db.execute("UPDATE traders SET copy_pinned = 1 WHERE address = ?",
-                   (address,))
+    copy_pinned = 1 if human and new_status in WATCHLIST_STATUSES else None
+    dry_run = 0 if new_status in OPERATING_STATUSES else 1
+    if copy_pinned is None:
+        db.execute(
+            "UPDATE traders SET status = ?, dry_run = ?, updated_at = ? WHERE address = ?",
+            (new_status, dry_run, utcnow(), address),
+        )
+    else:
+        db.execute(
+            "UPDATE traders SET status = ?, dry_run = ?, copy_pinned = ?, updated_at = ? "
+            "WHERE address = ?",
+            (new_status, dry_run, copy_pinned, utcnow(), address),
+        )
 
     updated = db.query("SELECT * FROM traders WHERE address = ?", (address,))[0]
     db.upsert("traders", updated, ("address",))
+    sid = strategy_id_for(address, updated.get("name"))
+    strategy_status = "active" if new_status in OPERATING_STATUSES else "paused"
+    db.upsert("strategies", {
+        "id": sid,
+        "module": "copy_trade",
+        "name": updated.get("name") or address[2:10],
+        "status": strategy_status,
+        "config_snapshot": json.dumps(updated, ensure_ascii=False, default=str),
+        "thresholds": updated.get("thresholds") or "{}",
+    }, ("id",))
     if logger:
         logger.info("trader.status_changed",
                     {"address": address, "from": current, "to": new_status, "by": by})
     else:
-        db.insert_event(ts=utcnow(), strategy_id=strategy_id_for(address),
+        db.insert_event(ts=utcnow(), strategy_id=sid,
                         event_type="trader.status_changed", level="info",
                         payload={"address": address, "from": current,
                                  "to": new_status, "by": by})
@@ -151,9 +168,8 @@ def set_status(db: Database, address: str, new_status: str, *, by: str,
 def unpin_trader(db: Database, address: str, *, by: str,
                  human_gate: bool = False,
                  logger: Any | None = None) -> dict[str, Any]:
-    """Remove a flag copy_pinned (Bloco 3). Inviolável: exige human_gate=True
-    E que o trader NÃO esteja em DRY_RUN/COPIANDO (cópia precisa ser pausada
-    ou desativada antes). Levanta ValueError em caso de violação."""
+    """Remove a flag copy_pinned. Exige human_gate=True e status fora de
+    TESTNET/MAINNET (cópia precisa sair de operação antes)."""
     address = address.lower()
     if not human_gate:
         raise ValueError("unpin exige human_gate=True")
@@ -162,7 +178,7 @@ def unpin_trader(db: Database, address: str, *, by: str,
     if not rows:
         raise ValueError(f"trader desconhecido: {address}")
     current_status = rows[0]["status"]
-    if current_status in ("DRY_RUN", "COPIANDO"):
+    if current_status in OPERATING_STATUSES:
         raise ValueError("pause/desative a cópia antes de unpin")
     db.execute("UPDATE traders SET copy_pinned = 0, updated_at = ? WHERE address = ?",
                (utcnow(), address))

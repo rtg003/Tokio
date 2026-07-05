@@ -362,8 +362,8 @@ def build_app(state: GatewayState) -> FastAPI:
         state.logger.info("strategy.activated", {"by": "control_api"}, strategy_id=strategy_id)
         return {"ok": True}
 
-    # -- traders (fonte única = tabela; ADR 0008). Gate 2 (SUGERIDO->operação)
-    # é recusado aqui por construção: só a CLI humana passa human_gate=True.
+    # -- traders (fonte única = tabela; ADR 0008). A dashboard autenticada é
+    # caminho humano: cada mudança no combobox passa por confirmação no web.
     @app.get("/traders")
     def traders() -> list[dict[str, Any]]:
         from engine.strategies.copy_trade.traders_store import list_traders
@@ -374,8 +374,10 @@ def build_app(state: GatewayState) -> FastAPI:
     def trader_status(address: str, new_status: str) -> dict[str, Any]:
         from engine.strategies.copy_trade.traders_store import set_status
 
-        return set_status(state.db, address, new_status, by="control_api",
-                          logger=state.logger)
+        if new_status == "MAINNET" and "mainnet" not in getattr(state, "adapters", {}):
+            return {"ok": False, "reason": "mainnet_nao_configurado"}
+        return set_status(state.db, address, new_status, by="dashboard_humano",
+                          logger=state.logger, human_gate=True)
 
     @app.post("/control/trader/{address}/config", dependencies=[Depends(_control_auth)])
     def trader_config(address: str, fields: dict[str, Any]) -> dict[str, Any]:
@@ -400,7 +402,7 @@ def build_app(state: GatewayState) -> FastAPI:
 
     # Status permitidos no filtro de traders (tabela traders, ADR 0008).
     _TRADER_STATUSES = {
-        "SUGERIDO", "DRY_RUN", "COPIANDO", "PAUSADO", "REJEITADO", "ARQUIVADO",
+        "SUGERIDO", "SALVO", "TESTNET", "MAINNET", "REJEITADO",
     }
 
     def _strategy_ids_csv(value: str | None, *, field: str = "strategy_id") -> list[str]:
@@ -585,8 +587,9 @@ def build_app(state: GatewayState) -> FastAPI:
                 "traders_by_status": by_status,
                 "aprovados": by_status.get("SUGERIDO", 0),
                 "reprovados": by_status.get("REJEITADO", 0),
-                "copiando": by_status.get("COPIANDO", 0),
-                "dry_run": by_status.get("DRY_RUN", 0),
+                "salvos": by_status.get("SALVO", 0),
+                "testnet": by_status.get("TESTNET", 0),
+                "mainnet": by_status.get("MAINNET", 0),
             }
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"stats: {str(exc)[:200]}")

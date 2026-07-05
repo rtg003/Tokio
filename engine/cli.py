@@ -181,16 +181,16 @@ def cmd_trader_list(_: argparse.Namespace) -> int:
 
 
 def cmd_trader_approve(args: argparse.Namespace) -> int:
-    """GATE 2 (humano): SUGERIDO -> DRY_RUN (ou DRY_RUN -> COPIANDO com --live)."""
+    """Gate humano: SUGERIDO/SALVO -> TESTNET (ou -> MAINNET com --live)."""
     db = _db()
     settings = get_settings()
     logger = EventLogger("cli", settings.logs_dir, db=db)
-    from engine.strategies.copy_trade.traders_store import set_status, update_exec_config
+    from engine.strategies.copy_trade.traders_store import set_status
 
-    target = "COPIANDO" if args.live else "DRY_RUN"
+    target = "MAINNET" if args.live else "TESTNET"
     if args.live and not args.evidence:
         print("ERRO: --live (dinheiro de verdade no espelhamento) exige --evidence "
-              "docs/<arquivo> com a expectância positiva do dry-run.", file=sys.stderr)
+              "docs/<arquivo> com a expectância positiva do testnet.", file=sys.stderr)
         return 1
     if not args.yes:
         print(f"GATE 2 — aprovar trader {args.address} para {target}?")
@@ -200,8 +200,6 @@ def cmd_trader_approve(args: argparse.Namespace) -> int:
     res = set_status(db, args.address, target, by="cli_gate2_humano",
                      logger=logger, human_gate=True)
     if res.get("ok") and args.live:
-        update_exec_config(db, args.address, by="cli_gate2_humano",
-                           logger=logger, dry_run=0)
         logger.info("trader.gate2_live", {"address": args.address,
                                           "evidence": args.evidence})
     print(res)
@@ -219,8 +217,20 @@ def cmd_trader_reject(args: argparse.Namespace) -> int:
     return 0 if res.get("ok") else 1
 
 
+def cmd_trader_save(args: argparse.Namespace) -> int:
+    db = _db()
+    settings = get_settings()
+    logger = EventLogger("cli", settings.logs_dir, db=db)
+    from engine.strategies.copy_trade.traders_store import set_status
+
+    res = set_status(db, args.address, "SALVO", by="cli_humano", logger=logger,
+                     human_gate=True)
+    print(res)
+    return 0 if res.get("ok") else 1
+
+
 def cmd_trader_unpin(args: argparse.Namespace) -> int:
-    """Remove a flag copy_pinned (Bloco 3). Exige human_gate + cópia pausada."""
+    """Remove a flag copy_pinned. Exige human_gate + fora de TESTNET/MAINNET."""
     db = _db()
     settings = get_settings()
     logger = EventLogger("cli", settings.logs_dir, db=db)
@@ -228,7 +238,7 @@ def cmd_trader_unpin(args: argparse.Namespace) -> int:
 
     if not args.yes:
         print(f"UNPIN — remover copy_pinned de {args.address}?")
-        print("Requer que o trader esteja PAUSADO/REJEITADO/ARQUIVADO (não em cópia).")
+        print("Requer que o trader esteja fora de TESTNET/MAINNET (não em cópia).")
         if input("confirmar? [y/N] ").strip().lower() != "y":
             print("abortado")
             return 1
@@ -370,10 +380,13 @@ def build_parser() -> argparse.ArgumentParser:
     appr = tr_sub.add_parser("approve")
     appr.add_argument("address")
     appr.add_argument("--live", action="store_true",
-                      help="DRY_RUN -> COPIANDO (exige --evidence)")
+                      help="TESTNET -> MAINNET (exige --evidence)")
     appr.add_argument("--evidence")
     appr.add_argument("--yes", action="store_true")
     appr.set_defaults(func=cmd_trader_approve)
+    save = tr_sub.add_parser("save")
+    save.add_argument("address")
+    save.set_defaults(func=cmd_trader_save)
     rej = tr_sub.add_parser("reject")
     rej.add_argument("address")
     rej.set_defaults(func=cmd_trader_reject)

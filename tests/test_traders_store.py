@@ -32,22 +32,22 @@ def test_upsert_candidate_creates_sugerido(db) -> None:
 
 def test_rescan_never_downgrades_operating_trader(db) -> None:
     upsert_candidate(db, address=ADDR, score=80.0)
-    set_status(db, ADDR, "DRY_RUN", by="test", human_gate=True)
+    set_status(db, ADDR, "TESTNET", by="test", human_gate=True)
     # re-scan com métricas novas (logic v2) não mexe no status nem na config
     upsert_candidate(db, address=ADDR, score=91.5, cohort="smart", logic_version=2)
     r = list_traders(db)[0]
-    assert r["status"] == "DRY_RUN"
+    assert r["status"] == "TESTNET"
     assert r["score"] == 91.5 and r["logic_version"] == 2
 
 
 def test_gate2_blocked_without_human_flag(db) -> None:
     upsert_candidate(db, address=ADDR, score=80.0)
-    res = set_status(db, ADDR, "DRY_RUN", by="control_api")   # sem human_gate
-    assert not res["ok"] and res["reason"] == "gate2_requer_autorizacao_humana"
-    res = set_status(db, ADDR, "COPIANDO", by="control_api")
+    res = set_status(db, ADDR, "TESTNET", by="control_api")   # sem ator humano
+    assert not res["ok"] and res["reason"] == "transicao_nao_permitida"
+    res = set_status(db, ADDR, "MAINNET", by="control_api")
     assert not res["ok"]
     # com o gate humano, passa — e fica logado em events
-    res = set_status(db, ADDR, "DRY_RUN", by="cli_gate2_humano", human_gate=True)
+    res = set_status(db, ADDR, "TESTNET", by="cli_gate2_humano", human_gate=True)
     assert res["ok"]
     ev = db.query("SELECT payload FROM events WHERE event_type = 'trader.status_changed'")
     assert ev and "cli_gate2_humano" in ev[-1]["payload"]
@@ -55,14 +55,13 @@ def test_gate2_blocked_without_human_flag(db) -> None:
 
 def test_control_api_operational_transitions(db) -> None:
     upsert_candidate(db, address=ADDR)
-    set_status(db, ADDR, "COPIANDO", by="humano", human_gate=True)
-    assert set_status(db, ADDR, "PAUSADO", by="control_api")["ok"]
-    assert set_status(db, ADDR, "COPIANDO", by="control_api")["ok"]   # retomar
-    assert set_status(db, ADDR, "PAUSADO", by="control_api")["ok"]
-    assert set_status(db, ADDR, "DRY_RUN", by="control_api")["ok"]
+    set_status(db, ADDR, "MAINNET", by="humano", human_gate=True)
+    assert set_status(db, ADDR, "SALVO", by="dashboard_humano")["ok"]
+    assert set_status(db, ADDR, "TESTNET", by="dashboard_humano")["ok"]
+    assert set_status(db, ADDR, "REJEITADO", by="dashboard_humano")["ok"]
     # rejeitar candidato novo é operacional
     upsert_candidate(db, address="0xbb" + "0" * 38)
-    assert set_status(db, "0xbb" + "0" * 38, "REJEITADO", by="control_api")["ok"]
+    assert set_status(db, "0xbb" + "0" * 38, "REJEITADO", by="dashboard_humano")["ok"]
 
 
 def test_update_exec_config_logged_and_validated(db) -> None:
@@ -78,15 +77,13 @@ def test_update_exec_config_logged_and_validated(db) -> None:
 
 
 def test_operable_traders_filters_statuses(db) -> None:
-    for i, st in enumerate(["SUGERIDO", "DRY_RUN", "COPIANDO", "PAUSADO", "REJEITADO"]):
+    for i, st in enumerate(["SUGERIDO", "SALVO", "TESTNET", "MAINNET", "REJEITADO"]):
         addr = f"0x{i:040x}"
         upsert_candidate(db, address=addr, score=float(i))
         if st != "SUGERIDO":
-            set_status(db, addr, st, by="t", human_gate=True) if st in ("DRY_RUN", "COPIANDO") \
-                else (set_status(db, addr, "DRY_RUN", by="t", human_gate=True),
-                      set_status(db, addr, st, by="t", human_gate=True))
+            set_status(db, addr, st, by="t", human_gate=True)
     ops = {r["status"] for r in operable_traders(db)}
-    assert ops == {"DRY_RUN", "COPIANDO"}
+    assert ops == {"TESTNET", "MAINNET"}
 
 
 def test_import_yaml_trader_preserves_config(db) -> None:
@@ -96,7 +93,7 @@ def test_import_yaml_trader_preserves_config(db) -> None:
         "dry_run": True, "thresholds": {"min_trades": 5},
     })
     r = list_traders(db)[0]
-    assert r["status"] == "DRY_RUN"          # active+dry_run do YAML antigo
+    assert r["status"] == "TESTNET"          # YAML ativo legado vira TESTNET
     assert r["mode"] == "percent" and r["value"] == 2.5
     assert r["origin"] == "manual"
 
@@ -113,29 +110,30 @@ def test_cohort_snapshot_written(db) -> None:
 
 # -- Bloco 3: flag inviolável copy_pinned -------------------------------------
 
-def test_set_status_dry_run_sets_copy_pinned(db) -> None:
-    """(iv) entrar em DRY_RUN via gate humano fixa copy_pinned = 1."""
+def test_set_status_testnet_sets_copy_pinned(db) -> None:
+    """Entrar em TESTNET via gate humano fixa copy_pinned = 1."""
     upsert_candidate(db, address=ADDR, score=80.0)
-    set_status(db, ADDR, "DRY_RUN", by="cli_gate2_humano", human_gate=True)
+    set_status(db, ADDR, "TESTNET", by="cli_gate2_humano", human_gate=True)
     r = list_traders(db)[0]
+    assert r["copy_pinned"] == 1
+    assert r["dry_run"] == 0
+
+
+def test_set_status_mainnet_via_human_by_pins(db) -> None:
+    """by contendo 'human' também fixa o pin ao ir para MAINNET."""
+    upsert_candidate(db, address=ADDR, score=80.0)
+    set_status(db, ADDR, "SALVO", by="human", human_gate=True)
+    set_status(db, ADDR, "MAINNET", by="human_operator", human_gate=True)
+    r = list_traders(db)[0]
+    assert r["status"] == "MAINNET"
     assert r["copy_pinned"] == 1
 
 
-def test_set_status_copiando_via_human_by_pins(db) -> None:
-    """by contendo 'human' também fixa o pin ao ir para COPIANDO."""
+def test_unpin_refused_while_mainnet(db) -> None:
+    """unpin recusado enquanto MAINNET levanta ValueError."""
     upsert_candidate(db, address=ADDR, score=80.0)
-    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
-    set_status(db, ADDR, "COPIANDO", by="human_operator", human_gate=True)
-    r = list_traders(db)[0]
-    assert r["status"] == "COPIANDO"
-    assert r["copy_pinned"] == 1
-
-
-def test_unpin_refused_while_copiando(db) -> None:
-    """(ii) unpin recusado enquanto COPIANDO levanta ValueError."""
-    upsert_candidate(db, address=ADDR, score=80.0)
-    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
-    set_status(db, ADDR, "COPIANDO", by="human", human_gate=True)
+    set_status(db, ADDR, "TESTNET", by="human", human_gate=True)
+    set_status(db, ADDR, "MAINNET", by="human", human_gate=True)
     try:
         unpin_trader(db, ADDR, by="hermes", human_gate=True)
         assert False, "devia ter levantado ValueError"
@@ -146,8 +144,8 @@ def test_unpin_refused_while_copiando(db) -> None:
 def test_unpin_without_human_gate_raises(db) -> None:
     """unpin sem human_gate levanta ValueError."""
     upsert_candidate(db, address=ADDR, score=80.0)
-    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
-    set_status(db, ADDR, "PAUSADO", by="control_api")
+    set_status(db, ADDR, "TESTNET", by="human", human_gate=True)
+    set_status(db, ADDR, "SALVO", by="dashboard_humano")
     try:
         unpin_trader(db, ADDR, by="hermes", human_gate=False)
         assert False, "devia ter levantado ValueError"
@@ -155,11 +153,11 @@ def test_unpin_without_human_gate_raises(db) -> None:
         assert "human_gate" in str(exc)
 
 
-def test_unpin_accepted_after_paused(db) -> None:
-    """(iii) unpin aceito após PAUSADO com human_gate=True."""
+def test_unpin_accepted_after_saved(db) -> None:
+    """unpin aceito após SALVO com human_gate=True."""
     upsert_candidate(db, address=ADDR, score=80.0)
-    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
-    set_status(db, ADDR, "PAUSADO", by="control_api")
+    set_status(db, ADDR, "TESTNET", by="human", human_gate=True)
+    set_status(db, ADDR, "SALVO", by="dashboard_humano")
     res = unpin_trader(db, ADDR, by="hermes", human_gate=True)
     assert res["ok"]
     r = list_traders(db)[0]
@@ -176,8 +174,8 @@ def test_rescan_pinned_rejecting_keeps_status_and_reason(db) -> None:
     from engine.strategies.copy_trade.funnel import Candidate, ScanResult, persist_scan
 
     upsert_candidate(db, address=ADDR, score=80.0)
-    set_status(db, ADDR, "DRY_RUN", by="human", human_gate=True)
-    # trader está pinned e em DRY_RUN
+    set_status(db, ADDR, "TESTNET", by="human", human_gate=True)
+    # trader está pinned e em TESTNET
 
     # cria um candidato reprovado pelo re-scan (reject_reason preenchido)
     c = Candidate(address=ADDR, name="whale", score=42.0)
@@ -190,7 +188,7 @@ def test_rescan_pinned_rejecting_keeps_status_and_reason(db) -> None:
 
     r = list_traders(db)[0]
     # status e reject_reason intactos — o re-scan NÃO rebaixa pinned
-    assert r["status"] == "DRY_RUN"
+    assert r["status"] == "TESTNET"
     # reject_reason não foi sobrescrito pela reprovação do re-scan
     assert r["reject_reason"] is None or "F17" not in (r["reject_reason"] or "")
     # copy_pinned permanece 1

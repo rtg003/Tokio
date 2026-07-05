@@ -88,19 +88,22 @@ def test_control_api_cannot_promote_dry_run(client, gateway_state) -> None:
     assert r.status_code == 409  # dry_run -> active is a human gate
 
 
-def test_trader_control_api_respects_gate2(client, gateway_state) -> None:
+def test_trader_control_api_status_combobox(client, gateway_state) -> None:
     from engine.strategies.copy_trade.traders_store import upsert_candidate
 
     addr = "0x" + "ab" * 20
     upsert_candidate(gateway_state.db, address=addr, score=70.0)
-    # Gate 2 recusado pela API de controle
-    r = client.post(f"/control/trader/{addr}/status?new_status=DRY_RUN",
+    # A dashboard autenticada é o ato humano: SALVO/TESTNET passam.
+    r = client.post(f"/control/trader/{addr}/status?new_status=SALVO",
                     headers={"X-Control-Token": "test-token"}).json()
-    assert r["ok"] is False and r["reason"] == "gate2_requer_autorizacao_humana"
-    # rejeitar é operacional — permitido
-    r = client.post(f"/control/trader/{addr}/status?new_status=REJEITADO",
+    assert r["ok"] is True and r["status"] == "SALVO"
+    r = client.post(f"/control/trader/{addr}/status?new_status=TESTNET",
                     headers={"X-Control-Token": "test-token"}).json()
-    assert r["ok"] is True
+    assert r["ok"] is True and r["status"] == "TESTNET"
+    # MAINNET é recusado até o adapter/credenciais mainnet existirem.
+    r = client.post(f"/control/trader/{addr}/status?new_status=MAINNET",
+                    headers={"X-Control-Token": "test-token"}).json()
+    assert r["ok"] is False and r["reason"] == "mainnet_nao_configurado"
     # config nunca aceita dry_run=false por aqui
     addr2 = "0x" + "cd" * 20
     upsert_candidate(gateway_state.db, address=addr2)

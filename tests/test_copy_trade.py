@@ -55,9 +55,9 @@ class RecordingGateway:
 
 def seed_trader(db: Database, **overrides: Any) -> None:
     row = {
-        "address": TARGET, "name": "whale01", "status": "DRY_RUN",
+        "address": TARGET, "name": "whale01", "status": "TESTNET",
         "mode": "fixed_usdc", "value": 100.0, "max_leverage": 3.0,
-        "blocked_assets": "[]", "dry_run": 1, "thresholds": "{}",
+        "blocked_assets": "[]", "dry_run": 0, "thresholds": "{}",
         **{k: (json.dumps(v) if k in ("blocked_assets", "thresholds")
                and not isinstance(v, str) else v) for k, v in overrides.items()},
     }
@@ -81,27 +81,27 @@ def fill(coin: str, side: str, sz: float, px: float, start_pos: float,
             "startPosition": str(start_pos), "time": time_ms}
 
 
-def test_registers_trader_as_dry_run_strategy(settings, db) -> None:
+def test_registers_operating_trader_as_active_strategy(settings, db) -> None:
     make_executor(settings, db)
     rows = db.query("SELECT module, status FROM strategies WHERE id = 'ct_whale01'")
-    assert rows and rows[0]["module"] == "copy_trade" and rows[0]["status"] == "dry_run"
+    assert rows and rows[0]["module"] == "copy_trade" and rows[0]["status"] == "active"
 
 
 def test_reload_picks_up_new_table_trader(settings, db) -> None:
     ex, watcher, gw = make_executor(settings, db)
     other = "0x00000000000000000000000000000000000000bb"
-    db.upsert("traders", {"address": other, "name": "novo", "status": "DRY_RUN",
+    db.upsert("traders", {"address": other, "name": "novo", "status": "TESTNET",
                           "mode": "fixed_usdc", "value": 50.0, "max_leverage": 2.0,
-                          "blocked_assets": "[]", "dry_run": 1, "thresholds": "{}"},
+                          "blocked_assets": "[]", "dry_run": 0, "thresholds": "{}"},
               ("address",))
     ex.reload_traders()   # mudanças via API de controle entram sem restart
     assert other in watcher.subs
     assert "ct_novo" in ex.traders
 
 
-def test_paused_trader_is_not_mirrored(settings, db) -> None:
+def test_saved_trader_is_not_mirrored(settings, db) -> None:
     ex, watcher, gw = make_executor(settings, db)
-    db.execute("UPDATE traders SET status = 'PAUSADO' WHERE address = ?", (TARGET,))
+    db.execute("UPDATE traders SET status = 'SALVO' WHERE address = ?", (TARGET,))
     watcher.emit(TARGET, fill("BTC", "B", 1.0, 50_000.0, start_pos=0.0))
     assert gw.intents == []
 
@@ -114,7 +114,8 @@ def test_open_from_flat_fixed_usdc(settings, db) -> None:
     # fixed 100 USDC at 50k => 0.002 BTC, regardless of the whale's 2 BTC
     assert intent["size"] == pytest.approx(0.002)
     assert intent["side"] == "buy"
-    assert intent["dry_run"] is True
+    assert intent["dry_run"] is False
+    assert intent["environment"] == "testnet"
     assert intent["strategy_id"] == "ct_whale01"
 
 
