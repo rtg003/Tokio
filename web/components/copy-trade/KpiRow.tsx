@@ -5,12 +5,15 @@ type Props = {
   balance: Balance;
   metrics: Metrics[] | null;
   periodLabel: string;
+  tradeCount?: number;
 };
 
-export default function KpiRow({ balance, metrics, periodLabel }: Props) {
+export default function KpiRow({ balance, metrics, periodLabel, tradeCount }: Props) {
   const m = metrics ?? [];
   const netPnl = m.reduce((s, r) => s + (r.net_pnl ?? 0), 0);
-  const nTrades = m.reduce((s, r) => s + (r.n_trades ?? 0), 0);
+  // KPI de trades: usa metrics.n_trades se houver; senão usa o count de fills
+  const metricsTrades = m.reduce((s, r) => s + (r.n_trades ?? 0), 0);
+  const nTrades = metricsTrades > 0 ? metricsTrades : (tradeCount ?? 0);
   const withWr = m.filter((r) => r.win_rate !== null);
   const winRate = withWr.length
     ? (withWr.reduce((s, r) => s + (r.win_rate ?? 0), 0) / withWr.length) * 100

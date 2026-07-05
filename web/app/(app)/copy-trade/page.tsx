@@ -110,7 +110,7 @@ export default async function CopyTradeDashboard({
         />
       </div>
 
-      <KpiRow balance={balance} metrics={metrics} periodLabel={PERIOD_LABEL[period]} />
+      <KpiRow balance={balance} metrics={metrics} periodLabel={PERIOD_LABEL[period]} tradeCount={fills?.length ?? 0} />
       <TradersTable traders={filteredTraders} expanded={expanded} toggleHref={toggleHref} />
       <OrdersTable orders={orders} />
       <FillsTable fills={fills} />
