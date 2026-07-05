@@ -13,6 +13,13 @@ function publicUrl(request: NextRequest, path: string): URL {
 
 // Session required on ALL routes except /login and static assets.
 export async function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/") {
+    if (!authConfigured()) {
+      return NextResponse.redirect(publicUrl(request, "/login"));
+    }
+    const ok = await verifySession(request.cookies.get(SESSION_COOKIE)?.value);
+    return NextResponse.redirect(publicUrl(request, ok ? "/copy-trade" : "/login"));
+  }
   const isLogin = request.nextUrl.pathname === "/login";
   const isLoginApi = request.nextUrl.pathname === "/api/login";
   if (!authConfigured()) {

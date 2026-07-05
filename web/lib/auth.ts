@@ -62,10 +62,16 @@ export async function verifySession(token: string | undefined | null): Promise<b
   return safeEqual(signature, expected);
 }
 
+export function secureCookieEnabled(): boolean {
+  const override = process.env.DASHBOARD_COOKIE_SECURE;
+  if (override !== undefined) return override === "true";
+  return process.env.NODE_ENV === "production";
+}
+
 export const sessionCookieOptions = {
   httpOnly: true,
   sameSite: "lax" as const,
-  secure: process.env.NODE_ENV === "production",
+  secure: secureCookieEnabled(),
   path: "/",
   maxAge: SESSION_TTL_SECONDS,
 };
