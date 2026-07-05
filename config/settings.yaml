@@ -40,3 +40,8 @@ paths:
 gateway:
   host: "0.0.0.0"
   port: 8700
+
+copy_trade:
+  # Endereços-alvo descobertos vivem na mainnet pública da Hyperliquid.
+  # A rede de execução (TESTNET/MAINNET) é decidida por trader no status.
+  watch_network: mainnet

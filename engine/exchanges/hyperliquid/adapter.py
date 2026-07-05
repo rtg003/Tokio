@@ -200,10 +200,20 @@ class HyperliquidAdapter(ExchangeAdapter):
             pass
 
 
-def make_adapter(exchange: str, network: str) -> ExchangeAdapter:
+def make_adapter(
+    exchange: str,
+    network: str,
+    *,
+    account_address: str | None = None,
+    agent_private_key: str | None = None,
+) -> ExchangeAdapter:
     """Factory used by the gateway; venue and network come from settings."""
     if exchange == "hyperliquid":
-        return HyperliquidAdapter(network=network)
+        return HyperliquidAdapter(
+            network=network,
+            account_address=account_address,
+            agent_private_key=agent_private_key,
+        )
     if exchange == "paper":
         from engine.exchanges.paper import PaperAdapter
 

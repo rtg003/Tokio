@@ -56,6 +56,10 @@ class GatewaySettings(BaseModel):
     port: int = 8700
 
 
+class CopyTradeSettings(BaseModel):
+    watch_network: str = "mainnet"
+
+
 class Settings(BaseModel):
     exchange: ExchangeSettings = Field(default_factory=ExchangeSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
@@ -64,6 +68,7 @@ class Settings(BaseModel):
     fees: FeeSettings = Field(default_factory=FeeSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
+    copy_trade: CopyTradeSettings = Field(default_factory=CopyTradeSettings)
 
     @staticmethod
     def _resolve(raw: str) -> Path:

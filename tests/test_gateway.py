@@ -118,6 +118,41 @@ def test_trader_control_api_status_combobox(client, gateway_state) -> None:
     assert any(t["address"] == addr2 for t in client.get("/traders").json())
 
 
+def test_intent_routes_by_environment(settings, db) -> None:
+    from fastapi.testclient import TestClient
+
+    from engine.core.logger import EventLogger
+    from engine.exchanges.paper import PaperAdapter
+    from engine.gateway.server import GatewayState, build_app
+
+    testnet = PaperAdapter(prices={"BTC": 100_000.0})
+    testnet.name = "hyperliquid"
+    testnet.network = "testnet"
+    mainnet = PaperAdapter(prices={"BTC": 200_000.0})
+    mainnet.name = "hyperliquid"
+    mainnet.network = "mainnet"
+    state = GatewayState(
+        settings,
+        testnet,
+        db,
+        adapters={"testnet": testnet, "mainnet": mainnet},
+        logger=EventLogger("gateway-env-test", settings.logs_dir, db=db),
+    )
+    register_strategy(db, "ct_env")
+    with TestClient(build_app(state)) as c:
+        r = c.post("/intent", json={
+            "strategy_id": "ct_env",
+            "symbol": "BTC",
+            "side": "buy",
+            "notional_usd": 200.0,
+            "environment": "mainnet",
+        }).json()
+    assert r["ok"] is True
+    assert len(mainnet.placed_orders) == 1
+    assert len(testnet.placed_orders) == 0
+    assert mainnet.placed_orders[0].size == 0.001
+
+
 def test_kill_switch_cancels_open_orders(client, gateway_state) -> None:
     from engine.core.db import utcnow
 

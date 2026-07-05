@@ -311,7 +311,7 @@ class CopyTradeExecutor:
 
 def main() -> None:
     settings = get_settings()
-    watcher = HyperliquidWatcher(settings.exchange.network)
+    watcher = HyperliquidWatcher(settings.copy_trade.watch_network)
     gateway = GatewayClient()
 
     def my_equity() -> float:

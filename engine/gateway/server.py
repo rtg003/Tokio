@@ -39,6 +39,7 @@ class IntentRequest(BaseModel):
     reduce_only: bool = False
     leverage: float | None = None
     dry_run: bool = False
+    environment: str | None = Field(default=None, pattern="^(testnet|mainnet|paper)$")
     subaccount_address: str | None = None
     strategy_cap_usd: float | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
@@ -58,11 +59,13 @@ class GatewayState:
         adapter: ExchangeAdapter,
         db: Database,
         *,
+        adapters: dict[str, ExchangeAdapter] | None = None,
         logger: EventLogger | None = None,
         notifier: Notifier | None = None,
     ) -> None:
         self.settings = settings
         self.adapter = adapter
+        self.adapters = adapters or {adapter.network: adapter}
         self.db = db
         self.logger = logger or EventLogger("gateway", settings.logs_dir, db=db)
         self.notifier = notifier or Notifier(self.logger)
@@ -73,7 +76,41 @@ class GatewayState:
         )
         self.started_at = time.time()
         self._kill_handled = False
-        adapter.subscribe_own_fills(self.on_own_fill)
+        for network, configured_adapter in self.adapters.items():
+            configured_adapter.subscribe_own_fills(
+                lambda fill, env=network: self.on_own_fill({**fill, "_network": env})
+            )
+        self._seed_exchanges()
+
+    def _seed_exchanges(self) -> None:
+        for network, adapter in self.adapters.items():
+            if network not in {"testnet", "mainnet"}:
+                continue
+            self.db.upsert("exchanges", {
+                "name": adapter.name,
+                "network": network,
+                "status": "active",
+            }, ("name", "network"))
+        if self.adapter.name == "hyperliquid" and "mainnet" not in self.adapters:
+            self.db.upsert("exchanges", {
+                "name": "hyperliquid",
+                "network": "mainnet",
+                "status": "unconfigured",
+            }, ("name", "network"))
+
+    def _adapter_for(self, environment: str | None) -> ExchangeAdapter:
+        network = environment or self.adapter.network
+        adapter = self.adapters.get(network)
+        if adapter is None:
+            raise ValueError(f"ambiente não configurado: {network}")
+        return adapter
+
+    def _exchange_id_for(self, adapter: ExchangeAdapter) -> int | None:
+        rows = self.db.query(
+            "SELECT id FROM exchanges WHERE name = ? AND network = ?",
+            (adapter.name, adapter.network),
+        )
+        return rows[0]["id"] if rows else None
 
     # -- kill switch: cancel open orders once when engaged ------------------
     def handle_kill_engaged(self) -> int:
@@ -183,14 +220,18 @@ class GatewayState:
     # -- intents ------------------------------------------------------------
     def handle_intent(self, intent: IntentRequest) -> dict[str, Any]:
         t0 = time.perf_counter()
-        price = intent.price or self.adapter.mid_price(intent.symbol)
+        try:
+            adapter = self._adapter_for(intent.environment)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        price = intent.price or adapter.mid_price(intent.symbol)
         if price <= 0:
             return {"ok": False, "reason": f"no_price_for_{intent.symbol}"}
         size = intent.size if intent.size is not None else (
             (intent.notional_usd or 0.0) / price)
         notional = abs(size) * price
 
-        meta = self.adapter.market_meta(intent.symbol)
+        meta = adapter.market_meta(intent.symbol)
         max_lev_asset = float(meta.get("maxLeverage", 1))
         leverage = intent.leverage
         if leverage is not None:
@@ -209,6 +250,7 @@ class GatewayState:
             "cloid": cloid, "symbol": intent.symbol, "side": intent.side,
             "size": size, "notional_usd": round(notional, 4),
             "leverage": leverage, "dry_run": intent.dry_run,
+            "environment": adapter.network,
             "verdict": verdict.reason,
         }
         if not verdict.allowed:
@@ -227,6 +269,7 @@ class GatewayState:
             "price": intent.price,
             "status": "dry_run" if intent.dry_run else "created",
             "created_at": utcnow(),
+            "exchange_id": self._exchange_id_for(adapter),
         }
         self.db.insert("orders", order_row)
 
@@ -237,7 +280,7 @@ class GatewayState:
             return {"ok": True, "dry_run": True, "cloid": cloid,
                     "would_execute": decision_payload}
 
-        result = self.adapter.place_order(OrderRequest(
+        result = adapter.place_order(OrderRequest(
             symbol=intent.symbol, side=intent.side, size=abs(size),
             order_type=intent.order_type, price=intent.price,
             reduce_only=intent.reduce_only, cloid=cloid,
@@ -300,6 +343,7 @@ def build_app(state: GatewayState) -> FastAPI:
             "uptime_s": round(time.time() - state.started_at, 1),
             "exchange": state.adapter.name,
             "network": state.adapter.network,
+            "environments": sorted(state.adapters),
             "kill_switch": state.enforcer.kill_switch_engaged(),
             "circuit_breaker": state.enforcer.circuit_open,
         }
@@ -320,26 +364,30 @@ def build_app(state: GatewayState) -> FastAPI:
     def positions() -> list[dict[str, Any]]:
         return [vars(p) for p in state.adapter.positions()]
 
-    _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
+    _balance_cache: dict[str, dict[str, Any]] = {}
 
     @app.get("/balance")
-    def balance() -> dict[str, Any]:
+    def balance(env: str | None = None) -> dict[str, Any]:
         # 30s cache: balance queries hit the venue's rate-limited info API.
+        try:
+            adapter = state._adapter_for(env)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "network": env}
         now = time.time()
-        if _balance_cache["data"] is None or now - _balance_cache["ts"] > 30:
+        cached = _balance_cache.get(adapter.network)
+        if cached is None or now - cached["ts"] > 30:
             try:
-                balances = state.adapter.balances()
+                balances = adapter.balances()
             except Exception as exc:  # noqa: BLE001 — venue hiccup must not 500 the UI
                 return {"ok": False, "error": str(exc)[:200],
-                        "network": state.adapter.network}
-            _balance_cache["data"] = balances
-            _balance_cache["ts"] = now
-        data = _balance_cache["data"]
+                        "network": adapter.network}
+            _balance_cache[adapter.network] = {"data": balances, "ts": now}
+        data = _balance_cache[adapter.network]["data"]
         return {
             "ok": True,
             "equity_usd": float(data.get("USDC", 0.0)),
             "withdrawable_usd": float(data.get("withdrawable", 0.0)),
-            "network": state.adapter.network,
+            "network": adapter.network,
         }
 
     # -- control API (internal network only; web is the only client) -------
@@ -374,7 +422,7 @@ def build_app(state: GatewayState) -> FastAPI:
     def trader_status(address: str, new_status: str) -> dict[str, Any]:
         from engine.strategies.copy_trade.traders_store import set_status
 
-        if new_status == "MAINNET" and "mainnet" not in getattr(state, "adapters", {}):
+        if new_status == "MAINNET" and "mainnet" not in state.adapters:
             return {"ok": False, "reason": "mainnet_nao_configurado"}
         return set_status(state.db, address, new_status, by="dashboard_humano",
                           logger=state.logger, human_gate=True)
@@ -674,7 +722,20 @@ def main() -> None:
     from engine.exchanges.hyperliquid.adapter import make_adapter
 
     adapter = make_adapter(settings.exchange.active, settings.exchange.network)
-    state = GatewayState(settings, adapter, db)
+    adapters = {adapter.network: adapter}
+    if settings.exchange.active == "hyperliquid":
+        if "testnet" not in adapters:
+            adapters["testnet"] = make_adapter("hyperliquid", "testnet")
+        mainnet_address = os.environ.get("HL_MAINNET_ACCOUNT_ADDRESS")
+        mainnet_key = os.environ.get("HL_MAINNET_AGENT_PRIVATE_KEY")
+        if mainnet_address and mainnet_key:
+            adapters["mainnet"] = make_adapter(
+                "hyperliquid",
+                "mainnet",
+                account_address=mainnet_address,
+                agent_private_key=mainnet_key,
+            )
+    state = GatewayState(settings, adapter, db, adapters=adapters)
     state.watch_kill_file()
     app = build_app(state)
     # GATEWAY_BIND overrides the listen address (VPS: 127.0.0.1 — nothing
@@ -683,6 +744,7 @@ def main() -> None:
     port = int(os.environ.get("GATEWAY_PORT", settings.gateway.port))
     state.logger.info("health.gateway_start", {
         "exchange": adapter.name, "network": adapter.network, "bind": bind,
+        "environments": sorted(adapters),
     })
     uvicorn.run(app, host=bind, port=port)
 
