@@ -100,13 +100,13 @@ export function accountOptions(exchanges: Exchange[] | null): AccountOption[] {
   const options = live.length
     ? live.map((e) => ({
         value: `${e.name === "hyperliquid" ? "hl" : e.name}:master:${e.network}`,
-        label: `${e.name === "hyperliquid" ? "Hyperliquid" : e.name} · master (${e.network}${e.status === "unconfigured" ? " · não config." : ""})`,
+        label: `${e.name === "hyperliquid" ? "Hyperliquid" : e.name} - ${e.network === "mainnet" ? "Mainnet" : "Testnet"}`,
       }))
     : [
-        { value: "hl:master:testnet", label: "Hyperliquid · master (testnet)" },
-        { value: "hl:master:mainnet", label: "Hyperliquid · master (mainnet · não config.)" },
+        { value: "hl:master:testnet", label: "Hyperliquid - Testnet" },
+        { value: "hl:master:mainnet", label: "Hyperliquid - Mainnet" },
       ];
-  return [{ value: "all", label: "Todos ambientes" }, ...options];
+  return [{ value: "all", label: "Todos" }, ...options];
 }
 
 export async function getTraders(): Promise<Trader[] | null> {
@@ -126,10 +126,10 @@ export function traderOptions(traders: Trader[] | null): TraderOption[] {
     t.copy_pinned === 1 || ["SALVO", "TESTNET", "MAINNET"].includes(t.status),
   );
   return [
-    { value: "all", label: "Todos traders acompanhados" },
+    { value: "all", label: "Todos" },
     ...rows.map((t) => ({
       value: t.address,
-      label: `${t.name ?? t.address.slice(0, 10)} · ${t.address.slice(0, 10)}…${t.address.slice(-4)}`,
+      label: String(t.name ?? t.address).slice(0, 12),
     })),
   ];
 }

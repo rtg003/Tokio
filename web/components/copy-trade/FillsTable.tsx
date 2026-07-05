@@ -9,7 +9,7 @@ export default function FillsTable({ fills }: { fills: Fill[] | null }) {
         <h2>Trades</h2>
         <span className="cardnote">fills executados · PnL realizado líquido de fees · fonte: tabela fills</span>
       </div>
-      <div className="tablewrap">
+      <div className="tablewrap tablewrap-fills">
         {rows.length === 0 ? (
           <div className="empty">nenhum trade de copy trade no período</div>
         ) : (

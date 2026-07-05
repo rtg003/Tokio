@@ -871,3 +871,69 @@ ajuste fino via YAML/replay, mantendo F16–F19 como régua de qualidade da cóp
   roda sem persistir traders e escreve relatório `replay-*`.
 - `docs/discovery_calibration_playbook.md` está referenciado/absorvido pela
   skill do Hermes.
+
+---
+
+## UPDATE-0014 · 2026-07-05 · Status: PENDENTE
+
+Origem: Cursor — correções operacionais da dashboard Copy Trade
+
+Tipo: web + operacao + infra
+
+Resumo: correções pós-deploy da dashboard `/copy-trade`. O combobox de Status
+retornava `not_allowed` por bug no proxy Next `/api/control`; trades testnet
+podiam sumir quando fills chegavam após restart porque o gateway dependia só do
+ledger em memória para atribuir `strategy_id`. Também foram ajustados textos,
+layout mobile, tooltips, espaçamento e alturas das tabelas.
+
+### O que mudou
+
+1. **Combobox Status corrigido**
+   - Proxy Next agora aceita path real `trader/<addr>/status` e encaminha para
+     `/control/trader/<addr>/status`.
+   - SALVO/TESTNET/MAINNET/REJEITADO deixam de retornar `not_allowed`.
+   - MAINNET sem credenciais segue recusando com `mainnet_nao_configurado`.
+
+2. **Trades testnet corrigidos**
+   - `on_own_fill` agora resolve `strategy_id` por:
+     `ledger.strategy_for_cloid(cloid) OR orders.strategy_id`.
+   - Isso corrige fills tardios/pós-restart que antes entravam com
+     `strategy_id NULL` e não apareciam em `/api/fills?strategy_id=ct_*`.
+
+3. **UI Copy Trade**
+   - Mobile: filtros de Exchange e Trader lado a lado.
+   - Labels:
+     - `Todos`
+     - `Hyperliquid - Testnet`
+     - `Hyperliquid - Mainnet`
+   - Filtro de trader mostra só as 12 primeiras letras do usuário.
+   - Card Saldo mostra `$`.
+   - Tooltips de colunas têm fallback `title` nativo e cursor padrão.
+   - Tabela Traders mais compacta e sem o cardnote antigo.
+   - Alturas máximas:
+     - Traders: 4 traders visíveis.
+     - Ordens: 6 ordens visíveis.
+     - Trades: 8 trades visíveis.
+   - Scrollbars vertical/horizontal seguem o tema.
+
+### Ações do Hermes
+
+1. Após deploy, validar no browser:
+   - mudar Status para SALVO/TESTNET/REJEITADO não retorna `not_allowed`;
+   - MAINNET sem envs mainnet retorna `mainnet_nao_configurado`;
+   - filtros mobile lado a lado;
+   - tooltips aparecem ao passar o mouse sobre títulos;
+   - trades testnet de hoje aparecem na tabela Trades.
+2. Validar API:
+   - `curl -s 'http://127.0.0.1:8700/api/fills?strategy_id=ct_48295497&limit=20'`
+   - `curl -s 'http://127.0.0.1:8700/api/orders?strategy_id=ct_48295497&limit=20'`
+3. Se trades antigos ainda estiverem com `strategy_id NULL`, isso é histórico
+   já gravado antes da correção. Novos fills passam a ser atribuídos via
+   fallback da ordem.
+
+### Validação esperada
+
+- `python -m pytest tests/test_gateway.py -q` verde.
+- `npm run build` verde.
+- Combobox Status operacional sem `not_allowed`.
+- Tabela Trades lista novos fills testnet atribuídos a `ct_48295497`.

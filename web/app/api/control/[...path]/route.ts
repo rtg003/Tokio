@@ -8,9 +8,9 @@ import { authConfigured, SESSION_COOKIE, verifySession } from "@/lib/auth";
 // gateway, which refuses MAINNET unless credentials are configured.
 const ALLOWED_GET = new Set(["health", "ledger", "positions", "balance", "traders"]);
 const ALLOWED_POST_PATTERNS = [
-  /^control\/strategy\/[\w-]+\/(pause|activate)$/,
+  /^strategy\/[\w-]+\/(pause|activate)$/,
   // trader status/config: status changes are explicit authenticated human acts
-  /^control\/trader\/0x[0-9a-fA-F]{40}\/(status|config)$/,
+  /^trader\/0x[0-9a-fA-F]{40}\/(status|config)$/,
 ];
 
 function gatewayBase(): string {
@@ -63,7 +63,7 @@ export async function POST(
   try {
     const search = req.nextUrl.search ?? "";
     const body = await req.text();
-    const r = await fetch(`${gatewayBase()}/${joined}${search}`, {
+    const r = await fetch(`${gatewayBase()}/control/${joined}${search}`, {
       method: "POST",
       headers: {
         "X-Control-Token": process.env.GATEWAY_CONTROL_TOKEN ?? "",

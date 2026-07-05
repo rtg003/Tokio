@@ -9,7 +9,7 @@ export default function OrdersTable({ orders }: { orders: Order[] | null }) {
         <h2>Ordens</h2>
         <span className="cardnote">ciclo completo · atribuição por cloid · fonte: tabela orders</span>
       </div>
-      <div className="tablewrap">
+      <div className="tablewrap tablewrap-orders">
         {rows.length === 0 ? (
           <div className="empty">nenhuma ordem de copy trade no período</div>
         ) : (

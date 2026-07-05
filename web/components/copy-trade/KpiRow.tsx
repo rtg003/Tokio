@@ -25,7 +25,7 @@ export default function KpiRow({ balance, metrics, periodLabel }: Props) {
     <div className="kpis">
       <div className="kpi">
         <div className="lab">Saldo</div>
-        <div className="val">{balance === null ? "—" : fmtNum(balance.equity_usd)}</div>
+        <div className="val">{balance === null ? "—" : `$${fmtNum(balance.equity_usd)}`}</div>
         <div className="sub">
           {balance === null
             ? "gateway indisponível"

@@ -153,6 +153,33 @@ def test_intent_routes_by_environment(settings, db) -> None:
     assert mainnet.placed_orders[0].size == 0.001
 
 
+def test_fill_attribution_falls_back_to_order_strategy(client, gateway_state) -> None:
+    register_strategy(gateway_state.db, "ct_48295497")
+    gateway_state.db.insert("orders", {
+        "cloid": "0xlatefill",
+        "strategy_id": "ct_48295497",
+        "symbol": "BTC",
+        "side": "buy",
+        "type": "market",
+        "size": 0.001,
+        "status": "created",
+    })
+    gateway_state.on_own_fill({
+        "cloid": "0xlatefill",
+        "coin": "BTC",
+        "side": "buy",
+        "px": 100_000.0,
+        "sz": 0.001,
+        "fee": 0.01,
+    })
+
+    fills = client.get("/api/fills?strategy_id=ct_48295497").json()
+    assert len(fills) == 1
+    assert fills[0]["strategy_id"] == "ct_48295497"
+    orders = client.get("/api/orders?strategy_id=ct_48295497").json()
+    assert orders[0]["status"] == "filled"
+
+
 def test_kill_switch_cancels_open_orders(client, gateway_state) -> None:
     from engine.core.db import utcnow
 

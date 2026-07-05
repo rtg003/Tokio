@@ -163,8 +163,12 @@ class GatewayState:
             cloid=cloid, symbol=str(fill.get("coin", "")), side=side,
             price=price, size=size, fee=fee,
         )
-        strategy_id = self.ledger.strategy_for_cloid(cloid)
-        order_rows = self.db.query("SELECT id FROM orders WHERE cloid = ?", (cloid,)) if cloid else []
+        order_rows = self.db.query(
+            "SELECT id, strategy_id FROM orders WHERE cloid = ?", (cloid,)
+        ) if cloid else []
+        strategy_id = self.ledger.strategy_for_cloid(cloid) or (
+            order_rows[0]["strategy_id"] if order_rows else None
+        )
         self.db.insert("fills", {
             "order_id": order_rows[0]["id"] if order_rows else None,
             "cloid": cloid,

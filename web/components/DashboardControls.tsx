@@ -67,7 +67,7 @@ export default function DashboardControls({
   return (
     <div className="controls">
       <select
-        className="select"
+        className="select filter-select filter-select-account"
         aria-label="Corretora e conta"
         value={account}
         onChange={(e) => push({ account: e.target.value })}
@@ -80,7 +80,7 @@ export default function DashboardControls({
       </select>
 
       <select
-        className="select"
+        className="select filter-select filter-select-trader"
         aria-label="Trader acompanhado"
         value={trader}
         onChange={(e) => push({ trader: e.target.value === "all" ? null : e.target.value })}

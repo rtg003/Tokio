@@ -47,7 +47,11 @@ function Th({
   className?: string;
 }) {
   return (
-    <th className={`${className ?? ""} th-tip`} data-tip={COLUMN_TIPS[label] ?? label}>
+    <th
+      className={`${className ?? ""} th-tip`}
+      data-tip={COLUMN_TIPS[label] ?? label}
+      title={COLUMN_TIPS[label] ?? label}
+    >
       {label}
     </th>
   );
@@ -73,21 +77,18 @@ export default function TradersTable({
     <div className="card">
       <div className="cardhead">
         <h2>Traders</h2>
-        <span className="cardnote">
-          fonte: tabela traders · ordenado por score · aprovação (Gate 2) via CLI humana
-        </span>
         <a className="btn btn-ghost btn-sm" href={toggleHref}>
           {expanded ? "Colunas núcleo" : "Modo expandido"}
         </a>
       </div>
-      <div className="tablewrap">
+      <div className="tablewrap tablewrap-traders">
         {rows.length === 0 ? (
           <div className="empty">
             nenhum trader na tabela — rode o discovery (os candidatos aprovados entram aqui;
             YAMLs não existem mais)
           </div>
         ) : (
-          <table>
+          <table className="traders-table">
             <thead>
               <tr>
                 <Th label="#" className="num" />
