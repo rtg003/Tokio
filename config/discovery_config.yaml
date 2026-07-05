@@ -8,7 +8,7 @@
 # porquê, evidência, efeito de mudar): docs/discovery_logic_v9.md.
 # tests/test_docs_coverage.py QUEBRA se uma chave nova não estiver lá.
 # ============================================================================
-logic_version: 11
+logic_version: 12
 
 collection:
   leaderboard_top_n: 5000           # v6: era 500 (leaderboard tem 40k+ rows; 500 pegava só baleias)
@@ -65,7 +65,7 @@ entry_rule:
 
 hard_filters:                     # F1–F20 (binários, ordem de custo; null = desabilitado)
   f1_recent_activity_days: 7      # v10: voltou para 7 (era 21 na v9 — 21 deixava passar traders parados há 3 semanas)
-  f2_min_closed_trades: 15        # v9: era 30 — amostra mínima p/ a SIMULAÇÃO ter significado
+  f2_min_closed_trades: 10        # v9: era 30 — amostra mínima p/ a SIMULAÇÃO ter significado
   f2b_min_trades_30d: 3           # v9: era 5 — idem f2 (a simulação decide)
   f2c_min_trades_7d: 2            # v11: swing traders de 2-4 closes/semana voltam ao funil
   # F3 desabilitado na v3 (scan b684b8bbe5f5: 34/100 reprovados) — scalper é
@@ -91,7 +91,7 @@ hard_filters:                     # F1–F20 (binários, ordem de custo; null = 
   f7b_max_current_leverage: 10.0       # max da alavancagem das posições abertas
   f12_min_available_margin_pct: null    # v7: desabilitado pós-scan 407e8caa996f (7/150 reprovados; 0 aprovados)
   f13_min_liq_distance_pct: 15.0       # distância min à liquidação, medida do MARK price
-  f8_min_liquid_volume_share: 0.80
+  f8_min_liquid_volume_share: 0.70
   f8_liquid_assets_top_n: 40      # v11: F8 era gargalo calibrável; mantém share mínimo em 80%
   f9_mm_max_trades_per_day: 200.0
   f9_mm_max_pnl_over_volume: 0.0001
@@ -109,12 +109,12 @@ hard_filters:                     # F1–F20 (binários, ordem de custo; null = 
   # v9: F16–F20 — GATES SOBRE A CÓPIA (a inversão de filosofia: não julgamos o
   # trader, julgamos o resultado simulado de ESPELHÁ-LO). Evidência de cada
   # valor: docs/discovery_logic_v9.md + research/discovery_lab/RESULTADOS.md.
-  f16_min_coverage_days: 30            # histórico mínimo (1º→último fill); mata wallet de 5 dias
+  f16_min_coverage_days: 20            # histórico mínimo (1º→último fill); mata wallet de 5 dias
   f17_min_sim_net_usd: 10.0            # cópia precisa RENDER > $10 na janela (quintil top: +71 fora da amostra)
   f18_sim_positive_halves: true        # edge nas 2 metades da janela (mata sortudo de uma perna)
   f19_max_sim_dd_pct: 25.0             # DD máximo da CURVA DA CÓPIA (perdedores tinham 56-75% já visível)
   f20_min_trader_equity_usd: 1000      # v11: piso testável; null remove o piso
-  f20_max_trader_equity_usd: 100000    # v11: teto testável; F11 continua medindo executabilidade real
+  f20_max_trader_equity_usd: 200000    # v11: teto testável; F11 continua medindo executabilidade real
 
 # v8/v9: SIMULAÇÃO DE CÓPIA — replay dos fills com nosso sizing, taxas taker,
 # custo de latência e TETO DE ALAVANCAGEM. v9: o RANKING FINAL é o net desta
