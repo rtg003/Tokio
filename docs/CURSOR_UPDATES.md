@@ -1304,3 +1304,132 @@ Disparado manualmente, completou em 469s (7.8 min), 305 requests:
 - Dashboard https://tokio.bz → /copy-trade com login por senha
 - `python -m engine.cli strategy list` → só ct_48295497 active
 - Scan v10: 1 aprovado (pinned), 149 reprovados
+
+## UPDATE-0016 · 2026-07-06 · Status: PENDENTE
+
+Origem: Hermes — diagnóstico estrutural do discovery (v10→v12)
+Tipo: logica_discovery + arquitetura
+
+Resumo: o scan v12 trouxe 1 aprovado de 360 aprofundados. O problema não
+é os filtros — é a FONTE e o CORTE BARATO. O corte barato usa equity
+aproximada do leaderboard e mata 81% dos candidatos com falsos negativos.
+O leaderboard é enviesado para apostadores sortudos. O HyperTracker está
+com chave inválida. Traders consistentes e copiáveis não estão chegando.
+
+### Diagnóstico (dados reais do scan v12)
+
+```
+5000 coletados (leaderboard HL, PnL 7d)
+ → 4064 cortados pelo F20 no corte barato (equity aproximada falsa) ← 81%
+ → 620 cortados por PnL 30d negativo
+ → 360 aprofundados (deep dive)
+   → 143 mortos por F1+F2c (inativos 7d)     ← 40% do deep dive
+   → 34 mortos por F5 (DD > 80%)
+   → 34 mortos por F16 (cobertura < 20d)
+   → 1 aprovado
+```
+
+### 3 problemas estruturais
+
+**Problema 1: O corte barato usa equity aproximada e mata 81%**
+
+O F20 no corte barato usa a equity reportada pelo leaderboard — que
+frequentemente é $0 (trader não reporta equity) ou um número errado.
+Traders com equity real de $30K aparecem como $0 e são cortados por
+"abaixo do mínimo". O corte barato deveria ser SÓ PnL 30d ≤ 0 — sem
+filtrar equity. A equity real é verificada no deep dive via
+clearinghouseState.
+
+Hoje `_equity_in_band()` consulta `f20_min/max_trader_equity_usd` no corte
+barato E no hard_filter. Não dá para desativar um sem desativar o outro.
+
+**Problema 2: O leaderboard é enviesado para apostadores sortudos**
+
+O leaderboard ranqueia por PnL absoluto. Um trader que fez $2M numa
+aposta de 50x aparece no topo. Um trader consistente com $50K que faz
+5%/mês nem aparece no top 5000.
+
+O HyperTracker traria endereços curados por métricas de trading (não só
+PnL), mas a chave `HYPERTRACKER_API_KEY` retorna 401 "Invalid token
+payload" em todos os endpoints. O operador vai verificar no dashboard
+do HyperTracker.
+
+**Problema 3: F1+F2c matam 40% do deep dive por inatividade**
+
+O leaderboard traz traders que tiveram um pico de PnL há semanas e
+pararam. 143 dos 360 aprofundados são inativos. Se o leaderboard fosse
+ordenado por atividade recente + PnL, esses nem entrariam no deep dive,
+liberando vagas para traders ativos.
+
+### O que o Cursor precisa implementar
+
+#### 1. Separar F20 do corte barato e do hard_filter
+
+Hoje `_equity_in_band()` (linha ~219 do funnel.py) consulta
+`f20_min/max_trader_equity_usd` para o corte barato. O hard_filter F20
+(linha ~516) consulta os mesmos campos. Não dá para desativar um sem
+desativar o outro.
+
+**Solução:** adicionar config separada para o corte barato:
+```yaml
+collection:
+  cheap_cut_equity_filter: false  # v13: corte barato NÃO filtra equity
+```
+Quando `false`, `_equity_in_band()` retorna sempre `True` no corte barato.
+O hard_filter F20 continua usando `f20_min/max_trader_equity_usd` com a
+equity real do deep dive.
+
+Alternativa mais limpa: o corte barato NÃO chama `_equity_in_band()` —
+só filtra PnL 30d ≤ 0 e equity < `min_equity_usd` (que pode ser 0).
+O F20 no hard_filter faz a filtragem real de equity.
+
+#### 2. Cortar inativos ANTES do deep dive
+
+O corte barato deveria também filtrar traders sem atividade recente
+(últimos 7d) ANTES de gastar requests de deep dive. Hoje o F1
+(precheck_activity) faz 1 request por candidato no deep dive — mas o
+leaderboard já tem `lastTradeTime` ou similar.
+
+**Solução:** no `parse_leaderboard_row`, se o leaderboard trouxer
+timestamp do último trade, usar para cortar inativos no corte barato.
+Se não trouxer, manter o precheck F1 no deep dive.
+
+#### 3. HyperTracker — investigar endpoint
+
+O código chama `GET /api/external/leaderboards/perp-pnl` com
+`rankBy=pnlMonth&orderBy=pnlMonth&order=desc&limit=100&offset=0`.
+A chave retorna 401 "Invalid token payload" em TODOS os endpoints.
+
+O operador vai verificar a chave no dashboard do HyperTracker
+(https://hypertracker.io/ → API Dashboard). Se a chave estiver correta,
+pode ser problema de formato do JWT ou header.
+
+#### 4. Fonte alternativa: fills públicos recentes
+
+O `active_scan_enabled: false` (stub). Se implementado de verdade,
+traria endereços com fills reais nas últimas 48h — traders ATIVOS,
+não traders com PnL histórico.
+
+A HL não tem endpoint público de "todos os fills recentes", mas o
+HyperTracker tem `GET /api/external/orders` e
+`GET /api/external/closed-trades` que podem trazer endereços ativos.
+
+### O que o Hermes vai fazer em paralelo (config)
+
+Enquanto o Cursor implementa a separação do F20, o Hermes vai ajustar:
+1. `f20_min/max_trader_equity_usd: null` (desativa F20 total — workaround)
+2. `f2c_min_trades_7d: 1`
+3. `f16_min_coverage_days: 10`
+4. `f5_max_drawdown_90d_pct: 95.0`
+
+Isso remove o F20 do corte barato (workaround) e afrouxa outros filtros.
+O scan resultante terá ~300 aprofundados (top por ROI 30d, sem falsos
+cortes de equity). O F11 continua barrando não-copiáveis.
+
+### Validação esperada
+
+- Scan com F20 null: ~300 aprofundados, 5-15 aprovados esperados
+- Após implementação do Cursor: corte barato sem F20 + F20 no hard_filter
+  com equity real → mesmos aprovados mas sem precisar de workaround
+- HyperTracker funcionando: +60-300 endereços extras, mais aprovados
+- Fills públicos: traders ativos ao invés de leaderboard sortudo
