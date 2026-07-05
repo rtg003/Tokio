@@ -1,21 +1,20 @@
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import Shell from "@/components/Shell";
-import { createClient, supabaseConfigured } from "@/lib/supabase/server";
+import { authConfigured, SESSION_COOKIE, verifySession } from "@/lib/auth";
 
 export default async function AppLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  if (!supabaseConfigured()) {
+  if (!authConfigured()) {
     redirect("/login");
   }
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
+  const cookieStore = await cookies();
+  const ok = await verifySession(cookieStore.get(SESSION_COOKIE)?.value);
+  if (!ok) {
     redirect("/login");
   }
-  return <Shell email={user.email ?? ""}>{children}</Shell>;
+  return <Shell email="operador">{children}</Shell>;
 }

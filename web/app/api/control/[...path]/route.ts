@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, supabaseConfigured } from "@/lib/supabase/server";
+import { cookies } from "next/headers";
+import { authConfigured, SESSION_COOKIE, verifySession } from "@/lib/auth";
 
 // Server-side proxy to the gateway control API. The gateway lives ONLY on the
 // internal compose network; the web is its single authenticated client. The
@@ -19,12 +20,9 @@ function gatewayBase(): string {
 }
 
 async function requireSession(): Promise<boolean> {
-  if (!supabaseConfigured()) return false;
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return Boolean(user);
+  if (!authConfigured()) return false;
+  const cookieStore = await cookies();
+  return verifySession(cookieStore.get(SESSION_COOKIE)?.value);
 }
 
 export async function GET(

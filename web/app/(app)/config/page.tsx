@@ -1,13 +1,9 @@
-import { createClient } from "@/lib/supabase/server";
+import { getExchanges } from "@/lib/copy-trade/data";
 
 export const dynamic = "force-dynamic";
 
 export default async function ConfigPage() {
-  const supabase = await createClient();
-  const { data: exchanges } = await supabase
-    .from("exchanges")
-    .select("id, name, network, status")
-    .order("id");
+  const exchanges = await getExchanges();
 
   return (
     <section>

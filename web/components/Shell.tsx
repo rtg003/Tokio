@@ -3,14 +3,13 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 
 type Health = {
   ok: boolean;
   exchange?: string;
   network?: string;
   kill_switch?: boolean;
-  replication_queue_depth?: number;
+  circuit_breaker?: boolean;
   uptime_s?: number;
 };
 
@@ -81,7 +80,7 @@ export default function Shell({
 
   async function logout(e: React.MouseEvent) {
     e.preventDefault();
-    await createClient().auth.signOut();
+    await fetch("/api/logout", { method: "POST" });
     router.push("/login");
     router.refresh();
   }
@@ -114,7 +113,7 @@ export default function Shell({
           GATEWAY <strong>{health?.exchange ?? "—"}</strong>
         </span>
         <span className="seg hide-m">
-          FILA <strong>{health?.replication_queue_depth ?? "—"}</strong>
+          RISCO <strong>{health?.circuit_breaker ? "PAUSADO" : "OK"}</strong>
         </span>
         <span className="spacer" />
         <span className="seg">
@@ -132,7 +131,7 @@ export default function Shell({
         </div>
         <div className="navlabel">Estratégias</div>
         <nav className="nav">
-          {nav("/", "Copy Trade", "CT")}
+          {nav("/copy-trade", "Copy Trade", "CT")}
           <a href="#" className="ghost" onClick={(e) => e.preventDefault()}>
             + nova estratégia
           </a>
@@ -148,8 +147,10 @@ export default function Shell({
             <b>{fmtUptime(health?.uptime_s)}</b>
           </div>
           <div className="row">
-            <span>fila supabase</span>
-            <b>{health?.replication_queue_depth ?? "—"}</b>
+            <span>circuit breaker</span>
+            <b style={{ color: health?.circuit_breaker ? "var(--neg)" : "var(--pos)" }}>
+              {health?.circuit_breaker ? "ABERTO" : "ok"}
+            </b>
           </div>
           <div className="row">
             <span>kill switch</span>

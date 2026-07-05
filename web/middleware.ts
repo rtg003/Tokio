@@ -1,18 +1,5 @@
-import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-
-type CookieToSet = { name: string; value: string; options?: CookieOptions };
-
-// Inline (edge middleware can't import server-only helpers freely): a
-// malformed URL must fall back to the login/unconfigured flow, never a 500.
-function supabaseUrlValid(u: string | undefined): u is string {
-  try {
-    const p = new URL(u ?? "");
-    return p.protocol === "https:" || p.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
+import { authConfigured, SESSION_COOKIE, verifySession } from "@/lib/auth";
 
 // Behind the reverse proxy the internal origin is 127.0.0.1:3002; redirects
 // must target the PUBLIC origin from the X-Forwarded-* headers set by Caddy.
@@ -26,48 +13,23 @@ function publicUrl(request: NextRequest, path: string): URL {
 
 // Session required on ALL routes except /login and static assets.
 export async function middleware(request: NextRequest) {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  let response = NextResponse.next({ request });
-  if (!supabaseUrlValid(url) || !anon) {
-    // Unconfigured environment (first boot): only the login screen renders,
-    // showing the configuration notice.
-    if (request.nextUrl.pathname !== "/login") {
+  const isLogin = request.nextUrl.pathname === "/login";
+  const isLoginApi = request.nextUrl.pathname === "/api/login";
+  if (!authConfigured()) {
+    if (!isLogin && !isLoginApi) {
       return NextResponse.redirect(publicUrl(request, "/login"));
     }
-    return response;
+    return NextResponse.next({ request });
   }
 
-  const supabase = createServerClient(url, anon, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet: CookieToSet[]) {
-        cookiesToSet.forEach(({ name, value }) =>
-          request.cookies.set(name, value),
-        );
-        response = NextResponse.next({ request });
-        cookiesToSet.forEach(({ name, value, options }) =>
-          response.cookies.set(name, value, options),
-        );
-      },
-    },
-  });
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  const isLogin = request.nextUrl.pathname === "/login";
-  if (!user && !isLogin) {
+  const ok = await verifySession(request.cookies.get(SESSION_COOKIE)?.value);
+  if (!ok && !isLogin && !isLoginApi) {
     return NextResponse.redirect(publicUrl(request, "/login"));
   }
-  if (user && isLogin) {
+  if (ok && isLogin) {
     return NextResponse.redirect(publicUrl(request, "/"));
   }
-  return response;
+  return NextResponse.next({ request });
 }
 
 export const config = {

@@ -404,6 +404,18 @@ def build_app(state: GatewayState) -> FastAPI:
         "SUGERIDO", "DRY_RUN", "COPIANDO", "PAUSADO", "REJEITADO", "ARQUIVADO",
     }
 
+    def _strategy_ids_csv(value: str | None, *, field: str = "strategy_id") -> list[str]:
+        ids = [s.strip() for s in (value or "").split(",") if s.strip()]
+        if not ids:
+            raise HTTPException(
+                400,
+                f"{field} é obrigatório (ADR 0010 — isolamento de módulo)",
+            )
+        return ids
+
+    def _in_clause(values: list[str]) -> str:
+        return ", ".join("?" for _ in values)
+
     @app.get("/api/traders")
     def api_traders(status: str | None = None) -> list[dict[str, Any]]:
         """Lista traders ordenados por score DESC.
@@ -452,6 +464,8 @@ def build_app(state: GatewayState) -> FastAPI:
     @app.get("/api/fills")
     def api_fills(
         strategy_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Fills ordenados por id DESC.
@@ -461,17 +475,22 @@ def build_app(state: GatewayState) -> FastAPI:
         Sem filtro = 400 (não expor dados cross-módulo).
         """
         try:
-            if not strategy_id or not strategy_id.strip():
-                raise HTTPException(
-                    400,
-                    "strategy_id é obrigatório (ADR 0010 — isolamento de módulo)",
-                )
+            strategy_ids = _strategy_ids_csv(strategy_id)
             # Clamp do limit para evitar scan full-table.
             limit = max(1, min(int(limit), 500))
+            where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
+            params: list[Any] = [*strategy_ids]
+            if since:
+                where.append("ts >= ?")
+                params.append(since)
+            if until:
+                where.append("ts <= ?")
+                params.append(until)
+            params.append(limit)
             rows = state.db.query(
-                "SELECT * FROM fills WHERE strategy_id = ? "
+                f"SELECT * FROM fills WHERE {' AND '.join(where)} "
                 "ORDER BY id DESC LIMIT ?",
-                (strategy_id, limit),
+                params,
             )
             return [dict(r) for r in rows]
         except HTTPException:
@@ -584,19 +603,62 @@ def build_app(state: GatewayState) -> FastAPI:
 
     # -- /api/orders (orders com filtro strategy_id, ADR 0010) -------------
     @app.get("/api/orders")
-    def api_orders(strategy_id: str | None = None, limit: int = 50):
+    def api_orders(
+        strategy_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+    ):
         try:
             limit = max(1, min(500, limit))
-            if strategy_id:
-                rows = state.db.query(
-                    "SELECT * FROM orders WHERE strategy_id = ? "
-                    "ORDER BY id DESC LIMIT ?", (strategy_id, limit))
-            else:
-                rows = state.db.query(
-                    "SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
+            strategy_ids = _strategy_ids_csv(strategy_id)
+            where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
+            params: list[Any] = [*strategy_ids]
+            if since:
+                where.append("created_at >= ?")
+                params.append(since)
+            if until:
+                where.append("created_at <= ?")
+                params.append(until)
+            params.append(limit)
+            rows = state.db.query(
+                f"SELECT * FROM orders WHERE {' AND '.join(where)} "
+                "ORDER BY id DESC LIMIT ?",
+                params,
+            )
             return rows
+        except HTTPException:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"orders: {str(exc)[:200]}")
+
+    # -- /api/metrics (daily metrics scoped by strategy_ids, ADR 0010) -----
+    @app.get("/api/metrics")
+    def api_metrics(
+        strategy_ids: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ):
+        try:
+            ids = _strategy_ids_csv(strategy_ids, field="strategy_ids")
+            where = [f"strategy_id IN ({_in_clause(ids)})"]
+            params: list[Any] = [*ids]
+            if since:
+                where.append("day >= ?")
+                params.append(since)
+            if until:
+                where.append("day <= ?")
+                params.append(until)
+            rows = state.db.query(
+                f"SELECT * FROM strategy_metrics_daily WHERE {' AND '.join(where)} "
+                "ORDER BY day DESC",
+                params,
+            )
+            return rows
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"metrics: {str(exc)[:200]}")
 
     return app
 
