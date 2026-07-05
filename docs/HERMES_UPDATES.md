@@ -874,7 +874,7 @@ ajuste fino via YAML/replay, mantendo F16–F19 como régua de qualidade da cóp
 
 ---
 
-## UPDATE-0014 · 2026-07-05 · Status: PENDENTE
+## UPDATE-0014 · 2026-07-05 · Status: APLICADO em 2026-07-05
 
 Origem: Cursor — correções operacionais da dashboard Copy Trade
 
