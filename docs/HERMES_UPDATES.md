@@ -775,7 +775,7 @@ outros módulos legados; copy trade passa a ser controlado pelo status do trader
 
 ---
 
-## UPDATE-0013 · 2026-07-05 · Status: PENDENTE
+## UPDATE-0013 · 2026-07-05 · Status: APLICADO em 2026-07-05
 
 Origem: Cursor — Discovery v11 (funil aberto, HyperTracker confiável e
 flexibilidade de calibração)
