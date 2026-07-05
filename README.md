@@ -85,12 +85,11 @@ python -m engine.cli db migrate                # aplica migrations no SQLite loc
 |---|---|
 | `gateway` | Único processo dono da corretora (risco global + ledger + adapter) |
 | `runner-*` | Um por estratégia/módulo (copy trade, tradingview, standalone) |
-| `replicator` | Replicação assíncrona SQLite → Supabase |
-| `web` | Dashboard Next.js (lê Supabase; controla via API interna do gateway) |
+| `web` | Dashboard Next.js (lê SQLite via gateway; controla via API interna) |
 | `proxy` | Caddy com TLS automático servindo `tokio.bz` → web (produção) |
 
-Gateway, runners e replicador ficam apenas na rede interna do Docker — nenhuma
-porta do engine é publicada no host.
+Gateway e runners ficam apenas na rede interna do Docker — nenhuma porta do
+engine é publicada no host. O SQLite local é o único banco operacional.
 
 ## Estrutura do repositório
 
@@ -115,10 +114,9 @@ python -m engine.strategies.tradingview.backtest.harness --symbol BTC --interval
 
 Produção roda na VPS compartilhada via **systemd + supervisor** (ADR 0007):
 `tokio.service` (web em 127.0.0.1:3002) + `tokio-engine.service`
-(`engine/supervisor.py` mantendo gateway/replicator/runners como processos
+(`engine/supervisor.py` mantendo gateway/runners como processos
 isolados), atrás do Caddy compartilhado servindo `https://tokio.bz`. Deploy
-contínuo por GitHub Actions no push em `main`
-([.github/workflows/deploy-vps.yml](.github/workflows/deploy-vps.yml)).
+contínuo por autodeploy pull-based no push em `main`.
 Docker Compose (`make up`/`make deploy`) fica para dev local ou VPS dedicada.
 Procedimento completo, DNS, gates e troubleshooting:
 [`docs/HANDOFF_HERMES.md`](docs/HANDOFF_HERMES.md).

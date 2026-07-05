@@ -36,7 +36,7 @@ def test_load_specs_respects_enabled(tmp_path: Path) -> None:
 def test_default_processes_file_is_valid() -> None:
     specs = load_specs()
     names = {s.name for s in specs}
-    assert {"gateway", "replicator", "runner-copytrade", "runner-tradingview"} <= names
+    assert {"gateway", "runner-copytrade", "runner-tradingview"} <= names
     gw = next(s for s in specs if s.name == "gateway")
     assert gw.env.get("GATEWAY_BIND") == "127.0.0.1"
     dummy = next(s for s in specs if s.name == "runner-dummy")

@@ -14,7 +14,6 @@ test:
 
 migrate:
 	python -m engine.cli db migrate
-	@echo "Supabase (uma vez, pelo humano): psql \"$$DATABASE_URL\" -f db/migrations/supabase/0001_initial.sql"
 
 up:
 	$(COMPOSE_DEV) up -d --build

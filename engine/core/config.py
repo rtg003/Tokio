@@ -56,12 +56,6 @@ class GatewaySettings(BaseModel):
     port: int = 8700
 
 
-class ReplicationSettings(BaseModel):
-    batch_size: int = 200
-    interval_seconds: int = 5
-    events_retention_days: int = 90
-
-
 class Settings(BaseModel):
     exchange: ExchangeSettings = Field(default_factory=ExchangeSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
@@ -70,7 +64,6 @@ class Settings(BaseModel):
     fees: FeeSettings = Field(default_factory=FeeSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
-    replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
 
     @staticmethod
     def _resolve(raw: str) -> Path:
@@ -118,10 +111,6 @@ def get_settings() -> Settings:
 ENGINE_SECRET_VARS = (
     "HL_ACCOUNT_ADDRESS",
     "HL_AGENT_PRIVATE_KEY",
-    "SUPABASE_URL",
-    "SUPABASE_ANON_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "DATABASE_URL",
     "GATEWAY_CONTROL_TOKEN",
 )
 

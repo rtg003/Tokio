@@ -6,7 +6,6 @@
 -- Não é histórico do engine — o histórico real permanece na corretora.
 -- Fills legítimos SEMPRE têm strategy_id (atribuição via cloid no ledger).
 --
--- Espelho no Supabase: DELETE equivalente executado diretamente (fills não
--- são reconciliados pelo replicator; a remoção lá é definitiva).
+-- SQLite é a fonte operacional única.
 
 DELETE FROM fills WHERE strategy_id IS NULL;

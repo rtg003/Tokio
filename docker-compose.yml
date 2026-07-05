@@ -1,4 +1,4 @@
-# Tokio — one service per process. Gateway, runners and replicator live ONLY
+# Tokio — one service per process. Gateway and runners live ONLY
 # on the internal network; nothing from the engine is published to the host.
 # Production adds `web` and `proxy` (Caddy) — see docker-compose.prod.yml.
 
@@ -21,15 +21,6 @@ services:
     deploy:
       resources:
         limits: {cpus: "1.0", memory: 512M}
-
-  replicator:
-    <<: *engine-base
-    container_name: tokio-replicator
-    command: python -m engine.replicator_main
-    depends_on: [gateway]
-    deploy:
-      resources:
-        limits: {cpus: "0.5", memory: 256M}
 
   runner-dummy:
     <<: *engine-base

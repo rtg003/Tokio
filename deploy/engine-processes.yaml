@@ -11,9 +11,6 @@ processes:
     env:
       GATEWAY_BIND: "127.0.0.1"
 
-  - name: replicator
-    module: engine.replicator_main
-
   - name: runner-copytrade
     module: engine.strategies.copy_trade.executor
 

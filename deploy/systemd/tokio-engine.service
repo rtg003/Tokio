@@ -1,11 +1,11 @@
 # tokio-engine.service — supervisor do engine (VPS compartilhada, ADR 0007)
-# Mantém gateway, replicator e runners como processos separados com restart
+# Mantém gateway e runners como processos separados com restart
 # individual. Tudo binda em 127.0.0.1 (deploy/engine-processes.yaml).
 # Instalação (operador, com sudo): copiar para /etc/systemd/system/ e
 # ADICIONAR ao sudoers do usuário tokio (restart/status), junto do tokio.service.
 
 [Unit]
-Description=Tokio engine (gateway + runners + replicator)
+Description=Tokio engine (gateway + runners)
 After=network.target
 
 [Service]

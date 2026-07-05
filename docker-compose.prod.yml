@@ -1,7 +1,7 @@
 # Production overlay: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
 # Adds `web` (Next.js) and `proxy` (Caddy, automatic TLS) serving tokio.bz.
-# ONLY the proxy publishes ports (80/443). Gateway, runners and replicator
+# ONLY the proxy publishes ports (80/443). Gateway and runners
 # stay on the internal network — nothing from the engine reaches the host.
 #
 # BEFORE first deploy (ADR 0006): inspect ports 80/443 on the VPS
@@ -12,20 +12,15 @@ services:
   web:
     build:
       context: ./web
-      args:
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
     container_name: tokio-web
     restart: unless-stopped
     networks: [internal]
     environment:
-      # The web container gets URL + anon key ONLY (RLS on). The
-      # service_role key never enters this container.
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
       GATEWAY_HOST: gateway
       GATEWAY_PORT: "8700"
       GATEWAY_CONTROL_TOKEN: ${GATEWAY_CONTROL_TOKEN}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+      DASHBOARD_AUTH_SECRET: ${DASHBOARD_AUTH_SECRET}
     depends_on: [gateway]
     deploy:
       resources:

@@ -7,7 +7,6 @@
     python -m engine.cli report --strategy <id>
     python -m engine.cli trader unpin <addr> [--yes]   # remove copy_pinned (human gate)
     python -m engine.cli kill [--reason txt] / unkill
-    python -m engine.cli replicate once
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ import sys
 from pathlib import Path
 
 from engine.core.config import get_settings
-from engine.core.db import Database, SupabaseSink, Replicator, replication_lag_seconds, utcnow
+from engine.core.db import Database, utcnow
 from engine.core.logger import EventLogger
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -343,25 +342,6 @@ def cmd_unkill(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_replicate(args: argparse.Namespace) -> int:
-    settings = get_settings()
-    db = _db()
-    logger = EventLogger("replicator", settings.logs_dir)
-    sink = SupabaseSink()
-    rep = Replicator(db, sink, batch_size=settings.replication.batch_size,
-                     interval_seconds=settings.replication.interval_seconds, logger=logger)
-    if not sink.configured:
-        print("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY ausentes — nada a replicar "
-              f"(fila local: {db.queue_depth()} linhas, lag {replication_lag_seconds(db):.0f}s)")
-        return 0 if args.once else 1
-    if args.once:
-        synced, failed = rep.replicate_once()
-        print(f"replicado: {synced} · falhas: {failed} · fila: {db.queue_depth()}")
-        return 0
-    rep.run_forever()
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="engine.cli")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -414,18 +394,12 @@ def build_parser() -> argparse.ArgumentParser:
     kill.set_defaults(func=cmd_kill)
     sub.add_parser("unkill").set_defaults(func=cmd_unkill)
 
-    repl = sub.add_parser("replicate")
-    repl.add_argument("mode", choices=["once", "forever"], nargs="?", default="once")
-    repl.set_defaults(func=cmd_replicate, once=True)
-
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if getattr(args, "mode", None) == "forever":
-        args.once = False
     return args.func(args)
 
 

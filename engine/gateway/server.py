@@ -295,8 +295,6 @@ def build_app(state: GatewayState) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        from engine.core.db import replication_lag_seconds
-
         return {
             "ok": True,
             "uptime_s": round(time.time() - state.started_at, 1),
@@ -304,8 +302,6 @@ def build_app(state: GatewayState) -> FastAPI:
             "network": state.adapter.network,
             "kill_switch": state.enforcer.kill_switch_engaged(),
             "circuit_breaker": state.enforcer.circuit_open,
-            "replication_queue_depth": state.db.queue_depth(),
-            "replication_lag_s": round(replication_lag_seconds(state.db), 1),
         }
 
     @app.post("/intent")

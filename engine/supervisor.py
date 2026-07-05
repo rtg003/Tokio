@@ -1,8 +1,8 @@
 """Engine supervisor — production entrypoint for the shared VPS (ADR 0007).
 
 One systemd unit (`tokio-engine.service`) runs this supervisor, which keeps
-the per-process isolation the architecture requires: gateway, replicator and
-each strategy runner remain SEPARATE OS processes, restarted individually
+the per-process isolation the architecture requires: gateway and each
+strategy runner remain SEPARATE OS processes, restarted individually
 with exponential backoff. A crash in one child never touches the others.
 
 Process list comes from `deploy/engine-processes.yaml`. SIGTERM/SIGINT are
