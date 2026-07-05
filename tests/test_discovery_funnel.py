@@ -264,6 +264,7 @@ def test_report_contains_funnel_stats_and_ranking(db) -> None:
     assert payload["logic_version"] == CFG["logic_version"]
     assert payload["funnel_stats"]["coletados"] == 5
     assert "F10" in json.dumps(payload["rejected_reasons"])
+    assert "near_miss" in payload
     assert "| 1 |" in md and "Funil:" in md
 
 
@@ -298,7 +299,7 @@ def test_null_thresholds_disable_f3_f4() -> None:
         median_hold_hours=0.1, twrr_30d_pct=-50.0, max_dd_90d_pct=10.0,
         top3_concentration=0.1, avg_leverage=5.0, liquid_volume_share=1.0,
         fills_per_day=10.0, pnl_over_volume=0.01, net_exposure_share=1.0,
-        deposit_share=0.0, equity=0.0,
+        deposit_share=0.0, equity=50_000.0,
     )
     assert hard_filters(c, CFG, now_ms=NOW_MS) is None
 
@@ -365,25 +366,38 @@ def test_v7_f12_rejects_when_enabled() -> None:
 
 
 def test_v7_null_thresholds_disable_new_filters() -> None:
-    """Threshold null desabilita F7b/F12/F13/F15–F20 (padrão v3 de reativação)."""
+    """Threshold null desabilita todos os hard filters F1–F20."""
     import copy
 
     from engine.strategies.copy_trade.funnel import hard_filters
 
     cfg = copy.deepcopy(CFG)
-    for key in ("f2c_min_trades_7d", "f7b_max_current_leverage", "f12_min_available_margin_pct",
+    for key in ("f1_recent_activity_days", "f2_min_closed_trades", "f2b_min_trades_30d",
+                "f2c_min_trades_7d", "f5_max_drawdown_90d_pct",
+                "f6_max_top3_pnl_concentration", "f7_max_avg_leverage",
+                "f7b_max_current_leverage", "f12_min_available_margin_pct",
                 "f13_min_liq_distance_pct", "f15_sim_window_days",
                 "f16_min_coverage_days", "f17_min_sim_net_usd",
-                "f19_max_sim_dd_pct", "f20_max_trader_equity_usd"):
+                "f19_max_sim_dd_pct", "f20_min_trader_equity_usd",
+                "f20_max_trader_equity_usd", "f8_min_liquid_volume_share",
+                "f10_max_deposit_growth_share", "f11_min_mirror_notional_usd"):
+        cfg["hard_filters"][key] = None
+    for key in ("f9_mm_max_trades_per_day", "f9_mm_max_pnl_over_volume",
+                "f9_mm_min_tpd_for_pnl_vol", "f9_mm_max_neutral_exposure",
+                "f9_mm_min_tpd_for_neutral"):
         cfg["hard_filters"][key] = None
     cfg["hard_filters"]["f18_sim_positive_halves"] = False
-    c = v7_base_candidate(max_current_leverage=25.0, available_margin_pct=0.0,
-                          liq_distance_pct=3.0, sim_net_pnl_usd=-50.0,
-                          coverage_days=2.0, sim_stage4_net_usd=-99.0,
-                          sim_max_dd_pct=90.0, sim_half_new_net=-1.0,
-                          equity=999_999.0,
-                          # F11 escala com equity: notional alto p/ não disparar
-                          median_fill_notional=100_000.0)
+    c = v7_base_candidate(last_activity=None, n_trades=0, n_trades_30d=0,
+                          n_trades_7d=0, max_dd_90d_pct=99.0,
+                          top3_concentration=1.0, avg_leverage=99.0,
+                          max_current_leverage=25.0, available_margin_pct=0.0,
+                          liq_distance_pct=3.0, liquid_volume_share=0.0,
+                          fills_per_day=500.0, pnl_over_volume=0.0,
+                          net_exposure_share=0.0, deposit_share=1.0,
+                          sim_net_pnl_usd=-50.0, coverage_days=2.0,
+                          sim_stage4_net_usd=-99.0, sim_max_dd_pct=90.0,
+                          sim_half_new_net=-1.0, equity=999_999.0,
+                          median_fill_notional=1.0)
     assert hard_filters(c, cfg, now_ms=NOW_MS) is None
 
 
@@ -450,11 +464,11 @@ def test_v8_final_ranking_uses_sim_factor(db) -> None:
     assert ranks == sorted(ranks, reverse=True)
 
 
-def test_v8_external_sources_disabled_by_default(db) -> None:
-    """Flags de fontes externas desligadas → nenhum request e stats ausente."""
+def test_v11_external_source_hook_is_optional(db) -> None:
+    """Cliente sem hook externo segue funcional; com hook vazio registra zero."""
     client = make_client()   # FakeClient NÃO tem external_candidates: getattr cobre
     result = run_scan(client, db, CFG, now_ms=NOW_MS)
-    assert "fontes_externas_novos" not in result.funnel_stats
+    assert result.funnel_stats.get("fontes_externas_novos") == 0
 
     client2 = make_client()
     calls: list[dict] = []
@@ -463,6 +477,61 @@ def test_v8_external_sources_disabled_by_default(db) -> None:
     # o hook é chamado, mas sem endereços novos → 0 novos
     assert result2.funnel_stats.get("fontes_externas_novos") == 0
     assert calls and calls[0] is CFG["sources"]
+
+
+def test_v11_external_quota_enters_when_leaderboard_full(db) -> None:
+    import copy
+
+    cfg = copy.deepcopy(CFG)
+    cfg["collection"]["deep_dive_max"] = 1
+    cfg["collection"]["external_dive_quota"] = 1
+    cfg["collection"]["external_interleave_after"] = 1
+    client = make_client()
+    hyper = "0x" + "12" * 20
+    client.external_candidates_by_source = lambda sources: {"hypertracker": [hyper]}  # type: ignore[attr-defined]
+    result = run_scan(client, db, cfg, now_ms=NOW_MS)
+
+    assert result.funnel_stats["hypertracker_coletados"] == 1
+    assert result.funnel_stats["hypertracker_aprofundados"] == 1
+    assert result.funnel_stats["fontes_externas_aprofundados"] == 1
+    assert hyper in {c.address for c in result.rejected}
+
+
+def test_v11_external_quota_falls_back_to_leaderboard(db) -> None:
+    import copy
+
+    cfg = copy.deepcopy(CFG)
+    cfg["collection"]["deep_dive_max"] = 1
+    cfg["collection"]["external_dive_quota"] = 2
+    client = make_client()
+    client.external_candidates_by_source = lambda sources: {"hypertracker": []}  # type: ignore[attr-defined]
+    result = run_scan(client, db, cfg, now_ms=NOW_MS)
+
+    assert result.funnel_stats["hypertracker_coletados"] == 0
+    assert result.funnel_stats["fontes_externas_aprofundados"] == 0
+    assert result.funnel_stats["fallback_leaderboard_extra"] == 2
+    assert result.funnel_stats["aprofundados"] == 3
+
+
+def test_v11_replay_does_not_persist(db, monkeypatch, tmp_path, capsys) -> None:
+    import argparse
+    import copy
+
+    from engine.strategies.copy_trade import discovery
+
+    cfg = copy.deepcopy(CFG)
+    cfg["collection"]["deep_dive_max"] = 1
+    cfg["collection"]["external_dive_quota"] = 0
+    monkeypatch.setattr(discovery.funnel, "load_config", lambda: cfg)
+    monkeypatch.setattr(discovery, "_db", lambda: db)
+    monkeypatch.setattr(discovery, "_replay_client", lambda _db, _cfg: make_client())
+    monkeypatch.setattr(discovery, "reports_dir", lambda: tmp_path)
+
+    args = argparse.Namespace(sets=["hard_filters.f2c_min_trades_7d=5"])
+    assert discovery.cmd_replay(args) == 0
+    assert db.query("SELECT * FROM traders") == []
+    assert list(tmp_path.glob("replay-*.json"))
+    assert "Replay — diff" in capsys.readouterr().out
 
 
 def test_v9_hl_client_external_candidates_no_key_is_silent() -> None:

@@ -7,6 +7,7 @@ Read-only: este módulo nunca importa signer nem envia ordem.
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import time
 import uuid
@@ -103,6 +104,7 @@ class Candidate:
     score: float = 0.0
     components: M.ScoreComponents | None = None
     reject_reason: str | None = None
+    reject_reasons: list[str] = field(default_factory=list)
     rationale: list[str] = field(default_factory=list)
 
 
@@ -164,6 +166,66 @@ def entry_rule_ok(c: Candidate, cfg: dict[str, Any]) -> bool:
     return all(w in positive for w in rule["required_windows"])
 
 
+def _is_set(value: Any) -> bool:
+    return value is not None
+
+
+def _float_or_none(value: Any) -> float | None:
+    return float(value) if _is_set(value) else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    return int(value) if _is_set(value) else None
+
+
+def _filter_key(reason: str | None) -> str | None:
+    if not reason:
+        return None
+    if reason.startswith("score "):
+        return "score_adjustments.min_score_for_suggestion"
+    if reason.startswith("copy_sim_negativa"):
+        return "copy_simulation.*"
+    prefix = reason.split(":", 1)[0]
+    return {
+        "F1": "hard_filters.f1_recent_activity_days",
+        "F2": "hard_filters.f2_min_closed_trades",
+        "F2b": "hard_filters.f2b_min_trades_30d",
+        "F2c": "hard_filters.f2c_min_trades_7d",
+        "F3": "hard_filters.f3_*",
+        "F4": "hard_filters.f4_min_twrr_30d_pct",
+        "F5": "hard_filters.f5_max_drawdown_90d_pct",
+        "F6": "hard_filters.f6_max_top3_pnl_concentration",
+        "F7": "hard_filters.f7_max_avg_leverage",
+        "F7b": "hard_filters.f7b_max_current_leverage",
+        "F8": "hard_filters.f8_min_liquid_volume_share",
+        "F9": "hard_filters.f9_*",
+        "F10": "hard_filters.f10_max_deposit_growth_share",
+        "F11": "hard_filters.f11_min_mirror_notional_usd",
+        "F12": "hard_filters.f12_min_available_margin_pct",
+        "F13": "hard_filters.f13_min_liq_distance_pct",
+        "F15": "hard_filters.f15_*",
+        "F16": "hard_filters.f16_min_coverage_days",
+        "F17": "hard_filters.f17_min_sim_net_usd",
+        "F18": "hard_filters.f18_sim_positive_halves",
+        "F19": "hard_filters.f19_max_sim_dd_pct",
+        "F20": "hard_filters.f20_*_trader_equity_usd",
+        "copy_sim_negativa": "copy_simulation.*",
+        "entrada": "entry_rule.*",
+        "score": "score_adjustments.min_score_for_suggestion",
+    }.get(prefix)
+
+
+def _equity_in_band(equity: float, cfg: dict[str, Any]) -> bool:
+    f = cfg["hard_filters"]
+    min_eq = _float_or_none(f.get("f20_min_trader_equity_usd"))
+    max_eq = _float_or_none(f.get("f20_max_trader_equity_usd"))
+    if min_eq is not None and equity < min_eq:
+        return False
+    if max_eq is not None and equity > max_eq:
+        return False
+    return True
+
+
 def classify_style(median_hold_h: float | None) -> str:
     if median_hold_h is None:
         return "misto"
@@ -183,7 +245,9 @@ def precheck_activity(c: Candidate, client: DataClient, cfg: dict[str, Any],
     antigo p/ o mais novo — em traders hiperativos as páginas da janela longa
     nunca alcançam os fills recentes, e o F1 reprovaria exatamente quem mais
     opera. A janela curta dedicada dá o last_activity correto."""
-    f1_days = int(cfg["hard_filters"]["f1_recent_activity_days"])
+    f1_days = _int_or_none(cfg["hard_filters"].get("f1_recent_activity_days"))
+    if f1_days is None:
+        return None
     recent, _ = client.fills_by_time(c.address, window_days=f1_days, max_pages=1)
     if not recent:
         return f"F1: sem trade nos últimos {f1_days}d"
@@ -243,9 +307,12 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
         volume = sum(abs(float(f.get("sz", 0)) * float(f.get("px", 0))) for f in fills)
         pnl_total = sum(closed_pnls)
         c.pnl_over_volume = (pnl_total / volume) if volume > 0 else 0.0
-        liquid_vol = sum(abs(float(f.get("sz", 0)) * float(f.get("px", 0)))
-                         for f in fills if str(f.get("coin")) in liquid)
-        c.liquid_volume_share = (liquid_vol / volume) if volume > 0 else 0.0
+        if liquid:
+            liquid_vol = sum(abs(float(f.get("sz", 0)) * float(f.get("px", 0)))
+                             for f in fills if str(f.get("coin")) in liquid)
+            c.liquid_volume_share = (liquid_vol / volume) if volume > 0 else 0.0
+        else:
+            c.liquid_volume_share = 1.0
         by_asset: dict[str, float] = {}
         for f in fills:
             by_asset[str(f.get("coin"))] = by_asset.get(str(f.get("coin")), 0.0) + \
@@ -319,9 +386,10 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
     curve_all = _series(portfolio, "allTime", "accountValueHistory")
     curve_90d = [(t, v) for t, v in curve_all if t >= now_ms - 90 * DAY_MS] or curve_30d
     dd_bands = cfg["hard_filters"].get("f5_dd_quality_bands")
+    f5_cap = _float_or_none(cfg["hard_filters"].get("f5_max_drawdown_90d_pct"))
     c.max_dd_90d_pct, c.dd_quality = M.drawdown_quality(
         curve_90d,
-        max_dd_cap_pct=float(cfg["hard_filters"]["f5_max_drawdown_90d_pct"]),
+        max_dd_cap_pct=f5_cap if f5_cap is not None else 100.0,
         bands=dd_bands)
 
     # -- consistência semanal ------------------------------------------------------
@@ -405,131 +473,147 @@ def utcnow_from_ms(ms: float) -> str:
 
 
 # ----------------------------------------------------------------------------
-def hard_filters(c: Candidate, cfg: dict[str, Any],
-                 now_ms: float | None = None) -> str | None:
-    """F1–F20 (v7: F7b/F12/F13 posição aberta · v9: F16–F20 copiabilidade real).
-    Retorna o motivo da PRIMEIRA reprovação, ou None (passou).
-    Threshold null = filtro desabilitado. Referência canônica de cada variável:
-    docs/discovery_logic_v9.md."""
+def hard_filters_all(c: Candidate, cfg: dict[str, Any],
+                     now_ms: float | None = None) -> list[str]:
+    """F1–F20 completos. Todo threshold null = filtro desligado."""
     f = cfg["hard_filters"]
     now_ms = now_ms or time.time() * 1000
+    reasons: list[str] = []
 
-    if not c.last_activity:
-        return "F1: sem atividade recente"
-    from datetime import datetime
+    f1_days = _float_or_none(f.get("f1_recent_activity_days"))
+    if f1_days is not None:
+        if not c.last_activity:
+            reasons.append("F1: sem atividade recente")
+        else:
+            from datetime import datetime
 
-    last_ms = datetime.fromisoformat(c.last_activity).timestamp() * 1000
-    if now_ms - last_ms > float(f["f1_recent_activity_days"]) * DAY_MS:
-        return f"F1: último trade há mais de {f['f1_recent_activity_days']}d"
+            last_ms = datetime.fromisoformat(c.last_activity).timestamp() * 1000
+            if now_ms - last_ms > f1_days * DAY_MS:
+                reasons.append(f"F1: último trade há mais de {f['f1_recent_activity_days']}d")
 
-    if c.n_trades < int(f["f2_min_closed_trades"]):
-        return f"F2: amostra {c.n_trades} < {f['f2_min_closed_trades']} trades fechados"
+    f2 = _int_or_none(f.get("f2_min_closed_trades"))
+    if f2 is not None and c.n_trades < f2:
+        reasons.append(f"F2: amostra {c.n_trades} < {f['f2_min_closed_trades']} trades fechados")
 
     # v5: F2b — trader sem atividade recente não tem o que copiar
-    f2b = f.get("f2b_min_trades_30d")
-    if f2b is not None and c.n_trades_30d < int(f2b):
-        return f"F2b: {c.n_trades_30d} trades fechados nos últimos 30d < {f2b}"
+    f2b = _int_or_none(f.get("f2b_min_trades_30d"))
+    if f2b is not None and c.n_trades_30d < f2b:
+        reasons.append(f"F2b: {c.n_trades_30d} trades fechados nos últimos 30d < {f2b}")
 
     # v10: F2c — trader sem atividade nas últimas 48h/7d não tem o que copiar AGORA
-    f2c = f.get("f2c_min_trades_7d")
-    if f2c is not None and c.n_trades_7d < int(f2c):
-        return f"F2c: {c.n_trades_7d} trades fechados nos últimos 7d < {f2c} (inativo)"
+    f2c = _int_or_none(f.get("f2c_min_trades_7d"))
+    if f2c is not None and c.n_trades_7d < f2c:
+        reasons.append(f"F2c: {c.n_trades_7d} trades fechados nos últimos 7d < {f2c} (inativo)")
 
     # v9 — F16: cobertura mínima de histórico (dias entre 1º e último fill).
     # Auditoria do "top 1" do lab: 5 dias de atividade geravam +250% irreal.
-    if f.get("f16_min_coverage_days") is not None and \
-            c.coverage_days is not None and \
-            c.coverage_days < float(f["f16_min_coverage_days"]):
-        return (f"F16: histórico de {c.coverage_days:.0f}d < "
-                f"{f['f16_min_coverage_days']}d (wallet nova demais p/ julgar)")
+    f16 = _float_or_none(f.get("f16_min_coverage_days"))
+    if f16 is not None and c.coverage_days is not None and c.coverage_days < f16:
+        reasons.append(f"F16: histórico de {c.coverage_days:.0f}d < "
+                       f"{f['f16_min_coverage_days']}d (wallet nova demais p/ julgar)")
 
-    # v9 — F20: teto de equity do trader — preditor nº 1 do laboratório
-    # (Spearman −0.227): quanto MENOR a conta, melhor a cópia com $1k.
-    if f.get("f20_max_trader_equity_usd") is not None and \
-            c.equity > float(f["f20_max_trader_equity_usd"]):
-        return (f"F20: equity US$ {c.equity:,.0f} > "
-                f"{f['f20_max_trader_equity_usd']:,.0f} (grande demais p/ espelhar)")
+    # v11 — F20: banda de equity do trader; ambos os lados são ajustáveis.
+    f20_min = _float_or_none(f.get("f20_min_trader_equity_usd"))
+    f20_max = _float_or_none(f.get("f20_max_trader_equity_usd"))
+    if f20_min is not None and c.equity < f20_min:
+        reasons.append(f"F20: equity US$ {c.equity:,.0f} < "
+                       f"{f20_min:,.0f} (pequeno demais p/ filtrar nesta banda)")
+    if f20_max is not None and c.equity > f20_max:
+        reasons.append(f"F20: equity US$ {c.equity:,.0f} > "
+                       f"{f20_max:,.0f} (grande demais p/ espelhar)")
 
     # F3 anti-scalper (threshold null = desabilitado): exige EVIDÊNCIA positiva
     # (hold None nunca reprova sozinho)
-    if f.get("f3_max_trades_per_day") is not None and \
-            c.trades_per_day > float(f["f3_max_trades_per_day"]):
-        return f"F3: {c.trades_per_day:.1f} trades/dia > {f['f3_max_trades_per_day']}"
-    if f.get("f3_min_avg_holding_hours") is not None and \
-            c.median_hold_hours is not None and \
-            c.median_hold_hours < float(f["f3_min_avg_holding_hours"]):
-        return f"F3: hold mediano {c.median_hold_hours:.2f}h < {f['f3_min_avg_holding_hours']}h"
+    f3_max = _float_or_none(f.get("f3_max_trades_per_day"))
+    if f3_max is not None and c.trades_per_day > f3_max:
+        reasons.append(f"F3: {c.trades_per_day:.1f} trades/dia > {f['f3_max_trades_per_day']}")
+    f3_min = _float_or_none(f.get("f3_min_avg_holding_hours"))
+    if f3_min is not None and c.median_hold_hours is not None and c.median_hold_hours < f3_min:
+        reasons.append(f"F3: hold mediano {c.median_hold_hours:.2f}h < {f['f3_min_avg_holding_hours']}h")
 
-    if f.get("f4_min_twrr_30d_pct") is not None and \
-            c.twrr_30d_pct is not None and \
-            c.twrr_30d_pct < float(f["f4_min_twrr_30d_pct"]):
-        return f"F4: TWRR 30d {c.twrr_30d_pct:.1f}% < {f['f4_min_twrr_30d_pct']}%"
+    f4 = _float_or_none(f.get("f4_min_twrr_30d_pct"))
+    if f4 is not None and c.twrr_30d_pct is not None and c.twrr_30d_pct < f4:
+        reasons.append(f"F4: TWRR 30d {c.twrr_30d_pct:.1f}% < {f['f4_min_twrr_30d_pct']}%")
 
-    if c.max_dd_90d_pct is not None and \
-            c.max_dd_90d_pct > float(f["f5_max_drawdown_90d_pct"]):
-        return f"F5: max DD 90d {c.max_dd_90d_pct:.1f}% > {f['f5_max_drawdown_90d_pct']}%"
+    f5 = _float_or_none(f.get("f5_max_drawdown_90d_pct"))
+    if f5 is not None and c.max_dd_90d_pct is not None and c.max_dd_90d_pct > f5:
+        reasons.append(f"F5: max DD 90d {c.max_dd_90d_pct:.1f}% > {f['f5_max_drawdown_90d_pct']}%")
 
     # v7 — F13: posição aberta perto demais da liquidação (medida do mark price)
-    if f.get("f13_min_liq_distance_pct") is not None and \
-            c.liq_distance_pct is not None and \
-            c.liq_distance_pct < float(f["f13_min_liq_distance_pct"]):
-        return (f"F13: dist. liquidação {c.liq_distance_pct:.1f}% < "
-                f"{f['f13_min_liq_distance_pct']}%")
+    f13 = _float_or_none(f.get("f13_min_liq_distance_pct"))
+    if f13 is not None and c.liq_distance_pct is not None and c.liq_distance_pct < f13:
+        reasons.append(f"F13: dist. liquidação {c.liq_distance_pct:.1f}% < "
+                       f"{f['f13_min_liq_distance_pct']}%")
 
-    if c.top3_concentration > float(f["f6_max_top3_pnl_concentration"]):
-        return f"F6: top-3 trades = {c.top3_concentration * 100:.0f}% do PnL"
+    f6 = _float_or_none(f.get("f6_max_top3_pnl_concentration"))
+    if f6 is not None and c.top3_concentration > f6:
+        reasons.append(f"F6: top-3 trades = {c.top3_concentration * 100:.0f}% do PnL")
 
-    if c.avg_leverage is not None and c.avg_leverage > float(f["f7_max_avg_leverage"]):
-        return f"F7: alavancagem média {c.avg_leverage:.1f}x > {f['f7_max_avg_leverage']}x"
+    f7 = _float_or_none(f.get("f7_max_avg_leverage"))
+    if f7 is not None and c.avg_leverage is not None and c.avg_leverage > f7:
+        reasons.append(f"F7: alavancagem média {c.avg_leverage:.1f}x > {f['f7_max_avg_leverage']}x")
 
     # v7 — F7b: alavancagem ATUAL das posições abertas (a média esconde o agora)
-    if f.get("f7b_max_current_leverage") is not None and \
-            c.max_current_leverage is not None and \
-            c.max_current_leverage > float(f["f7b_max_current_leverage"]):
-        return (f"F7b: alavancagem atual {c.max_current_leverage:.1f}x > "
-                f"{f['f7b_max_current_leverage']}x")
+    f7b = _float_or_none(f.get("f7b_max_current_leverage"))
+    if f7b is not None and c.max_current_leverage is not None and c.max_current_leverage > f7b:
+        reasons.append(f"F7b: alavancagem atual {c.max_current_leverage:.1f}x > "
+                       f"{f['f7b_max_current_leverage']}x")
 
     # v7 — F12: margem 100% comprometida = qualquer movimento contra liquida
-    if f.get("f12_min_available_margin_pct") is not None and \
-            c.available_margin_pct is not None and \
-            c.available_margin_pct < float(f["f12_min_available_margin_pct"]):
-        return (f"F12: margem disponível {c.available_margin_pct:.1f}% < "
-                f"{f['f12_min_available_margin_pct']}%")
+    f12 = _float_or_none(f.get("f12_min_available_margin_pct"))
+    if f12 is not None and c.available_margin_pct is not None and c.available_margin_pct < f12:
+        reasons.append(f"F12: margem disponível {c.available_margin_pct:.1f}% < "
+                       f"{f['f12_min_available_margin_pct']}%")
 
-    if c.liquid_volume_share < float(f["f8_min_liquid_volume_share"]):
-        return f"F8: só {c.liquid_volume_share * 100:.0f}% do volume em ativos líquidos"
+    f8 = _float_or_none(f.get("f8_min_liquid_volume_share"))
+    if f8 is not None and c.liquid_volume_share < f8:
+        reasons.append(f"F8: só {c.liquid_volume_share * 100:.0f}% do volume em ativos líquidos")
 
-    if M.looks_like_mm(c.fills_per_day, c.pnl_over_volume, c.net_exposure_share,
-                       max_tpd=float(f["f9_mm_max_trades_per_day"]),
-                       max_pnl_vol=float(f["f9_mm_max_pnl_over_volume"])):
-        return "F9: padrão de MM/arb/delta-neutro"
+    f9_values = (
+        _float_or_none(f.get("f9_mm_max_trades_per_day")),
+        _float_or_none(f.get("f9_mm_max_pnl_over_volume")),
+        _float_or_none(f.get("f9_mm_min_tpd_for_pnl_vol")),
+        _float_or_none(f.get("f9_mm_max_neutral_exposure")),
+        _float_or_none(f.get("f9_mm_min_tpd_for_neutral")),
+    )
+    if any(v is not None for v in f9_values) and \
+            M.looks_like_mm(
+                c.fills_per_day, c.pnl_over_volume, c.net_exposure_share,
+                max_tpd=f9_values[0],
+                max_pnl_vol=f9_values[1],
+                min_tpd_for_pnl_vol=f9_values[2],
+                max_neutral_exposure=f9_values[3],
+                min_tpd_for_neutral=f9_values[4]):
+        reasons.append("F9: padrão de MM/arb/delta-neutro")
 
-    if c.deposit_share > float(f["f10_max_deposit_growth_share"]):
-        return f"F10: {c.deposit_share * 100:.0f}% do crescimento veio de aporte"
+    f10 = _float_or_none(f.get("f10_max_deposit_growth_share"))
+    if f10 is not None and c.deposit_share > f10:
+        reasons.append(f"F10: {c.deposit_share * 100:.0f}% do crescimento veio de aporte")
 
     # v7 — F11 corrigido: notional REAL dos fills (o placeholder de 5% do equity
     # estimava US$ 50 de cópia onde o real era US$ 1.80 — dossiê #6 do Hermes)
-    if c.equity > 0 and c.median_fill_notional is not None:
+    f11_min = _float_or_none(f.get("f11_min_mirror_notional_usd"))
+    if f11_min is not None and c.equity > 0 and c.median_fill_notional is not None:
         copy_notional = c.median_fill_notional * \
             float(f["f11_mirror_capital_usd"]) / c.equity
-        if copy_notional < float(f["f11_min_mirror_notional_usd"]):
-            return (f"F11: cópia estimada US$ {copy_notional:.2f} < "
-                    f"{f['f11_min_mirror_notional_usd']} com capital configurado")
+        if copy_notional < f11_min:
+            reasons.append(f"F11: cópia estimada US$ {copy_notional:.2f} < "
+                           f"{f['f11_min_mirror_notional_usd']} com capital configurado")
 
     # v7 — F15: simulação retroativa — cópia que não paga taxa+slippage não serve
-    if f.get("f15_sim_window_days") is not None and c.sim_net_pnl_usd is not None \
-            and c.sim_net_pnl_usd <= float(f.get("f15_min_net_pnl_usd", 0.0)):
-        return (f"F15: cópia simulada {f['f15_sim_window_days']}d com "
-                f"US$ {f['f11_mirror_capital_usd']:.0f} → PnL líquido "
-                f"US$ {c.sim_net_pnl_usd:.2f}")
+    f15_window = _float_or_none(f.get("f15_sim_window_days"))
+    if f15_window is not None and c.sim_net_pnl_usd is not None and \
+            c.sim_net_pnl_usd <= float(f.get("f15_min_net_pnl_usd", 0.0)):
+        reasons.append(f"F15: cópia simulada {f['f15_sim_window_days']}d com "
+                       f"US$ {f['f11_mirror_capital_usd']:.0f} → PnL líquido "
+                       f"US$ {c.sim_net_pnl_usd:.2f}")
 
     # v9 — F17: a cópia simulada (com latência e teto de alavancagem) precisa
     # RENDER, não só não perder. Quintis do lab: top +$71 em B vs +$0.3 no 2º.
-    if f.get("f17_min_sim_net_usd") is not None and \
-            c.sim_stage4_net_usd is not None and \
-            c.sim_stage4_net_usd <= float(f["f17_min_sim_net_usd"]):
-        return (f"F17: cópia simulada rende US$ {c.sim_stage4_net_usd:.2f} <= "
-                f"{f['f17_min_sim_net_usd']} (não paga o risco)")
+    f17 = _float_or_none(f.get("f17_min_sim_net_usd"))
+    if f17 is not None and c.sim_stage4_net_usd is not None and c.sim_stage4_net_usd <= f17:
+        reasons.append(f"F17: cópia simulada rende US$ {c.sim_stage4_net_usd:.2f} <= "
+                       f"{f['f17_min_sim_net_usd']} (não paga o risco)")
 
     # v9 — F18: edge nas DUAS metades da janela (mata o sortudo de uma perna).
     # Só opera quando a simulação foi computada (sim_stage4 não-None); metade
@@ -540,16 +624,23 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
                 (c.sim_half_old_net is not None and c.sim_half_old_net <= 0):
             old_s = f"{c.sim_half_old_net:.2f}" if c.sim_half_old_net is not None else "n/d"
             new_s = f"{c.sim_half_new_net:.2f}" if c.sim_half_new_net is not None else "n/d"
-            return f"F18: metades da cópia (antiga US$ {old_s} / recente US$ {new_s})"
+            reasons.append(f"F18: metades da cópia (antiga US$ {old_s} / recente US$ {new_s})")
 
     # v9 — F19: DD máximo da curva da CÓPIA (risco da cópia, não do trader).
     # Lab: perdedores fora da amostra tinham DD de cópia 56–75% já visível aqui.
-    if f.get("f19_max_sim_dd_pct") is not None and \
-            c.sim_max_dd_pct is not None and \
-            c.sim_max_dd_pct > float(f["f19_max_sim_dd_pct"]):
-        return (f"F19: DD da cópia simulada {c.sim_max_dd_pct:.1f}% > "
-                f"{f['f19_max_sim_dd_pct']}%")
-    return None
+    f19 = _float_or_none(f.get("f19_max_sim_dd_pct"))
+    if f19 is not None and c.sim_max_dd_pct is not None and c.sim_max_dd_pct > f19:
+        reasons.append(f"F19: DD da cópia simulada {c.sim_max_dd_pct:.1f}% > "
+                       f"{f['f19_max_sim_dd_pct']}%")
+    return reasons
+
+
+def hard_filters(c: Candidate, cfg: dict[str, Any],
+                 now_ms: float | None = None) -> str | None:
+    """Retorna o primeiro motivo de reprovação, preservando a API histórica."""
+    reasons = hard_filters_all(c, cfg, now_ms)
+    c.reject_reasons = reasons
+    return reasons[0] if reasons else None
 
 
 # ----------------------------------------------------------------------------
@@ -619,6 +710,68 @@ def assign_cohort(c: Candidate, cfg: dict[str, Any]) -> None:
     c.cohort = f"{size} · {label}"
 
 
+def _sort_for_deep_dive(candidates: list[Candidate], sort_by: str) -> None:
+    if sort_by == "pnl_7d":
+        candidates.sort(key=lambda c: -c.windows_pnl.get("7d", 0.0))
+    elif sort_by == "equity_asc":
+        candidates.sort(key=lambda c: (c.equity <= 0, c.equity, -c.roi_30d_pct))
+    else:
+        candidates.sort(key=lambda c: -c.roi_30d_pct)
+
+
+def _valid_addresses(addresses: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for addr in addresses:
+        addr = addr.lower()
+        if addr.startswith("0x") and len(addr) == 42 and addr not in seen:
+            seen.add(addr)
+            out.append(addr)
+    return out
+
+
+def _external_candidates_by_source(client: DataClient, cfg: dict[str, Any],
+                                   logger: Any | None,
+                                   stats: dict[str, int]) -> dict[str, list[str]]:
+    sources = cfg.get("sources") or {}
+    by_source_fn = getattr(client, "external_candidates_by_source", None)
+    external_fn = getattr(client, "external_candidates", None)
+    if by_source_fn is None and external_fn is None:
+        return {}
+    try:
+        if by_source_fn is not None:
+            by_source = by_source_fn(sources)
+        else:
+            by_source = {"external": external_fn(sources)}
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.warning("discovery.external_sources_failed",
+                           {"error": str(exc)[:200]})
+        return {}
+
+    out: dict[str, list[str]] = {}
+    for source, addresses in by_source.items():
+        out[source] = _valid_addresses(list(addresses or []))
+
+    hyper = out.get("hypertracker", [])
+    if "hypertracker" in out:
+        stats["hypertracker_coletados"] = len(hyper)
+        ht = sources.get("hypertracker") or {}
+        key = os.environ.get(str(ht.get("api_key_env", "HYPERTRACKER_API_KEY")), "")
+        if ht.get("enabled") and key and not hyper and logger:
+            logger.warning("discovery.hypertracker_empty",
+                           {"api_key_env": ht.get("api_key_env", "HYPERTRACKER_API_KEY")})
+    return out
+
+
+def _interleave_after(base: list[Candidate], extras: list[Candidate],
+                      after: int = 100) -> list[Candidate]:
+    if not extras:
+        return base
+    after = max(0, min(after, len(base)))
+    return base[:after] + extras + base[after:]
+
+
 # ----------------------------------------------------------------------------
 def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None,
              *, logger: Any | None = None,
@@ -642,18 +795,20 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     candidates = [parse_leaderboard_row(r) for r in rows]
     top20 = {c.address for c in candidates[:int(cfg["score_adjustments"]["crowding_top_n"])]}
 
-    # corte barato: 30d positiva (janela obrigatória) + piso de equity.
-    # Prioridade do aprofundamento por ROI 30d: PnL absoluto puro só traria
-    # mega-baleias holders (reprovam em F1/F2 — validação real de 2026-07-03).
-    min_eq = float(col.get("min_equity_usd", 0))
-    cheap = [c for c in candidates
-             if c.windows_pnl.get("30d", 0.0) > 0 and c.equity >= min_eq]
-    stats["corte_barato_30d"] = len(candidates) - len(cheap)
-    cheap.sort(key=lambda c: -c.roi_30d_pct)
-    deep = cheap[: int(col["deep_dive_max"])]
-    stats["aprofundados"] = len(deep)
+    # corte barato: 30d positiva + banda de equity aproximada do leaderboard.
+    min_eq = float(col.get("min_equity_usd", 0) or 0)
+    cheap_30d = [c for c in candidates
+                 if c.windows_pnl.get("30d", 0.0) > 0 and c.equity >= min_eq]
+    stats["corte_barato_30d"] = len(candidates) - len(cheap_30d)
+    cheap = [c for c in cheap_30d if _equity_in_band(c.equity, cfg)]
+    stats["corte_barato_f20"] = len(cheap_30d) - len(cheap)
+    _sort_for_deep_dive(cheap, str(col.get("deep_sort_by", "roi_30d")))
+    deep_max = int(col["deep_dive_max"])
+    external_quota = int(col.get("external_dive_quota", 0) or 0)
+    base_deep = cheap[:deep_max]
 
     # v5: varredura ativa — adicionar endereços além do leaderboard
+    by_source: dict[str, list[str]] = {}
     if col.get("active_scan_enabled", False):
         try:
             active_addrs = client.active_addresses(
@@ -665,9 +820,7 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
             existing_addrs = {c.address for c in candidates}
             new_addrs = [a for a in active_addrs if a not in existing_addrs]
             stats["active_scan_novos"] = len(new_addrs)
-            # criar candidates vazios para os novos endereços (sem dados do leaderboard)
-            for addr in new_addrs[:int(col["deep_dive_max"]) - len(deep)]:
-                deep.append(Candidate(address=addr))
+            by_source["active_scan"] = _valid_addresses(new_addrs)
         except Exception as exc:  # noqa: BLE001
             if logger:
                 logger.warning("discovery.active_scan_failed",
@@ -675,19 +828,37 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
 
     # v8: fontes externas opcionais (Nansen/Apify) — só alimentam ENDEREÇOS;
     # métricas e filtros continuam 100% nossos (HL pública = fonte de verdade)
-    external_fn = getattr(client, "external_candidates", None)
-    if external_fn is not None and cfg.get("sources"):
-        try:
-            ext_addrs = external_fn(cfg["sources"])
-            existing_addrs = {c.address for c in candidates} | {c.address for c in deep}
-            new_ext = [a for a in ext_addrs if a not in existing_addrs]
-            stats["fontes_externas_novos"] = len(new_ext)
-            for addr in new_ext[:max(0, int(col["deep_dive_max"]) - len(deep))]:
-                deep.append(Candidate(address=addr))
-        except Exception as exc:  # noqa: BLE001
-            if logger:
-                logger.warning("discovery.external_sources_failed",
-                               {"error": str(exc)[:200]})
+    external_by_source = _external_candidates_by_source(client, cfg, logger, stats)
+    by_source.update(external_by_source)
+
+    existing_addrs = {c.address for c in candidates} | {c.address for c in base_deep}
+    source_for_addr: dict[str, str] = {}
+    source_candidates: list[Candidate] = []
+    for source, addresses in by_source.items():
+        selected_for_source = 0
+        for addr in addresses:
+            if addr in existing_addrs:
+                continue
+            existing_addrs.add(addr)
+            source_for_addr[addr] = source
+            source_candidates.append(Candidate(address=addr))
+            selected_for_source += 1
+        if source == "active_scan":
+            stats["active_scan_novos"] = stats.get("active_scan_novos", selected_for_source)
+
+    stats["fontes_externas_novos"] = len(source_candidates)
+    selected_external = source_candidates[:external_quota]
+    stats["fontes_externas_aprofundados"] = len(selected_external)
+    stats["hypertracker_aprofundados"] = sum(
+        1 for c in selected_external if source_for_addr.get(c.address) == "hypertracker")
+    stats["active_scan_aprofundados"] = sum(
+        1 for c in selected_external if source_for_addr.get(c.address) == "active_scan")
+    quota_left = max(0, external_quota - len(selected_external))
+    fallback = cheap[deep_max:deep_max + quota_left]
+    stats["fallback_leaderboard_extra"] = len(fallback)
+    deep = _interleave_after(base_deep, selected_external,
+                             int(col.get("external_interleave_after", 100))) + fallback
+    stats["aprofundados"] = len(deep)
 
     # coorte de controle: perdedores consistentes (espelho invertido, barato)
     rekt = [c for c in candidates
@@ -695,7 +866,10 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     rekt = rekt[: int(col["rekt_sample"])]
     stats["rekt_sample"] = len(rekt)
 
-    liquid = client.liquid_assets(int(cfg["hard_filters"]["f8_liquid_assets_top_n"]))
+    f8_share = cfg["hard_filters"].get("f8_min_liquid_volume_share")
+    f8_top_n = cfg["hard_filters"].get("f8_liquid_assets_top_n")
+    liquid = client.liquid_assets(int(f8_top_n)) if f8_share is not None and \
+        f8_top_n is not None else set()
 
     approved: list[Candidate] = []
     rejected: list[Candidate] = []
@@ -707,6 +881,7 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
             f1_reason = precheck_activity(c, client, cfg, now_ms)
             if f1_reason:
                 c.reject_reason = f1_reason
+                c.reject_reasons = [f1_reason]
                 rejected.append(c)
                 stats["reprovados_F1"] = stats.get("reprovados_F1", 0) + 1
                 continue
@@ -728,10 +903,13 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
             c.reject_reason = (f"entrada: janelas {c.windows_positive} "
                                f"({required} obrigatória(s), mín. "
                                f"{cfg['entry_rule']['min_positive_windows']}/4)")
+            c.reject_reasons = [c.reject_reason]
             rejected.append(c)
             stats["reprovados_entrada"] = stats.get("reprovados_entrada", 0) + 1
             continue
-        reason = hard_filters(c, cfg, now_ms)
+        reasons = hard_filters_all(c, cfg, now_ms)
+        c.reject_reasons = reasons
+        reason = reasons[0] if reasons else None
         if reason:
             c.reject_reason = reason
             rejected.append(c)
@@ -745,6 +923,7 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
         min_score = float(cfg.get("score_adjustments", {}).get("min_score_for_suggestion", 0))
         if min_score > 0 and c.score < min_score:
             c.reject_reason = f"score {c.score:.1f} < mínimo {min_score:.0f}"
+            c.reject_reasons = [c.reject_reason]
             rejected.append(c)
             stats["reprovados_score_min"] = stats.get("reprovados_score_min", 0) + 1
             continue
@@ -762,6 +941,7 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
                     f"copy_sim_negativa: replay {stage4.get('window_days', 60)}d "
                     f"com US$ {cfg['hard_filters']['f11_mirror_capital_usd']:.0f} "
                     f"→ net US$ {c.sim_stage4_net_usd:.2f} (score {c.score:.1f})")
+                c.reject_reasons = [c.reject_reason]
                 rejected.append(c)
                 stats["rebaixados_copy_sim"] = stats.get("rebaixados_copy_sim", 0) + 1
                 continue
@@ -914,9 +1094,32 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
                 })
 
 
+def _near_miss_rows(result: ScanResult, limit: int = 15) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for c in result.rejected:
+        reasons = c.reject_reasons or ([c.reject_reason] if c.reject_reason else [])
+        if len(reasons) != 1:
+            continue
+        reason = reasons[0]
+        rows.append({
+            "address": c.address,
+            "reason": reason,
+            "config_key": _filter_key(reason),
+            "score": c.score,
+            "sim_stage4_net_usd": c.sim_stage4_net_usd,
+            "equity": c.equity,
+        })
+    rows.sort(key=lambda r: (
+        -(r["sim_stage4_net_usd"] if r["sim_stage4_net_usd"] is not None else -1e12),
+        -(r["score"] or 0),
+    ))
+    return rows[:limit]
+
+
 def render_report(result: ScanResult, cfg: dict[str, Any]) -> tuple[str, str]:
     """(json_str, markdown) — top 10 com justificativa + estatísticas do funil."""
     top = result.approved[:10]
+    near_miss = _near_miss_rows(result)
     payload = {
         "scan_id": result.scan_id,
         "logic_version": cfg["logic_version"],
@@ -941,6 +1144,7 @@ def render_report(result: ScanResult, cfg: dict[str, Any]) -> tuple[str, str]:
             "rationale": c.rationale,
         } for i, c in enumerate(top)],
         "rejected_reasons": {c.address: c.reject_reason for c in result.rejected},
+        "near_miss": near_miss,
     }
     lines = [
         f"# Discovery v{cfg['logic_version']} — varredura {result.scan_id}",
@@ -961,5 +1165,23 @@ def render_report(result: ScanResult, cfg: dict[str, Any]) -> tuple[str, str]:
     for i, c in enumerate(top, 1):
         lines.append(f"### {i}. `{c.address}` — {c.score}")
         lines.extend(f"- {r}" for r in c.rationale)
+        lines.append("")
+    if near_miss:
+        lines.extend([
+            "## Near-miss — reprovados por exatamente 1 filtro",
+            "",
+            "| Endereço | Filtro | Chave YAML | Score | Net sim | Equity |",
+            "|---|---|---|---|---|---|",
+        ])
+        for row in near_miss:
+            sim = row["sim_stage4_net_usd"]
+            lines.append(
+                f"| `{row['address']}` | {row['reason']} | `{row['config_key'] or 'n/d'}` | "
+                f"{row['score']:.1f} | "
+                f"{sim:.2f}" if sim is not None else
+                f"| `{row['address']}` | {row['reason']} | `{row['config_key'] or 'n/d'}` | "
+                f"{row['score']:.1f} | n/d"
+            )
+            lines[-1] += f" | {row['equity']:.0f} |"
         lines.append("")
     return json.dumps(payload, ensure_ascii=False, indent=2, default=str), "\n".join(lines)

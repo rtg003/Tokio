@@ -8,15 +8,19 @@
 # porquê, evidência, efeito de mudar): docs/discovery_logic_v9.md.
 # tests/test_docs_coverage.py QUEBRA se uma chave nova não estiver lá.
 # ============================================================================
-logic_version: 10
+logic_version: 11
 
 collection:
   leaderboard_top_n: 5000           # v6: era 500 (leaderboard tem 40k+ rows; 500 pegava só baleias)
-  deep_dive_max: 150              # v5: era 100 (orçamento permite, era o limitante real)
-  request_budget: 1100            # v5: era 800 (150 candidatos × ~7 req = 1050)
-  min_equity_usd: 2000            # v4: era 5000 (traders pequenos/médios podem ter edge melhor)
+  deep_dive_max: 300              # v11: abre o funil; ajuste fino pelo Hermes
+  external_dive_quota: 60         # v11: vagas extras reservadas a fontes externas, com fallback p/ leaderboard
+  external_interleave_after: 100  # v11: insere externos cedo na fila para não morrerem por orçamento
+  request_budget: 2800            # v11: 300×~7 + quota externa + margem
+  min_request_interval_s: 1.3     # v11: throttle HTTP ajustável pelo Hermes
+  min_equity_usd: 1000            # v11: alinhado ao piso F20; corte barato usa equity aproximada do leaderboard
   # v6: coleta prioriza por PnL 7d (atividade recente), não PnL all-time
   sort_by: "pnl_7d"               # v6: ordena coleta por PnL 7d (desc) em vez de all-time
+  deep_sort_by: "roi_30d"         # v11: roi_30d | pnl_7d | equity_asc
   # prioridade do aprofundamento: ROI 30d (desc) — PnL absoluto puro só traz
   # mega-baleias holders, que reprovam em F1/F2 (validação de 2026-07-03)
   fills_window_days: 60           # janela baixada de fills (paginada)
@@ -25,7 +29,7 @@ collection:
   rekt_sample: 20                 # tamanho da coorte de controle
   positioning_sample: 15          # wallets por coorte p/ snapshot de posicionamento
   # v5: varredura ativa além do leaderboard — busca endereços com fills recentes
-  active_scan_enabled: true       # coleta endereços via fills públicos recentes
+  active_scan_enabled: false      # v11: stub alfabético; HyperTracker + fallback assumem expansão real
   active_scan_window_hours: 48    # janela de varredura ativa (48h = fim de semana + dia útil)
   active_scan_max_addresses: 200  # limite de endereços novos por varredura
   active_scan_min_notional_usd: 1000  # ignora fills poeira
@@ -62,9 +66,8 @@ entry_rule:
 hard_filters:                     # F1–F20 (binários, ordem de custo; null = desabilitado)
   f1_recent_activity_days: 7      # v10: voltou para 7 (era 21 na v9 — 21 deixava passar traders parados há 3 semanas)
   f2_min_closed_trades: 15        # v9: era 30 — amostra mínima p/ a SIMULAÇÃO ter significado
-  f2_min_history_days: 60
   f2b_min_trades_30d: 3           # v9: era 5 — idem f2 (a simulação decide)
-  f2c_min_trades_7d: 5            # v10: NOVO — trader sem 5 trades fechados nos últimos 7d = inativo
+  f2c_min_trades_7d: 2            # v11: swing traders de 2-4 closes/semana voltam ao funil
   # F3 desabilitado na v3 (scan b684b8bbe5f5: 34/100 reprovados) — scalper é
   # penalizado pelo score de copiabilidade, não eliminado.
   f3_min_avg_holding_hours: null
@@ -89,9 +92,12 @@ hard_filters:                     # F1–F20 (binários, ordem de custo; null = 
   f12_min_available_margin_pct: null    # v7: desabilitado pós-scan 407e8caa996f (7/150 reprovados; 0 aprovados)
   f13_min_liq_distance_pct: 15.0       # distância min à liquidação, medida do MARK price
   f8_min_liquid_volume_share: 0.80
-  f8_liquid_assets_top_n: 25      # top N por volume 24h vira a lista de líquidos
+  f8_liquid_assets_top_n: 40      # v11: F8 era gargalo calibrável; mantém share mínimo em 80%
   f9_mm_max_trades_per_day: 200.0
   f9_mm_max_pnl_over_volume: 0.0001
+  f9_mm_min_tpd_for_pnl_vol: 50.0
+  f9_mm_max_neutral_exposure: 0.02
+  f9_mm_min_tpd_for_neutral: 20.0
   f10_max_deposit_growth_share: 0.50   # crescimento de equity vindo de aporte
   f11_min_mirror_notional_usd: 10.0
   f11_mirror_capital_usd: 1000.0       # capital configurado p/ estimar a cópia
@@ -107,7 +113,8 @@ hard_filters:                     # F1–F20 (binários, ordem de custo; null = 
   f17_min_sim_net_usd: 10.0            # cópia precisa RENDER > $10 na janela (quintil top: +71 fora da amostra)
   f18_sim_positive_halves: true        # edge nas 2 metades da janela (mata sortudo de uma perna)
   f19_max_sim_dd_pct: 25.0             # DD máximo da CURVA DA CÓPIA (perdedores tinham 56-75% já visível)
-  f20_max_trader_equity_usd: 50000     # v10: era 150k — análise: $50k é o sweet spot para cópia com $1k (ratio 0.02x, notional ~$15-50, acima do mínimo $10); traders com $50-150k geram cópias de $3-10 (limite) e slippage proporcional maior
+  f20_min_trader_equity_usd: 1000      # v11: piso testável; null remove o piso
+  f20_max_trader_equity_usd: 100000    # v11: teto testável; F11 continua medindo executabilidade real
 
 # v8/v9: SIMULAÇÃO DE CÓPIA — replay dos fills com nosso sizing, taxas taker,
 # custo de latência e TETO DE ALAVANCAGEM. v9: o RANKING FINAL é o net desta

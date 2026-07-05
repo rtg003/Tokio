@@ -35,18 +35,22 @@ flowchart LR
 
 | Chave | Significado | Valor | Por quê | Evidência/efeito |
 |---|---|---|---|---|
-| `logic_version` | versão da lógica de discovery que produziu as métricas | 10 | bump após laboratório offline e correção do modelo de cópia | go/no-go v9: medianas +54/+368/+336 nos 3 cortes válidos |
+| `logic_version` | versão da lógica de discovery que produziu as métricas | 11 | v11 abre o funil e expõe flexibilidade fina ao Hermes sem afrouxar F16-F19 | scan v10 real: 5000 → 150 → 1 aprovado; lab: aprovação ~1-2% do pool |
 | `collection.leaderboard_top_n` | parâmetro de coleta/custo do scan | 5000 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
-| `collection.deep_dive_max` | parâmetro de coleta/custo do scan | 150 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
-| `collection.request_budget` | parâmetro de coleta/custo do scan | 1100 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
-| `collection.min_equity_usd` | parâmetro de coleta/custo do scan | 2000 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
+| `collection.deep_dive_max` | vagas principais do leaderboard no deep dive | 300 | v11 dobra o funil de entrada; Hermes pode ajustar volume | taxa histórica ~1-2%; 300 + quota externa deve trazer ~3-7 sugestões |
+| `collection.external_dive_quota` | vagas extras reservadas a fontes externas | 60 | HyperTracker deixa de ser descartado quando o leaderboard enche o deep dive | corrige bug de starvation: antes slice `[:0]` descartava externos |
+| `collection.external_interleave_after` | posição em que fontes externas entram na fila | 100 | fontes externas entram cedo o bastante para não morrerem por orçamento | se orçamento estourar, HyperTracker ainda foi testado |
+| `collection.request_budget` | orçamento máximo de requests por scan | 2800 | cobre 300×~7 + quota externa + margem | scan frio estimado ~18-25 min com throttle 1.3s |
+| `collection.min_request_interval_s` | intervalo mínimo entre requests HTTP | 1.3s | throttle ajustável pelo Hermes ao ampliar/reduzir scans | antes hardcoded no HLDataClient |
+| `collection.min_equity_usd` | piso barato de equity no leaderboard | 1000 | alinhado ao piso F20; evita matar antes o que a banda aceita | F20 usa clearinghouse real depois do deep dive |
 | `collection.sort_by` | parâmetro de coleta/custo do scan | pnl_7d | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
+| `collection.deep_sort_by` | ordenação dos candidatos que entram no deep dive | roi_30d | Hermes pode mudar o perfil do funil (`roi_30d`, `pnl_7d`, `equity_asc`) | equity_log foi o preditor mais forte do lab (ρ -0.227) |
 | `collection.fills_window_days` | parâmetro de coleta/custo do scan | 60 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.fills_max_pages` | parâmetro de coleta/custo do scan | 4 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.cache_ttl_hours` | parâmetro de coleta/custo do scan | 20 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.rekt_sample` | parâmetro de coleta/custo do scan | 20 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.positioning_sample` | parâmetro de coleta/custo do scan | 15 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
-| `collection.active_scan_enabled` | parâmetro de coleta/custo do scan | true | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
+| `collection.active_scan_enabled` | ligar varredura ativa legada | false | v11 desliga por padrão: implementação atual é stub alfabético | HyperTracker + fallback substituem expansão real nesta versão |
 | `collection.active_scan_window_hours` | parâmetro de coleta/custo do scan | 48 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.active_scan_max_addresses` | parâmetro de coleta/custo do scan | 200 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.active_scan_min_notional_usd` | parâmetro de coleta/custo do scan | 1000 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
@@ -65,9 +69,8 @@ flowchart LR
 | `entry_rule.required_windows` | janelas obrigatórias de PnL positivo | nenhuma | desativado; a entrada agora é por simulação da cópia | v9: F16-F19 substituem regra de entrada |
 | `hard_filters.f1_recent_activity_days` | atividade recente máxima para não considerar abandonado | 7 dias | v10: voltou para 7 (era 21 na v9 — 21 deixava passar traders parados há 3 semanas) | h11/h12: afrouxar atividade aumentou pool sem quebrar direção |
 | `hard_filters.f2_min_closed_trades` | amostra mínima de trades fechados | 15 trades | amostra suficiente para simulação sem matar demais o pool | lab: F2=30 matava candidatos antes do ranking |
-| `hard_filters.f2_min_history_days` | filtro binário do funil | 60 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f2b_min_trades_30d` | atividade mínima nos 30d | 3 trades | mantém sinal recente mínimo | lab: simulação decide a qualidade |
-| `hard_filters.f2c_min_trades_7d` | atividade mínima nos 7d | 5 trades | v10: trader sem 5 trades fechados nos últimos 7d = inativo, não tem o que copiar AGORA | corta trader que passou F1 mas está parado nesta semana |
+| `hard_filters.f2c_min_trades_7d` | atividade mínima nos 7d | 2 trades | v11 deixa swing traders de 2-4 closes/semana entrarem no funil | F1 ainda mata wallet parada; sweet spot começa em 0.3 trades/dia |
 | `hard_filters.f3_min_avg_holding_hours` | filtro binário do funil | null | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f3_max_trades_per_day` | filtro binário do funil | null | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f4_min_twrr_30d_pct` | filtro binário do funil | null | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
@@ -79,9 +82,12 @@ flowchart LR
 | `hard_filters.f12_min_available_margin_pct` | filtro binário do funil | null | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f13_min_liq_distance_pct` | filtro binário do funil | 15.0 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f8_min_liquid_volume_share` | filtro binário do funil | 0.8 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
-| `hard_filters.f8_liquid_assets_top_n` | filtro binário do funil | 25 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
+| `hard_filters.f8_liquid_assets_top_n` | top N ativos por volume 24h considerados líquidos | 40 | F8 era gargalo calibrável; amplia universo sem remover share mínimo | diagnóstico 2026-07-04 recomendou 25→40 |
 | `hard_filters.f9_mm_max_trades_per_day` | filtro binário do funil | 200.0 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f9_mm_max_pnl_over_volume` | filtro binário do funil | 0.0001 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
+| `hard_filters.f9_mm_min_tpd_for_pnl_vol` | mínimo de trades/dia para regra PnL/volume do F9 | 50.0 | v11 expõe parâmetro antes hardcoded | permite ao Hermes calibrar anti-MM sem código |
+| `hard_filters.f9_mm_max_neutral_exposure` | exposição líquida máxima para classificar delta-neutro | 0.02 | v11 expõe parâmetro antes hardcoded | permite ao Hermes calibrar anti-arb/vault |
+| `hard_filters.f9_mm_min_tpd_for_neutral` | mínimo de trades/dia para regra delta-neutra | 20.0 | v11 expõe parâmetro antes hardcoded | permite ajuste fino de perfis neutros |
 | `hard_filters.f10_max_deposit_growth_share` | filtro binário do funil | 0.5 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f11_min_mirror_notional_usd` | filtro binário do funil | 10.0 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
 | `hard_filters.f11_mirror_capital_usd` | filtro binário do funil | 1000.0 | regra herdada/versionada; null desativa sem apagar código | evidência histórica no changelog v2-v8; não é foco novo v9 |
@@ -91,7 +97,8 @@ flowchart LR
 | `hard_filters.f17_min_sim_net_usd` | lucro líquido mínimo da cópia simulada | $10 | a cópia precisa pagar mais que ruído/custos | quintil superior de sim A: mediana +$71 em B |
 | `hard_filters.f18_sim_positive_halves` | exigir edge nas metades da janela | true | mata sortudo de uma perna só | corte 2: mediana foi de -$94 para +$770 |
 | `hard_filters.f19_max_sim_dd_pct` | drawdown máximo da curva da cópia simulada | 25% | risco que importa é o da cópia | perdedores tinham DD 56–75% já visível em A |
-| `hard_filters.f20_max_trader_equity_usd` | teto de equity do trader para copiar com $1k | $50k | v10: era $150k — $50k é o sweet spot para cópia com $1k (ratio 0.02x, notional ~$15-50, acima do mínimo $10); traders com $50-150k geram cópias de $3-10 e slippage proporcional maior | maior preditor: Spearman equity_log -0.227 |
+| `hard_filters.f20_min_trader_equity_usd` | piso de equity real do trader | $1k | v11 transforma F20 em banda testável pelo Hermes | `null` remove o piso; alinhar com `collection.min_equity_usd` |
+| `hard_filters.f20_max_trader_equity_usd` | teto de equity real do trader | $100k | devolve pool sem reabrir baleias; F11 mede executabilidade real | lab validou $150k; $100k é meio-termo operacional |
 | `copy_simulation.window_days` | janela de replay da cópia | 60 dias | usa histórico cheio de fills; metades de 30d | h13/h15: duas metades foram preditivas |
 | `copy_simulation.latency_slippage_pct` | custo estimado de latência por perna | 0.03% | modelo simples para 200ms–2s sem tick data | laboratório desconta esse custo em todo replay |
 | `copy_simulation.max_copy_leverage` | teto de alavancagem da nossa cópia | 3x | equilíbrio entre executabilidade e sobrevivência | corrige top 1: fill virava 128x sem teto |

@@ -13,17 +13,20 @@ config/discovery_config.yaml.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from engine.core.config import get_settings
 from engine.core.db import Database
 from engine.core.logger import EventLogger
 from engine.strategies.copy_trade import funnel
-from engine.strategies.copy_trade.hl_data import HLDataClient
+from engine.strategies.copy_trade.hl_data import HLDataClient, RequestBudgetExceeded
 
 
 def _db() -> Database:
@@ -35,6 +38,14 @@ def _db() -> Database:
 def _client(db: Database, cfg: dict[str, Any]) -> HLDataClient:
     col = cfg["collection"]
     return HLDataClient(db, request_budget=int(col["request_budget"]),
+                        min_interval_s=float(col.get("min_request_interval_s", 1.3)),
+                        cache_ttl_hours=float(col["cache_ttl_hours"]))
+
+
+def _replay_client(db: Database, cfg: dict[str, Any]) -> HLDataClient:
+    col = cfg["collection"]
+    return HLDataClient(db, request_budget=0,
+                        min_interval_s=float(col.get("min_request_interval_s", 1.3)),
                         cache_ttl_hours=float(col["cache_ttl_hours"]))
 
 
@@ -56,6 +67,42 @@ def emit_logic_updated_if_needed(db: Database, logger: EventLogger,
             "spec": "docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md",
             "changelog": "docs/discovery_changelog.md",
         })
+
+
+def _apply_override(cfg: dict[str, Any], assignment: str) -> None:
+    if "=" not in assignment:
+        raise ValueError(f"override inválido (esperado chave=valor): {assignment}")
+    path, raw = assignment.split("=", 1)
+    keys = [p for p in path.split(".") if p]
+    if not keys:
+        raise ValueError(f"override sem chave: {assignment}")
+    node: dict[str, Any] = cfg
+    for key in keys[:-1]:
+        nxt = node.get(key)
+        if not isinstance(nxt, dict):
+            raise KeyError(f"caminho inexistente em override: {path}")
+        node = nxt
+    if keys[-1] not in node:
+        raise KeyError(f"chave inexistente em override: {path}")
+    node[keys[-1]] = yaml.safe_load(raw)
+
+
+def _latest_scan_stats() -> dict[str, int]:
+    files = sorted(reports_dir().glob("scan-*.json"))
+    if not files:
+        return {}
+    payload = json.loads(files[-1].read_text())
+    return dict(payload.get("funnel_stats") or {})
+
+
+def _stats_diff(before: dict[str, int], after: dict[str, int]) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for key in sorted(set(before) | set(after)):
+        b = int(before.get(key, 0) or 0)
+        a = int(after.get(key, 0) or 0)
+        if a != b:
+            out[key] = {"last_scan": b, "replay": a, "delta": a - b}
+    return out
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
@@ -91,6 +138,52 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay(args: argparse.Namespace) -> int:
+    """What-if sobre o cache do último scan: não persiste traders nem emite eventos."""
+    cfg = copy.deepcopy(funnel.load_config())
+    overrides = list(getattr(args, "sets", []) or [])
+    for assignment in overrides:
+        _apply_override(cfg, assignment)
+
+    db = _db()
+    client = _replay_client(db, cfg)
+    before = _latest_scan_stats()
+    try:
+        result = funnel.run_scan(client, db, cfg)
+    except RequestBudgetExceeded as exc:
+        print(
+            "replay abortado: cache incompleto para rodar sem rede/API. "
+            "Rode um discovery scan real primeiro ou aguarde cache quente. "
+            f"Detalhe: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    js, md = funnel.render_report(result, cfg)
+    diff = _stats_diff(before, result.funnel_stats)
+    payload = json.loads(js)
+    payload["replay"] = True
+    payload["overrides"] = overrides
+    payload["funnel_stats_diff"] = diff
+    js = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+
+    md += "\n\n## Replay — diff vs último scan real\n\n"
+    md += f"Overrides: `{', '.join(overrides) if overrides else 'nenhum'}`\n\n"
+    if diff:
+        md += "| Métrica | Último scan | Replay | Delta |\n|---|---:|---:|---:|\n"
+        for key, vals in diff.items():
+            md += f"| {key} | {vals['last_scan']} | {vals['replay']} | {vals['delta']:+d} |\n"
+    else:
+        md += "Sem diferenças de funnel_stats.\n"
+
+    stamp = time.strftime("%Y-%m-%d-%H%M")
+    out = reports_dir()
+    (out / f"replay-{stamp}-{result.scan_id}.json").write_text(js)
+    (out / f"replay-{stamp}-{result.scan_id}.md").write_text(md)
+    print(md)
+    return 0
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Dossiê completo de um endereço (fora do leaderboard inclusive).
 
@@ -111,7 +204,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     month = funnel._series(portfolio, "month", "pnlHistory")
     c.windows_pnl["7d"] = (week[-1][1] - week[0][1]) if len(week) >= 2 else 0.0
     c.windows_pnl["30d"] = (month[-1][1] - month[0][1]) if len(month) >= 2 else 0.0
-    liquid = client.liquid_assets(int(cfg["hard_filters"]["f8_liquid_assets_top_n"]))
+    hf = cfg["hard_filters"]
+    liquid = client.liquid_assets(int(hf["f8_liquid_assets_top_n"])) if \
+        hf.get("f8_min_liquid_volume_share") is not None and \
+        hf.get("f8_liquid_assets_top_n") is not None else set()
     funnel.deep_dive(c, client, cfg, liquid)
     funnel.entry_rule_ok(c, cfg)
     reject = funnel.hard_filters(c, cfg)
@@ -275,6 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--no-db", action="store_true")
     scan.add_argument("--reason", default="cli_manual")
     scan.set_defaults(func=cmd_scan)
+
+    replay = sub.add_parser("replay")
+    replay.add_argument("--set", dest="sets", action="append", default=[],
+                        help="override YAML por caminho pontilhado, ex: hard_filters.f2c_min_trades_7d=5")
+    replay.set_defaults(func=cmd_replay)
 
     insp = sub.add_parser("inspect")
     insp.add_argument("address")

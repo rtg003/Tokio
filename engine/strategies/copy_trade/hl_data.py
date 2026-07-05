@@ -207,41 +207,63 @@ class HLDataClient:
     # v8: fontes EXTERNAS opcionais — só alimentam endereços candidatos.
     # HL pública continua a fonte de verdade das métricas; nada aqui é
     # dependência dura (sem chave/flag → lista vazia, sem erro).
-    def external_candidates(self, sources_cfg: dict[str, Any]) -> list[str]:
+    def external_candidates_by_source(self, sources_cfg: dict[str, Any]) -> dict[str, list[str]]:
         import os
 
-        addresses: list[str] = []
+        by_source: dict[str, list[str]] = {}
+
+        def dedup(addresses: list[str]) -> list[str]:
+            seen: set[str] = set()
+            out: list[str] = []
+            for a in addresses:
+                a = a.lower()
+                if a.startswith("0x") and len(a) == 42 and a not in seen:
+                    seen.add(a)
+                    out.append(a)
+            return out
+
         # v9: HyperTracker ON — lab mediu +274 endereços exclusivos (+53% de
         # pool) com qualidade fora da amostra igual/melhor (RESULTADOS.md §6)
         ht = sources_cfg.get("hypertracker") or {}
         if ht.get("enabled"):
             key = os.environ.get(str(ht.get("api_key_env", "HYPERTRACKER_API_KEY")), "")
             if key:
-                addresses += self._hypertracker_leaderboard(
-                    key, max_addresses=int(ht.get("max_addresses", 300)))
+                by_source["hypertracker"] = dedup(self._hypertracker_leaderboard(
+                    key, max_addresses=int(ht.get("max_addresses", 300))))
+            else:
+                by_source["hypertracker"] = []
         nansen = sources_cfg.get("nansen_leaderboard") or {}
         if nansen.get("enabled"):
             key = os.environ.get(str(nansen.get("api_key_env", "NANSEN_API_KEY")), "")
             if key:
-                addresses += self._nansen_leaderboard(
+                by_source["nansen_leaderboard"] = dedup(self._nansen_leaderboard(
                     key, max_addresses=int(nansen.get("max_addresses", 100)),
-                    window_days=int(nansen.get("window_days", 30)))
+                    window_days=int(nansen.get("window_days", 30))))
+            else:
+                by_source["nansen_leaderboard"] = []
         apify = sources_cfg.get("apify_hl_scraper") or {}
         if apify.get("enabled"):
             token = os.environ.get(str(apify.get("api_key_env", "APIFY_TOKEN")), "")
             actor = apify.get("actor")
             if token and actor:
-                addresses += self._apify_scraper(
+                by_source["apify_hl_scraper"] = dedup(self._apify_scraper(
                     token, str(actor),
-                    max_addresses=int(apify.get("max_addresses", 100)))
+                    max_addresses=int(apify.get("max_addresses", 100))))
+            else:
+                by_source["apify_hl_scraper"] = []
+        return by_source
+
+    def external_candidates(self, sources_cfg: dict[str, Any]) -> list[str]:
+        by_source = self.external_candidates_by_source(sources_cfg)
         # dedup preservando ordem
         seen: set[str] = set()
         out: list[str] = []
-        for a in addresses:
-            a = a.lower()
-            if a.startswith("0x") and len(a) == 42 and a not in seen:
-                seen.add(a)
-                out.append(a)
+        for addresses in by_source.values():
+            for a in addresses:
+                a = a.lower()
+                if a.startswith("0x") and len(a) == 42 and a not in seen:
+                    seen.add(a)
+                    out.append(a)
         return out
 
     def _hypertracker_leaderboard(self, api_key: str, *,

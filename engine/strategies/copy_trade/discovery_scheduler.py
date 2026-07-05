@@ -69,6 +69,7 @@ def run_scan(db: Database, logger: EventLogger, *, reason: str) -> bool:
                     {"reason": reason, "logic_version": cfg["logic_version"]})
         col = cfg["collection"]
         client = HLDataClient(db, request_budget=int(col["request_budget"]),
+                              min_interval_s=float(col.get("min_request_interval_s", 1.3)),
                               cache_ttl_hours=float(col["cache_ttl_hours"]))
         result = funnel.run_scan(client, db, cfg, logger=logger)
         funnel.persist_scan(db, result, cfg, client=client, logger=logger)

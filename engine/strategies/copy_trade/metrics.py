@@ -411,14 +411,20 @@ def copy_sim_factor(net_pnl_usd: float, mirror_capital: float,
 # --- Anti-MM / vault / arb ---------------------------------------------------
 def looks_like_mm(trades_per_day: float, pnl_over_volume: float,
                   avg_abs_net_exposure_share: float,
-                  *, max_tpd: float = 200.0, max_pnl_vol: float = 0.0001,
-                  max_neutral_exposure: float = 0.02) -> bool:
+                  *, max_tpd: float | None = 200.0,
+                  max_pnl_vol: float | None = 0.0001,
+                  min_tpd_for_pnl_vol: float | None = 50.0,
+                  max_neutral_exposure: float | None = 0.02,
+                  min_tpd_for_neutral: float | None = 20.0) -> bool:
     """F9: market maker / arb / delta-neutro persistente."""
-    if trades_per_day > max_tpd:
+    if max_tpd is not None and trades_per_day > max_tpd:
         return True
-    if abs(pnl_over_volume) < max_pnl_vol and trades_per_day > 50:
+    if max_pnl_vol is not None and min_tpd_for_pnl_vol is not None and \
+            abs(pnl_over_volume) < max_pnl_vol and trades_per_day > min_tpd_for_pnl_vol:
         return True
-    if avg_abs_net_exposure_share < max_neutral_exposure and trades_per_day > 20:
+    if max_neutral_exposure is not None and min_tpd_for_neutral is not None and \
+            avg_abs_net_exposure_share < max_neutral_exposure and \
+            trades_per_day > min_tpd_for_neutral:
         return True
     return False
 

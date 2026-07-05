@@ -772,3 +772,102 @@ outros módulos legados; copy trade passa a ser controlado pelo status do trader
 - Filtro ambiente/trader na dashboard altera KPIs, ordens e trades.
 - Sem credenciais mainnet, combobox `MAINNET` recusa com
   `mainnet_nao_configurado`.
+
+---
+
+## UPDATE-0013 · 2026-07-05 · Status: PENDENTE
+
+Origem: Cursor — Discovery v11 (funil aberto, HyperTracker confiável e
+flexibilidade de calibração)
+
+Tipo: logica_discovery + operacao + skill
+
+Resumo: a logic_version 11 corrige o gargalo estrutural do discovery. O scan
+v10 validado trouxe 5000 coletados → 150 aprofundados → 1 aprovado; isso é
+compatível com a taxa de aprovação ~1–2% medida no laboratório. O problema
+real era entrada pequena e bug de fonte externa: HyperTracker estava ligado,
+mas seus endereços eram descartados quando `deep_dive_max` já estava cheio
+(`[:0]`). A v11 abre a ENTRADA, torna o HyperTracker observável e dá ao Hermes
+ajuste fino via YAML/replay, mantendo F16–F19 como régua de qualidade da cópia.
+
+### O que mudou
+
+1. **HyperTracker confiável**
+   - `collection.external_dive_quota: 60`: vagas extras reservadas a fontes
+     externas, somadas ao `deep_dive_max`.
+   - `collection.external_interleave_after: 100`: fontes externas entram cedo
+     na fila para não serem sempre sacrificadas se o orçamento estourar.
+   - Se HyperTracker/Nansen/Apify vierem vazios ou trouxerem poucos endereços,
+     a quota vira mais leaderboard via `fallback_leaderboard_extra`.
+   - `active_scan_enabled: false`: a implementação atual era stub alfabético
+     (leaderboard + conhecidos), não fonte real de atividade.
+
+2. **Novos números do funil**
+   - `deep_dive_max: 300`
+   - `request_budget: 2800`
+   - `min_equity_usd: 1000`
+   - F20 agora é banda: `f20_min_trader_equity_usd: 1000`,
+     `f20_max_trader_equity_usd: 100000`
+   - `f2c_min_trades_7d: 2`
+   - `f8_liquid_assets_top_n: 40`
+   - Expectativa: ~360 aprofundados/scan, 3–7 SUGERIDOs em condições normais,
+     scan frio ~18–25 min. Se aprovados >15, auditar antes de recomendar.
+
+3. **Flexibilidade nova para o Hermes**
+   - Todo hard filter F1–F20 aceita `null = desligado`.
+   - F9 ficou totalmente parametrizado no YAML:
+     `f9_mm_min_tpd_for_pnl_vol`, `f9_mm_max_neutral_exposure`,
+     `f9_mm_min_tpd_for_neutral`.
+   - `collection.deep_sort_by` permite mudar o perfil do deep dive:
+     `roi_30d`, `pnl_7d`, `equity_asc`.
+   - `collection.min_request_interval_s` controla o throttle HTTP.
+   - Regra operacional: pedido humano do tipo "quero perfis X" ou "mais/menos
+     opções" deve virar replay + proposta de YAML; mudança definitiva segue
+     protocolo com bump/changelog/doc.
+
+4. **Ferramentas novas**
+   - `python -m engine.strategies.copy_trade.discovery replay --set chave=valor`
+     roda what-if sobre cache quente, sem persistir traders e sem emitir evento
+     de scan.
+   - Exemplo:
+     `python -m engine.strategies.copy_trade.discovery replay --set hard_filters.f2c_min_trades_7d=5 --set hard_filters.f20_max_trader_equity_usd=150000`
+   - Relatórios agora têm seção NEAR-MISS: rejeitados por exatamente 1 filtro,
+     com a chave YAML que controla aquele corte.
+
+5. **Novas stats para briefing**
+   - `hypertracker_coletados`
+   - `hypertracker_aprofundados`
+   - `fontes_externas_aprofundados`
+   - `fallback_leaderboard_extra`
+   - `corte_barato_f20`
+
+### Ações do Hermes
+
+1. Atualizar `skill/SKILL.md` com logic_version 11, removendo a ideia de que
+   HyperTracker estava apenas "ON": agora ele tem quota, stats próprias e
+   fallback.
+2. Incorporar `docs/discovery_calibration_playbook.md` à skill/memória e aos
+   briefings: quando o humano pedir perfis específicos, usar o playbook para
+   escolher chaves e testar com `discovery replay --set`.
+3. Verificar na VPS se a chave existe sem logar segredo:
+   `echo ${HYPERTRACKER_API_KEY:+set}`.
+4. No primeiro scan v11, observar `hypertracker_aprofundados` e
+   `fallback_leaderboard_extra`. Se HyperTracker vier 0 com chave setada,
+   investigar API/chave antes de concluir que a fonte não tem candidatos.
+5. Atualizar briefing diário para citar as novas stats por fonte e destacar
+   NEAR-MISS quando houver concentração em um filtro.
+6. Nunca interpretar replay/near-miss como aprovação automática: Gate 2,
+   TESTNET/MAINNET, mainnet e caps continuam humanos e invioláveis;
+   `copy_pinned` segue protegido contra re-scan.
+
+### Validação esperada
+
+- `python -m engine.strategies.copy_trade.discovery scan --reason manual_v11`
+  registra `logic_updated` para v11 e produz funil com `aprofundados` perto de
+  360 quando há candidatos suficientes.
+- O relatório mostra as novas stats; se HyperTracker não contribuir, aparece
+  `fallback_leaderboard_extra`.
+- `python -m engine.strategies.copy_trade.discovery replay --set hard_filters.f2c_min_trades_7d=5`
+  roda sem persistir traders e escreve relatório `replay-*`.
+- `docs/discovery_calibration_playbook.md` está referenciado/absorvido pela
+  skill do Hermes.

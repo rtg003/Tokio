@@ -339,3 +339,74 @@ e) **n_trades_7d (NOVO)**: calculado no deep_dive, persistido na tabela.
 f) **Migration 0008**: ALTER TABLE traders ADD n_trades_7d, win_rate_30d.
 
 ### O que NÃO mudou: F2-F20 (exceto F1 e F20), simulação, score, entry_rule.
+
+## logic_version: 11 — funil aberto + fontes externas confiáveis + flexibilidade Hermes (2026-07-05)
+
+- **Autor**: Cursor (construtor), por diretiva humana explícita.
+- **Motivo**: o scan v10 validado em produção trouxe 5000 coletados → 150
+  aprofundados → 1 aprovado. A análise fria concluiu que esse resultado é
+  aritmético: o lab mostrou taxa de aprovação ~1–2%, então 150 deep dives
+  naturalmente produzem 1–3 sugestões. O erro real era de entrada: HyperTracker
+  estava ligado, mas seus endereços eram descartados quando o leaderboard já
+  preenchia `deep_dive_max` (`[:0]`), e o Hermes não tinha ferramenta what-if
+  nem `null = off` universal para calibrar perfis.
+
+### Mudanças:
+
+a) **HyperTracker confiável**:
+   - `external_dive_quota: 60` reserva vagas extras, somadas ao
+     `deep_dive_max`, para fontes externas.
+   - Fontes externas entram cedo na fila (`external_interleave_after: 100`) para
+     não serem sempre sacrificadas quando há estouro de orçamento.
+   - Se HyperTracker/Nansen/Apify vierem vazios ou com poucos endereços, a quota
+     não fica ociosa: o funil puxa mais candidatos do próprio leaderboard
+     (`fallback_leaderboard_extra`).
+   - Novas stats: `hypertracker_coletados`, `hypertracker_aprofundados`,
+     `fontes_externas_aprofundados`, `fallback_leaderboard_extra`.
+   - `active_scan_enabled: false` por default: a implementação atual é um stub
+     que retorna leaderboard + conhecidos em ordem alfabética; não era uma fonte
+     real de atividade.
+
+b) **Funil de entrada maior**:
+   - `deep_dive_max: 150 → 300`
+   - `request_budget: 1100 → 2800`
+   - expectativa: ~360 aprofundados/scan e ~3–7 SUGERIDOs, mantendo F16–F19.
+
+c) **F20 vira banda de equity configurável**:
+   - `f20_min_trader_equity_usd: 1000` (novo)
+   - `f20_max_trader_equity_usd: 50000 → 100000`
+   - `collection.min_equity_usd: 2000 → 1000` para não matar no corte barato
+     o que a banda F20 aceita.
+   - A banda é pré-aplicada no corte barato como economia de requests, e depois
+     confirmada com a equity real do clearinghouse.
+
+d) **Flexibilidade total para o Hermes**:
+   - todo hard filter F1–F20 aceita `null = off`;
+   - F9 ganhou parâmetros antes hardcoded no YAML:
+     `f9_mm_min_tpd_for_pnl_vol`, `f9_mm_max_neutral_exposure`,
+     `f9_mm_min_tpd_for_neutral`;
+   - `deep_sort_by` permite mudar o perfil que entra no deep dive
+     (`roi_30d`, `pnl_7d`, `equity_asc`);
+   - `min_request_interval_s` expõe o throttle HTTP.
+
+e) **Ajustes de thresholds**:
+   - `f2c_min_trades_7d: 5 → 2` para não rejeitar swing traders de 2–4 closes
+     por semana que estão dentro do sweet spot de copiabilidade.
+   - `f8_liquid_assets_top_n: 25 → 40`, alavanca calibrável apontada no
+     diagnóstico de 2026-07-04.
+   - `f2_min_history_days` removido: chave morta; F16 cobre a intenção.
+
+f) **Ferramentas de calibração**:
+   - `discovery replay --set chave=valor` roda what-if em cache, sem persistir
+     traders e sem emitir eventos de scan.
+   - relatório ganha seção NEAR-MISS com rejeitados por exatamente 1 filtro,
+     incluindo a chave YAML que controla o corte.
+   - novo `docs/discovery_calibration_playbook.md` orienta o Hermes por objetivo
+     operacional ("mais candidatos", "mais conservador", "swing/position",
+     "contas menores/maiores").
+
+### O que NÃO mudou:
+
+- F16–F19 e Estágio 4 mantêm os valores atuais: a régua de qualidade segue
+  sendo a simulação da cópia, com metades positivas e DD máximo da cópia.
+- Gate 2, promoção para TESTNET/MAINNET e caps continuam humanos e invioláveis.
