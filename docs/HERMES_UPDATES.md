@@ -1049,7 +1049,7 @@ atribuída e muitas ordens tinham `exchange_id NULL` — o JOIN por
 - `python -m pytest tests/test_gateway.py -q` verde.
 - Filtro de ambiente funciona em KPI, ordens e trades.
 
-## UPDATE-0017 · 2026-07-06 · Status: PENDENTE
+## UPDATE-0017 · 2026-07-06 · Status: APLICADO em 2026-07-06
 
 Origem: Cursor — arredondamento de size movido para o executor (float_to_wire)
 
