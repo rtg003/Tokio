@@ -46,6 +46,8 @@ class Position:
     entry_price: float
     unrealized_pnl: float = 0.0
     leverage: float | None = None
+    liquidation_px: float | None = None
+    position_value: float | None = None   # notional em USD (mark × |size|)
 
 
 FillCallback = Callable[[dict[str, Any]], None]

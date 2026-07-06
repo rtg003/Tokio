@@ -148,6 +148,8 @@ class HyperliquidAdapter(ExchangeAdapter):
                 entry_price=float(p.get("entryPx") or 0),
                 unrealized_pnl=float(p.get("unrealizedPnl") or 0),
                 leverage=float(p.get("leverage", {}).get("value") or 0) or None,
+                liquidation_px=float(p.get("liquidationPx") or 0) or None,
+                position_value=float(p.get("positionValue") or 0) or None,
             ))
         return out
 

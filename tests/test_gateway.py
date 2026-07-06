@@ -404,3 +404,29 @@ def test_circuit_breaker_auto_pauses_all(client, gateway_state, settings) -> Non
     rows = gateway_state.db.query(
         "SELECT id, status FROM strategies WHERE id IN ('dm_loss','dm_other')")
     assert all(r["status"] == "auto_paused" for r in rows)
+
+
+def test_api_positions_scoped_to_strategy_symbols(client, gateway_state) -> None:
+    """§5.1: /api/positions só mostra posições dos símbolos que o strategy_id
+    negocia — posição de outra estratégia (símbolo distinto) fica de fora."""
+    register_strategy(gateway_state.db, "ct_pos", module="copy_trade")
+    register_strategy(gateway_state.db, "dm_other")
+    r1 = client.post("/intent", json={
+        "strategy_id": "ct_pos", "symbol": "BTC", "side": "buy", "notional_usd": 100.0,
+    }).json()
+    assert r1["ok"] is True
+    r2 = client.post("/intent", json={
+        "strategy_id": "dm_other", "symbol": "ETH", "side": "buy", "notional_usd": 100.0,
+    }).json()
+    assert r2["ok"] is True
+
+    positions = client.get("/api/positions?strategy_id=ct_pos").json()
+    symbols = {p["symbol"] for p in positions}
+    assert "BTC" in symbols        # ct_pos negociou BTC
+    assert "ETH" not in symbols    # ETH é de outra estratégia (§5.1)
+    btc = next(p for p in positions if p["symbol"] == "BTC")
+    assert btc["network"] == "paper"
+
+
+def test_api_positions_requires_strategy_id(client) -> None:
+    assert client.get("/api/positions").status_code == 400

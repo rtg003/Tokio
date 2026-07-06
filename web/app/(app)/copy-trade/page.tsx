@@ -1,9 +1,9 @@
 import AutoRefresh from "@/components/AutoRefresh";
 import DashboardControls from "@/components/DashboardControls";
-import FillsTable from "@/components/copy-trade/FillsTable";
 import KpiRow from "@/components/copy-trade/KpiRow";
-import OrdersTable from "@/components/copy-trade/OrdersTable";
+import PositionsTable from "@/components/copy-trade/PositionsTable";
 import TradersTable from "@/components/copy-trade/TradersTable";
+import TradesOrdersTable from "@/components/copy-trade/TradesOrdersTable";
 import {
   accountOptions,
   environmentFromAccount,
@@ -14,6 +14,7 @@ import {
   getFillsSummary,
   getMetrics,
   getOrders,
+  getPositions,
   getTraders,
   traderOptions,
 } from "@/lib/copy-trade/data";
@@ -107,11 +108,12 @@ export default async function CopyTradeDashboard({
   const network = selectedEnv === "all" ? null : selectedEnv;
   const balanceEnv = selectedEnv === "all" ? null : selectedEnv;
   const balance = await getBalance(balanceEnv);
-  const [metrics, fillsSummary, orders, fills] = await Promise.all([
+  const [metrics, fillsSummary, orders, fills, positions] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
     getFillsSummary(ledgerStrategyIds, sinceTs, untilTs, network),
     getOrders(ledgerStrategyIds, sinceTs, untilTs, network),
     getFills(ledgerStrategyIds, sinceTs, untilTs, network),
+    getPositions(ledgerStrategyIds, network),
   ]);
   const traderFilterOptions = traderOptions(allTraders);
 
@@ -141,9 +143,9 @@ export default async function CopyTradeDashboard({
         periodLabel={PERIOD_LABEL[period]}
         envFiltered={selectedEnv !== "all"}
       />
+      <PositionsTable positions={positions} />
+      <TradesOrdersTable orders={orders} fills={fills} />
       <TradersTable traders={filteredTraders} expanded={expanded} toggleHref={toggleHref} />
-      <OrdersTable orders={orders} />
-      <FillsTable fills={fills} />
     </section>
   );
 }

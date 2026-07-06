@@ -817,6 +817,54 @@ def build_app(state: GatewayState) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"orders: {str(exc)[:200]}")
 
+    _positions_cache: dict[str, dict[str, Any]] = {}
+
+    @app.get("/api/positions")
+    def api_positions(
+        strategy_id: str | None = None,
+        network: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Posições abertas no clearinghouse do ambiente, ESCOPADAS aos símbolos
+        que o módulo negocia (ADR 0010 §5.1).
+
+        A venue não atribui posição por strategy_id, então aproximamos o
+        isolamento filtrando pelos símbolos com ordens/fills do(s) strategy_id(s)
+        pedido(s). ?strategy_id é OBRIGATÓRIO; ?network=testnet|mainnet escolhe o
+        adapter (default = ambiente configurado). 15s de cache (info API é
+        rate-limited). Falha da venue devolve [] (não derruba a UI)."""
+        try:
+            strategy_ids = _strategy_ids_csv(strategy_id)
+            network_filter = _parse_network(network)
+            try:
+                adapter = state._adapter_for(network_filter)
+            except ValueError:
+                return []   # ambiente não configurado → sem posições
+            placeholders = _in_clause(strategy_ids)
+            sym_rows = state.db.query(
+                f"SELECT DISTINCT symbol FROM orders WHERE strategy_id IN ({placeholders}) "
+                f"UNION "
+                f"SELECT DISTINCT symbol FROM fills WHERE strategy_id IN ({placeholders})",
+                [*strategy_ids, *strategy_ids],
+            )
+            symbols = {r["symbol"] for r in sym_rows}
+            if not symbols:
+                return []
+            now = time.time()
+            cached = _positions_cache.get(adapter.network)
+            if cached is None or now - cached["ts"] > 15:
+                try:
+                    fetched = [vars(p) for p in adapter.positions()]
+                except Exception as exc:  # noqa: BLE001 — venue hiccup não pode 500 a UI
+                    return []
+                _positions_cache[adapter.network] = {"data": fetched, "ts": now}
+            data = _positions_cache[adapter.network]["data"]
+            return [{**p, "network": adapter.network}
+                    for p in data if p.get("symbol") in symbols]
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"positions: {str(exc)[:200]}")
+
     # -- /api/metrics (daily metrics scoped by strategy_ids, ADR 0010) -----
     @app.get("/api/metrics")
     def api_metrics(

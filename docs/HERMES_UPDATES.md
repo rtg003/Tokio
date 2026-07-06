@@ -1158,3 +1158,50 @@ igual à v13 — só muda O MOMENTO do corte F20.
 - `python -m pytest tests/test_docs_coverage.py -q` verde (chaves novas documentadas).
 - Nota: `test_scan_approves_swing_rejects_traps` já falhava na main antes desta
   mudança (assert F16 vs F15, fixture de simulação) — não relacionado.
+
+## UPDATE-0019 · 2026-07-06 · Status: PENDENTE
+
+Origem: Cursor — reorganização da dashboard de Copy Trade.
+
+Tipo: gateway (nova rota) + web (reorg de UI)
+
+Resumo: reorganizei a dashboard de Copy Trade. A seção antiga "Ordens Abertas"
+virou **Posições** (posições abertas no clearinghouse da venue, escopadas §5.1
+aos símbolos que o copy_trade opera) e as ordens em aberto foram unificadas com
+os trades numa única seção **"Trades e Ordens em Aberto"** (ordens no topo,
+fills abaixo, com coluna Tipo ORDEM/TRADE). Layout final:
+KPIs → Posições → Trades e Ordens em Aberto → Traders.
+
+### O que mudou
+
+1. **Nova rota `GET /api/positions?strategy_id=&network=`** (`engine/gateway/server.py`)
+   — retorna posições do clearinghouse do ambiente, **filtradas §5.1** aos
+   símbolos que as estratégias informadas têm em `orders`/`fills` (atribuição
+   aproximada por estratégia; posições da venue não têm `strategy_id`). Cache de
+   15s por network (espelha o padrão do `/balance`). Sem símbolos ⇒ `[]`.
+2. **`Position` dataclass** (`engine/exchanges/base.py`) ganhou `liquidation_px`
+   e `position_value` (opcionais); preenchidos no adapter da Hyperliquid a partir
+   de `positionValue`/`liquidationPx` do raw. `paper` mantém `None`.
+3. **Web** (`web/`): novo `PositionsTable.tsx`, novo `TradesOrdersTable.tsx`;
+   removidos `OrdersTable.tsx` e `FillsTable.tsx`; `page.tsx` reordenado;
+   `lib/copy-trade/data.ts` ganhou tipo `Position` + `getPositions()`.
+
+### Ações do Hermes
+
+1. **Obrigatório:** deploy na VPS (gateway + rebuild do web):
+   ```bash
+   cd /home/tokio/Tokio
+   git pull --ff-only origin main
+   sudo systemctl restart tokio-engine.service tokio.service
+   cd web && npm ci && npm run build && sudo systemctl restart tokio-web.service
+   ```
+   (ajuste os nomes dos services/comando de build do web ao seu runbook.)
+2. Confirmar que a dashboard de Copy Trade mostra as 4 seções na ordem
+   KPIs → Posições → Trades e Ordens em Aberto → Traders.
+
+### Validação esperada
+
+- `python -m pytest tests/test_gateway.py -q` verde (2 testes novos:
+  `test_api_positions_scoped_to_strategy_symbols`,
+  `test_api_positions_requires_strategy_id`).
+- `cd web && npx tsc --noEmit` sem erros.

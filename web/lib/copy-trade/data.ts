@@ -81,6 +81,17 @@ export type FillsSummary = {
   win_rate: number | null;
 };
 
+export type Position = Record<string, any> & {
+  symbol: string;
+  size: number;
+  entry_price: number;
+  unrealized_pnl: number;
+  leverage?: number | null;
+  liquidation_px?: number | null;
+  position_value?: number | null;
+  network?: string;
+};
+
 export async function getBalance(env?: string | null): Promise<Balance> {
   const q = env && env !== "all" ? `?env=${encodeURIComponent(env)}` : "";
   const data = await gatewayGet<{ ok?: boolean; equity_usd: number; network: string }>(`/balance${q}`);
@@ -221,4 +232,17 @@ export async function getFills(
     network,
   );
   return gatewayGet<Fill[]>(`/api/fills?${q.toString()}`);
+}
+
+export async function getPositions(
+  strategyIds: string[],
+  network?: "testnet" | "mainnet" | null,
+): Promise<Position[] | null> {
+  // Posições da venue são escopadas no gateway aos símbolos do módulo (§5.1).
+  if (strategyIds.length === 0) return [];
+  const q = withNetwork(
+    new URLSearchParams({ strategy_id: strategyIds.join(",") }),
+    network,
+  );
+  return gatewayGet<Position[]>(`/api/positions?${q.toString()}`);
 }
