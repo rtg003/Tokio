@@ -1433,3 +1433,51 @@ cortes de equity). O F11 continua barrando não-copiáveis.
   com equity real → mesmos aprovados mas sem precisar de workaround
 - HyperTracker funcionando: +60-300 endereços extras, mais aprovados
 - Fills públicos: traders ativos ao invés de leaderboard sortudo
+
+## UPDATE-0017 · 2026-07-06 · Status: PENDENTE
+
+Origem: Hermes — bug crítico no executor (ordens rejeitadas)
+Tipo: bug + engine
+
+Resumo: o executor espelhou 6 fills do trader 0xdef5... em testnet mas
+TODAS foram rejeitadas com erro `float_to_wire causes rounding`. O
+`_mirror_size()` calcula o size proporcional mas não arredonda para o
+`sz_decimals` (step size) do ativo antes de enviar.
+
+### Erro
+
+```
+reject_reason: ('float_to_wire causes rounding', 0.6930967563071805)
+```
+
+6 ordens afetadas:
+- 4x HYPE buy (sizes 0.69xx — HL exige step inteiro)
+- 2x FARTCOIN sell (sizes 409.57, 442.57 — HL exige step inteiro)
+
+### Causa raiz
+
+`_mirror_size()` em `engine/strategies/copy_trade/executor.py` calcula:
+```python
+notional = size_trader * price * value * (our_equity / trader_equity)
+mirror_size = notional / price
+```
+
+Mas não arredonda `mirror_size` para o `sz_decimals` do ativo. A HL exige
+que o size seja múltiplo do step size (ex: HYPE = 1, BTC = 0.001).
+
+### Solução
+
+Antes de enviar a ordem, o executor deve:
+1. Consultar `market_meta(symbol)` para obter `sz_decimals`
+2. Arredondar `mirror_size` para o step size: `round(mirror_size, sz_decimals)`
+3. Se `mirror_size < step_size`, skipar o trade (muito pequeno para copiar)
+
+O adapter já tem `market_meta()` que retorna o `sz_decimals` do ativo.
+O executor só precisa chamar e arredondar.
+
+### Impacto
+
+Sem este fix, NENHUMA ordem do 0xdef5... será executada. O copy trade
+está completamente quebrado para este trader.
+
+### Prioridade: CRÍTICA
