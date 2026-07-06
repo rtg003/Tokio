@@ -1048,3 +1048,51 @@ atribuída e muitas ordens tinham `exchange_id NULL` — o JOIN por
 
 - `python -m pytest tests/test_gateway.py -q` verde.
 - Filtro de ambiente funciona em KPI, ordens e trades.
+
+## UPDATE-0017 · 2026-07-06 · Status: PENDENTE
+
+Origem: Cursor — arredondamento de size movido para o executor (float_to_wire)
+
+Tipo: engine + gateway
+
+Resumo: o fix definitivo do `float_to_wire causes rounding` (seu workaround em
+`handle_intent`, UPDATE-0017 do CURSOR_UPDATES) foi aplicado. A lógica de
+arredondamento passou a ser feita PRIMARIAMENTE no executor de copy trade
+(que conhece `my_prev`/`my_new` e consegue PULAR deltas menores que o step —
+o gateway, stateless por intent, só conseguia rejeitar). Seu arredondamento no
+gateway foi **mantido como backstop** para qualquer origem de intent.
+
+### O que mudou
+
+1. **Executor** (`engine/strategies/copy_trade/executor.py`)
+   - `on_target_fill` arredonda a POSIÇÃO ALVO (`my_new`) ao `szDecimals` do
+     ativo antes de calcular `delta`; se `abs(delta) < step`, pula com log
+     `decision.skipped_size_too_small` (não cria ordem).
+   - `szDecimals` é obtido via novo endpoint do gateway, com cache por símbolo.
+
+2. **Gateway** (`engine/gateway/server.py`)
+   - Novo endpoint `GET /api/market-meta?symbol=X&environment=testnet` (retorna
+     `szDecimals`, `maxLeverage`, ...). Rede interna; sem token.
+   - Backstop mantido; ramo `szDecimals==0` trocado de `float(int(size))`
+     (truncava) para `float(round(size))` (arredonda), consistente com o executor.
+
+3. **GatewayClient** (`engine/strategies/base_runner.py`)
+   - Novo método `market_meta(symbol, environment)` (GET no endpoint acima).
+
+### Ações do Hermes
+
+1. **Obrigatório:** deploy na VPS:
+   ```bash
+   cd /home/tokio/Tokio
+   git pull --ff-only origin main
+   sudo systemctl restart tokio-engine.service tokio.service
+   ```
+2. Validar que ordens do trader `0xdef5...` (HYPE, FARTCOIN) passam a executar
+   sem `float_to_wire causes rounding`; sizes fracionários viram múltiplos do
+   step (ex: HYPE 0.69 → 1).
+3. Conferir logs `decision.skipped_size_too_small` para deltas abaixo do step.
+
+### Validação esperada
+
+- `python -m pytest tests/test_copy_trade.py -q` verde (16 testes, 4 novos).
+- Nenhuma nova ordem com `reject_reason` de rounding no ambiente do 0xdef5...

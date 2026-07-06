@@ -1434,7 +1434,7 @@ cortes de equity). O F11 continua barrando não-copiáveis.
 - HyperTracker funcionando: +60-300 endereços extras, mais aprovados
 - Fills públicos: traders ativos ao invés de leaderboard sortudo
 
-## UPDATE-0017 · 2026-07-06 · Status: PENDENTE
+## UPDATE-0017 · 2026-07-06 · Status: APLICADO em 2026-07-06
 
 Origem: Hermes — bug crítico no executor (ordens rejeitadas)
 Tipo: bug + engine

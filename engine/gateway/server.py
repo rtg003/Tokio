@@ -257,7 +257,7 @@ class GatewayState:
         if sz_decimals > 0:
             size = round(size, sz_decimals)
         else:
-            size = float(int(size))  # step inteiro
+            size = float(round(size))  # step inteiro
         if abs(size) < 1e-12:
             return {"ok": False, "reason": "size_rounds_to_zero",
                     "cloid": make_cloid(intent.strategy_id)}
@@ -423,6 +423,20 @@ def build_app(state: GatewayState) -> FastAPI:
             "withdrawable_usd": float(data.get("withdrawable", 0.0)),
             "network": adapter.network,
         }
+
+    @app.get("/api/market-meta")
+    def market_meta(symbol: str, environment: str | None = None) -> dict[str, Any]:
+        # Asset metadata (szDecimals, maxLeverage) so callers can round size to
+        # the venue's step before sending. szDecimals is the same across networks.
+        try:
+            adapter = state._adapter_for(environment)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        try:
+            meta = adapter.market_meta(symbol)
+        except KeyError:
+            return {"ok": False, "reason": "unknown_symbol", "symbol": symbol}
+        return {"ok": True, **meta}
 
     # -- control API (internal network only; web is the only client) -------
     @app.post("/control/strategy/{strategy_id}/pause", dependencies=[Depends(_control_auth)])

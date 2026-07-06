@@ -122,6 +122,8 @@ class CopyTradeExecutor:
         # (strategy_id, symbol) -> sizes for mirroring + drift check
         self._target_pos: dict[tuple[str, str], float] = {}
         self._my_pos: dict[tuple[str, str], float] = {}
+        # symbol -> szDecimals (static venue metadata; cached to avoid per-fill RTT)
+        self._sz_decimals: dict[str, int] = {}
         self.reload_traders()
 
     # -- setup ---------------------------------------------------------------
@@ -204,6 +206,14 @@ class CopyTradeExecutor:
 
         my_prev = self._my_pos.get(key, 0.0)
         my_new = self._mirror_size(cfg, prev_target, new_target, my_prev, px)
+        # Round the TARGET position to the venue's step (szDecimals) so the size
+        # we send is always a valid multiple — the HL API rejects otherwise with
+        # "float_to_wire causes rounding". my_prev is already on the grid from a
+        # prior fill, so delta stays a clean multiple too.
+        environment = environment_for_status(trader_status)
+        sz_decimals = self._sz_decimals_for(symbol, environment)
+        if sz_decimals is not None:
+            my_new = self._round_to_step(my_new, sz_decimals)
         delta = my_new - my_prev
 
         fill_time_ms = float(fill.get("time", t0 * 1000))
@@ -213,6 +223,12 @@ class CopyTradeExecutor:
             "prev_target": prev_target, "new_target": new_target,
             "my_prev": my_prev, "my_new": my_new, "delta": delta,
         }
+
+        if sz_decimals is not None and abs(delta) < 10 ** (-sz_decimals):
+            self.logger.info("decision.skipped_size_too_small",
+                             {**decision, "sz_decimals": sz_decimals},
+                             strategy_id=strategy_id, latency_ms=latency_ms)
+            return None
 
         if abs(delta) * px < self.settings.risk.min_order_notional_usd:
             if abs(delta) > 0:
@@ -231,13 +247,38 @@ class CopyTradeExecutor:
             reduce_only=reduce_only,
             leverage=cfg.max_leverage,
             dry_run=self._is_dry_run(cfg),
-            environment=environment_for_status(trader_status),
+            environment=environment,
         )
         if result.get("ok"):
             self._my_pos[key] = my_new
         self.logger.info("decision.mirrored", {**decision, "result": result},
                          strategy_id=strategy_id, latency_ms=latency_ms)
         return result
+
+    def _sz_decimals_for(self, symbol: str, environment: str | None) -> int | None:
+        """szDecimals of the asset (cached). None if the gateway can't provide it
+        — the caller then sends the raw size and the gateway backstop rounds it."""
+        cached = self._sz_decimals.get(symbol)
+        if cached is not None:
+            return cached
+        try:
+            meta = self.gateway.market_meta(symbol, environment)
+        except Exception as exc:  # noqa: BLE001 — gateway hiccup must not drop the fill
+            self.logger.warning("decision.no_market_meta",
+                                 {"symbol": symbol, "error": str(exc)[:200]})
+            return None
+        if not meta.get("ok", True):
+            self.logger.warning("decision.no_market_meta",
+                                 {"symbol": symbol, "reason": meta.get("reason")})
+            return None
+        sz = int(meta.get("szDecimals", 0))
+        self._sz_decimals[symbol] = sz
+        return sz
+
+    @staticmethod
+    def _round_to_step(size: float, sz_decimals: int) -> float:
+        # round(), never int()/truncation: HL needs the nearest valid multiple.
+        return round(size, sz_decimals) if sz_decimals > 0 else float(round(size))
 
     def _mirror_size(self, cfg: TraderConfig, prev_target: float, new_target: float,
                      my_prev: float, px: float) -> float:

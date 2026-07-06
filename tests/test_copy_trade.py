@@ -33,6 +33,10 @@ class RecordingGateway:
     def __init__(self) -> None:
         self.intents: list[dict[str, Any]] = []
         self.ledger_response: dict[str, Any] = {}
+        # per-symbol szDecimals; default high so rounding is a no-op unless a test
+        # sets it (keeps sizing-focused tests independent of the step grid).
+        self.sz_decimals: dict[str, int] = {}
+        self.default_sz_decimals = 8
 
         outer = self
 
@@ -51,6 +55,10 @@ class RecordingGateway:
 
     def cancel(self, **payload: Any) -> dict[str, Any]:
         return {"ok": True}
+
+    def market_meta(self, symbol: str, environment: str | None = None) -> dict[str, Any]:
+        sz = self.sz_decimals.get(symbol, self.default_sz_decimals)
+        return {"ok": True, "szDecimals": sz, "maxLeverage": 50, "minNotional": 10.0}
 
 
 def seed_trader(db: Database, **overrides: Any) -> None:
@@ -190,6 +198,44 @@ def test_drift_check_alerts_above_tolerance(settings, db) -> None:
     assert len(drifts) == 1 and drifts[0]["symbol"] == "ETH"
     gw.ledger_response = {"ct_whale01": {"positions": {"ETH": {"size": expected}}}}
     assert ex.drift_check() == []
+
+
+def test_mirror_size_rounds_to_sz_decimals(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    gw.sz_decimals["ETH"] = 2
+    # 100 USDC / 3000 = 0.03333... -> rounds to 0.03 (szDecimals=2)
+    watcher.emit(TARGET, fill("ETH", "B", 1.0, 3_000.0, start_pos=0.0))
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["size"] == pytest.approx(0.03)
+
+
+def test_mirror_size_zero_skips_order(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=20.0)
+    gw.sz_decimals["HYPE"] = 0
+    # 20 USDC / 50 = 0.4 HYPE -> rounds to 0 (step=1) -> no order, logged
+    watcher.emit(TARGET, fill("HYPE", "B", 1.0, 50.0, start_pos=0.0))
+    assert gw.intents == []
+    logs = db.query(
+        "SELECT event_type FROM events WHERE event_type = 'decision.skipped_size_too_small'")
+    assert logs
+
+
+def test_mirror_size_btc_3_decimals(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    gw.sz_decimals["BTC"] = 3
+    # 100 USDC / 47000 = 0.0021276... -> rounds to 0.002 (szDecimals=3)
+    watcher.emit(TARGET, fill("BTC", "B", 1.0, 47_000.0, start_pos=0.0))
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["size"] == pytest.approx(0.002)
+
+
+def test_mirror_size_hype_0_decimals(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=69.0)
+    gw.sz_decimals["HYPE"] = 0
+    # 69 USDC / 100 = 0.69 HYPE -> rounds to 1 (step inteiro), repro do UPDATE-0017
+    watcher.emit(TARGET, fill("HYPE", "B", 1.0, 100.0, start_pos=0.0))
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["size"] == pytest.approx(1.0)
 
 
 def test_mirror_config_validation() -> None:

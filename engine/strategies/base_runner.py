@@ -44,6 +44,14 @@ class GatewayClient:
         resp.raise_for_status()
         return resp.json()
 
+    def market_meta(self, symbol: str, environment: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {"symbol": symbol}
+        if environment is not None:
+            params["environment"] = environment
+        resp = self._client.get("/api/market-meta", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
     def health(self) -> dict[str, Any]:
         resp = self._client.get("/health")
         resp.raise_for_status()
