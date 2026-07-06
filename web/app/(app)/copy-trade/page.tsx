@@ -53,19 +53,32 @@ export default async function CopyTradeDashboard({
     ? (params.period as string)
     : "30d";
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  // Datas no fuso de São Paulo (UTC-3)
+  function spDateString(d: Date): string {
+    // Formata como YYYY-MM-DD no fuso de SP
+    return d.toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" });
+  }
+  function spToday(): string {
+    return spDateString(new Date());
+  }
+  function spDaysAgo(n: number): string {
+    return spDateString(new Date(Date.now() - n * 86400_000));
+  }
+
+  const todayIso = spToday();
   let sinceDay = todayIso;
   let untilDay = todayIso;
   if (period === "7d") {
-    sinceDay = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+    sinceDay = spDaysAgo(7);
   } else if (period === "30d") {
-    sinceDay = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+    sinceDay = spDaysAgo(30);
   } else if (period === "custom") {
     sinceDay = parseDdMmYy(params.from) ?? sinceDay;
     untilDay = parseDdMmYy(params.to) ?? untilDay;
   }
-  const sinceTs = `${sinceDay}T00:00:00Z`;
-  const untilTs = `${untilDay}T23:59:59Z`;
+  // sinceTs/untilTs em SP: 00:00 e 23:59 do dia em SP (UTC-3 = +03:00 sobre UTC)
+  const sinceTs = `${sinceDay}T00:00:00-03:00`;
+  const untilTs = `${untilDay}T23:59:59-03:00`;
 
   const [exchanges, traders] = await Promise.all([
     getExchanges(),
