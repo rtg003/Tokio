@@ -252,6 +252,16 @@ class GatewayState:
         notional = abs(size) * price
 
         meta = adapter.market_meta(intent.symbol)
+        # Arredondar size para sz_decimals (evita float_to_wire causes rounding)
+        sz_decimals = int(meta.get("szDecimals", 0))
+        if sz_decimals > 0:
+            size = round(size, sz_decimals)
+        else:
+            size = float(int(size))  # step inteiro
+        if abs(size) < 1e-12:
+            return {"ok": False, "reason": "size_rounds_to_zero",
+                    "cloid": make_cloid(intent.strategy_id)}
+        notional = abs(size) * price
         max_lev_asset = float(meta.get("maxLeverage", 1))
         leverage = intent.leverage
         if leverage is not None:
