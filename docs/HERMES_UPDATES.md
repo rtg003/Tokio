@@ -996,7 +996,7 @@ execução das ordens/fills. Corrigido com filtro `network` no gateway e KPI via
 
 ---
 
-## UPDATE-0016 · 2026-07-05 · Status: PENDENTE
+## UPDATE-0016 · 2026-07-05 · Status: APLICADO em 2026-07-06
 
 Origem: Cursor — filtro de ambiente definitivo (fills.network)
 
