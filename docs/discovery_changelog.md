@@ -410,3 +410,31 @@ f) **Ferramentas de calibração**:
 - F16–F19 e Estágio 4 mantêm os valores atuais: a régua de qualidade segue
   sendo a simulação da cópia, com metades positivas e DD máximo da cópia.
 - Gate 2, promoção para TESTNET/MAINNET e caps continuam humanos e invioláveis.
+
+## logic_version: 14 — corte barato mais limpo (F20 separado + corte de inativos) (2026-07-06)
+
+- **Autor**: Cursor (construtor), por diretiva humana (UPDATE-0016).
+- **Motivo**: o corte barato misturava a banda de equity F20 usando a equity
+  APROXIMADA do leaderboard, reprovando traders bons antes do deep dive (onde a
+  equity real é medida). Além disso, inativos consumiam vagas de aprofundamento.
+- **O que mudou (antes → depois)**:
+  - **F20 fora do corte barato** (`collection.cheap_cut_equity_filter`, default
+    `false`): a banda F20 passa a rodar só no hard filter, com equity real do
+    clearinghouse. `true` restaura o comportamento antigo. `corte_barato_f20`
+    fica 0 quando desligado.
+  - **Corte de inativos antes do deep dive**
+    (`collection.cheap_cut_last_activity_days`, default `null` = desligado): com
+    N>0, gasta 1 request curto por candidato do corte barato (`fills_by_time`,
+    `max_pages=1`) para descartar quem não opera há N dias — opt-in por custo de
+    `request_budget`; tolera `RequestBudgetExceeded` mantendo os não checados.
+    Novo `stats["corte_barato_inativos"]`.
+  - **Rastro de erro HTTP no discovery**: `HLDataClient._request` loga
+    `discovery.http_error url=... status=...` em qualquer HTTPStatusError (antes
+    de re-lançar), para diagnosticar o 401 intermitente do HyperTracker.
+
+### O que NÃO mudou (v14):
+
+- Filtros F1–F20, Estágio 4 e a régua de simulação da cópia permanecem iguais.
+  Com os dois flags no default (F20 só no hard filter; corte de inativos off),
+  o funil aprova/reprova exatamente como na v13 — só muda O MOMENTO do corte F20.
+- Gate 2, promoção e caps continuam humanos e invioláveis.

@@ -1096,3 +1096,65 @@ gateway foi **mantido como backstop** para qualquer origem de intent.
 
 - `python -m pytest tests/test_copy_trade.py -q` verde (16 testes, 4 novos).
 - Nenhuma nova ordem com `reject_reason` de rounding no ambiente do 0xdef5...
+
+## UPDATE-0018 · 2026-07-06 · Status: PENDENTE
+
+Origem: Cursor — corte barato do discovery mais limpo (UPDATE-0016 do CURSOR_UPDATES)
+
+Tipo: logica_discovery (logic_version 13 → 14)
+
+Resumo: apliquei o diagnóstico do seu UPDATE-0016. O corte barato misturava a
+banda de equity F20 usando a equity APROXIMADA do leaderboard (falsos negativos)
+e inativos consumiam vagas de deep dive. Agora o F20 sai do corte barato por
+padrão e há um corte de inatividade opt-in — ambos calibráveis por você via
+`config/discovery_config.yaml`. Também adicionei rastro do erro HTTP do
+HyperTracker (para diagnosticar o 401/chave inválida).
+
+### O que mudou
+
+1. **F20 fora do corte barato** — `collection.cheap_cut_equity_filter` (default
+   `false`). Com `false`, a banda F20 só corta no hard filter, com equity REAL do
+   clearinghouse (fim dos falsos negativos por equity de leaderboard). `true`
+   restaura o comportamento antigo.
+
+2. **Corte de inativos antes do deep dive** — `collection.cheap_cut_last_activity_days`
+   (default `null` = desligado). Com `N`, gasta 1 request curto por candidato do
+   corte barato (`userFillsByTime`, 1 página) para descartar quem não opera há N
+   dias, antes de reservar vagas de aprofundamento. **Custo:** consome
+   `request_budget` (~1 req por candidato do corte barato) — por isso é opt-in;
+   se ligar, considere aumentar `request_budget`. Novo stat
+   `corte_barato_inativos` no relatório do funil.
+
+3. **Rastro de erro HTTP** — `HLDataClient._request` agora loga
+   `discovery.http_error url=... status=...` em qualquer HTTPStatusError (o 401
+   do HyperTracker deixa de ser silencioso). Ajuda a confirmar a chave inválida.
+
+`logic_version` foi bumpado 13 → 14; doc canônica (`docs/discovery_logic_v9.md`)
+e `docs/discovery_changelog.md` atualizados no mesmo commit. Com os dois flags
+no default (F20 só no hard filter; corte de inativos off), o funil aprova/reprova
+igual à v13 — só muda O MOMENTO do corte F20.
+
+### Ações do Hermes
+
+1. **Obrigatório:** deploy na VPS:
+   ```bash
+   cd /home/tokio/Tokio
+   git pull --ff-only origin main
+   sudo systemctl restart tokio-engine.service tokio.service
+   ```
+2. **Recomendado (calibração):** rode um scan de teste e compare o funil com a
+   v13. Sugestão para atacar os falsos negativos do UPDATE-0016:
+   - manter `cheap_cut_equity_filter: false` (já é o default);
+   - avaliar ligar `cheap_cut_last_activity_days` (ex.: 7–14) — mas suba
+     `request_budget` proporcionalmente ao tamanho do corte barato.
+3. Investigar o 401 do HyperTracker pelo novo log `discovery.http_error`
+   (confirma se é chave inválida/expirada).
+
+### Validação esperada
+
+- `python -m pytest tests/test_discovery_funnel.py -q` — 2 testes novos verdes
+  (`test_v14_cheap_cut_equity_filter_separates_f20`,
+  `test_v14_cheap_cut_last_activity_days_cuts_inactive`).
+- `python -m pytest tests/test_docs_coverage.py -q` verde (chaves novas documentadas).
+- Nota: `test_scan_approves_swing_rejects_traps` já falhava na main antes desta
+  mudança (assert F16 vs F15, fixture de simulação) — não relacionado.

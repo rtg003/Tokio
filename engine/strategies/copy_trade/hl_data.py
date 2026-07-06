@@ -8,11 +8,14 @@ mapeados em docs/discovery_v2_plan.md.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from engine.core.db import Database, utcnow
+
+logger = logging.getLogger(__name__)
 
 LEADERBOARD_URL = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
 INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -94,6 +97,10 @@ class HLDataClient:
                 self._cache_put(key, data)
                 return data
             except httpx.HTTPStatusError as exc:
+                # v14: rastro do erro HTTP (URL + status) para diagnosticar 401/403
+                # intermitentes de fontes externas como o HyperTracker.
+                logger.warning("discovery.http_error url=%s status=%s",
+                               exc.request.url, exc.response.status_code)
                 if exc.response.status_code != 429 or attempt == self.max_retries:
                     raise
                 time.sleep(backoff)

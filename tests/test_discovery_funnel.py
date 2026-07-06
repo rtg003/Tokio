@@ -570,3 +570,54 @@ def test_v7_liq_distance_uses_mark_price(db) -> None:
     result = run_scan(client, db, CFG, now_ms=NOW_MS)
     rejected = {c.address: c.reject_reason for c in result.rejected}
     assert GOOD in rejected and rejected[GOOD].startswith("F13"), rejected.get(GOOD)
+
+
+def test_v14_cheap_cut_equity_filter_separates_f20(db) -> None:
+    """v14: F20 fora do corte barato por padrão — só corta no hard filter.
+
+    Candidato fora da banda F20 (equity aproximada do leaderboard) passa o
+    corte barato quando `cheap_cut_equity_filter=false`; é cortado quando true."""
+    import copy
+
+    rows = [
+        lb_row(GOOD, pnl_7d=800, pnl_30d=9_000, roi_30d=0.18, equity=50_000),
+        lb_row(SCALP, pnl_7d=2_000, pnl_30d=25_000, roi_30d=0.40, equity=200_000),
+    ]
+    profile = {GOOD: {"fills": swing_fills(), "clearinghouse": healthy_clearinghouse()}}
+    cfg = copy.deepcopy(CFG)
+    cfg["hard_filters"]["f20_min_trader_equity_usd"] = 1_000
+    cfg["hard_filters"]["f20_max_trader_equity_usd"] = 60_000  # 200k fica fora
+
+    cfg["collection"]["cheap_cut_equity_filter"] = False
+    off = run_scan(FakeClient(rows, dict(profile)), db, cfg, now_ms=NOW_MS)
+    assert off.funnel_stats["corte_barato_f20"] == 0
+
+    cfg["collection"]["cheap_cut_equity_filter"] = True
+    on = run_scan(FakeClient(rows, dict(profile)), db, cfg, now_ms=NOW_MS)
+    assert on.funnel_stats["corte_barato_f20"] == 1
+
+
+def test_v14_cheap_cut_last_activity_days_cuts_inactive(db) -> None:
+    """v14: corta candidatos sem fill recente antes do deep dive (opt-in)."""
+    import copy
+
+    rows = [
+        lb_row(GOOD, pnl_7d=800, pnl_30d=9_000, roi_30d=0.18, equity=50_000),
+        lb_row(SCALP, pnl_7d=700, pnl_30d=8_000, roi_30d=0.15, equity=40_000),
+    ]
+    profiles = {
+        GOOD: {"fills": swing_fills(), "clearinghouse": healthy_clearinghouse()},
+        SCALP: {"fills": []},   # inativo: sem fills na janela
+    }
+    cfg = copy.deepcopy(CFG)
+
+    # desligado (default null): não corta ninguém no corte de atividade
+    cfg["collection"]["cheap_cut_last_activity_days"] = None
+    disabled = run_scan(FakeClient(rows, dict(profiles)), db, cfg, now_ms=NOW_MS)
+    assert disabled.funnel_stats["corte_barato_inativos"] == 0
+
+    # ligado: SCALP (sem fills) é cortado antes do deep dive
+    cfg["collection"]["cheap_cut_last_activity_days"] = 3
+    result = run_scan(FakeClient(rows, dict(profiles)), db, cfg, now_ms=NOW_MS)
+    assert result.funnel_stats["corte_barato_inativos"] == 1
+    assert SCALP not in {c.address for c in result.approved}

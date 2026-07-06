@@ -1305,7 +1305,7 @@ Disparado manualmente, completou em 469s (7.8 min), 305 requests:
 - `python -m engine.cli strategy list` → só ct_48295497 active
 - Scan v10: 1 aprovado (pinned), 149 reprovados
 
-## UPDATE-0016 · 2026-07-06 · Status: PENDENTE
+## UPDATE-0016 · 2026-07-06 · Status: APLICADO em 2026-07-06
 
 Origem: Hermes — diagnóstico estrutural do discovery (v10→v12)
 Tipo: logica_discovery + arquitetura

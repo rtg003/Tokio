@@ -255,6 +255,40 @@ def precheck_activity(c: Candidate, client: DataClient, cfg: dict[str, Any],
     return None
 
 
+def _cut_inactive_cheap(cheap: list[Candidate], client: DataClient,
+                        cfg: dict[str, Any], stats: dict[str, int],
+                        logger: Any | None = None) -> list[Candidate]:
+    """v14: corta candidatos sem fill recente ANTES do deep dive (opt-in).
+
+    Gasta 1 request curto por candidato do corte barato (`fills_by_time` com
+    `max_pages=1`) para não reservar vaga de aprofundamento a quem parou de
+    operar. Desligado quando `cheap_cut_last_activity_days` é null. Se o
+    orçamento estourar no meio, para de checar e MANTÉM o restante (conservador:
+    não corta quem não deu para verificar)."""
+    days = _int_or_none(cfg["collection"].get("cheap_cut_last_activity_days"))
+    if not days:
+        stats["corte_barato_inativos"] = 0
+        return cheap
+    from engine.strategies.copy_trade.hl_data import RequestBudgetExceeded
+
+    kept: list[Candidate] = []
+    for i, c in enumerate(cheap):
+        try:
+            recent, _ = client.fills_by_time(c.address, window_days=days, max_pages=1)
+        except RequestBudgetExceeded:
+            # orçamento acabou: mantém este e os que faltam sem checar
+            kept.extend(cheap[i:])
+            if logger:
+                logger.warning("discovery.cheap_cut_budget_exceeded",
+                               {"checked": i, "kept_unchecked": len(cheap) - i})
+            break
+        if recent:
+            c.last_activity = utcnow_from_ms(max(float(f["time"]) for f in recent))
+            kept.append(c)
+    stats["corte_barato_inativos"] = len(cheap) - len(kept)
+    return kept
+
+
 def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
               liquid: set[str], now_ms: float | None = None) -> None:
     """Coleta cara por candidato + cálculo de todas as métricas do Estágio 2/3."""
@@ -795,13 +829,21 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     candidates = [parse_leaderboard_row(r) for r in rows]
     top20 = {c.address for c in candidates[:int(cfg["score_adjustments"]["crowding_top_n"])]}
 
-    # corte barato: 30d positiva + banda de equity aproximada do leaderboard.
+    # corte barato: 30d positiva + (opcional) banda de equity aproximada do leaderboard.
     min_eq = float(col.get("min_equity_usd", 0) or 0)
     cheap_30d = [c for c in candidates
                  if c.windows_pnl.get("30d", 0.0) > 0 and c.equity >= min_eq]
     stats["corte_barato_30d"] = len(candidates) - len(cheap_30d)
-    cheap = [c for c in cheap_30d if _equity_in_band(c.equity, cfg)]
+    # v14: F20 no corte barato é opt-in (cheap_cut_equity_filter). Por padrão o
+    # F20 só corta no hard filter, com equity REAL do deep dive — o leaderboard
+    # traz equity aproximada e reprovava traders bons cedo demais.
+    apply_f20 = bool(col.get("cheap_cut_equity_filter", False))
+    cheap = [c for c in cheap_30d
+             if not apply_f20 or _equity_in_band(c.equity, cfg)]
     stats["corte_barato_f20"] = len(cheap_30d) - len(cheap)
+    # v14: corte de inativos ANTES do deep dive (opt-in) — evita gastar vagas de
+    # aprofundamento com quem não opera há muito tempo. 1 request curto/candidato.
+    cheap = _cut_inactive_cheap(cheap, client, cfg, stats, logger)
     _sort_for_deep_dive(cheap, str(col.get("deep_sort_by", "roi_30d")))
     deep_max = int(col["deep_dive_max"])
     external_quota = int(col.get("external_dive_quota", 0) or 0)

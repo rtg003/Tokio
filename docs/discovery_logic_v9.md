@@ -43,6 +43,8 @@ flowchart LR
 | `collection.request_budget` | orçamento máximo de requests por scan | 2800 | cobre 300×~7 + quota externa + margem | scan frio estimado ~18-25 min com throttle 1.3s |
 | `collection.min_request_interval_s` | intervalo mínimo entre requests HTTP | 1.3s | throttle ajustável pelo Hermes ao ampliar/reduzir scans | antes hardcoded no HLDataClient |
 | `collection.min_equity_usd` | piso barato de equity no leaderboard | 1000 | alinhado ao piso F20; evita matar antes o que a banda aceita | F20 usa clearinghouse real depois do deep dive |
+| `collection.cheap_cut_equity_filter` | aplicar banda F20 já no corte barato | false | v14 separa F20 do corte barato: equity do leaderboard é aproximada e reprovava traders bons cedo demais | false ⇒ F20 só no hard filter (equity real); true ⇒ comportamento antigo |
+| `collection.cheap_cut_last_activity_days` | janela de atividade para cortar inativos antes do deep dive | null | v14 evita gastar vagas de aprofundamento com quem parou de operar | null ⇒ desligado; N ⇒ 1 request curto/candidato do corte barato (custo de request_budget) |
 | `collection.sort_by` | parâmetro de coleta/custo do scan | pnl_7d | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.deep_sort_by` | ordenação dos candidatos que entram no deep dive | roi_30d | Hermes pode mudar o perfil do funil (`roi_30d`, `pnl_7d`, `equity_asc`) | equity_log foi o preditor mais forte do lab (ρ -0.227) |
 | `collection.fills_window_days` | parâmetro de coleta/custo do scan | 60 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
