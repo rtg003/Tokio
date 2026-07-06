@@ -1159,7 +1159,7 @@ igual à v13 — só muda O MOMENTO do corte F20.
 - Nota: `test_scan_approves_swing_rejects_traps` já falhava na main antes desta
   mudança (assert F16 vs F15, fixture de simulação) — não relacionado.
 
-## UPDATE-0019 · 2026-07-06 · Status: PENDENTE
+## UPDATE-0019 · 2026-07-06 · Status: APLICADO em 2026-07-06
 
 Origem: Cursor — reorganização da dashboard de Copy Trade.
 
