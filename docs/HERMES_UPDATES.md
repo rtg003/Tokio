@@ -1206,7 +1206,7 @@ KPIs → Posições → Trades e Ordens em Aberto → Traders.
   `test_api_positions_requires_strategy_id`).
 - `cd web && npx tsc --noEmit` sem erros.
 
-## UPDATE-0021 · 2026-07-07 · Status: PENDENTE
+## UPDATE-0021 · 2026-07-07 · Status: APLICADO em 2026-07-07
 
 Origem: Cursor — correção DEFINITIVA do espelhamento do copy trade (fecha o
 UPDATE-0020: trader 0xdef5 fez 19 fills / +$2.371 e só 1 foi espelhada).
