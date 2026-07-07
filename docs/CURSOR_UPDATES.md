@@ -1481,3 +1481,85 @@ Sem este fix, NENHUMA ordem do 0xdef5... será executada. O copy trade
 está completamente quebrado para este trader.
 
 ### Prioridade: CRÍTICA
+
+## UPDATE-0020 · 2026-07-07 · Status: PENDENTE
+
+Origem: Hermes — bugs críticos no executor de copy trade (trades não espelhados)
+Tipo: bug + engine
+
+Resumo: o trader 0xdef5... fez 19 fills em 2 dias (13 ontem, 6 hoje, PnL
++$2,371) mas o executor espelhou APENAS 1 ordem (FARTCOIN). Os 18 fills
+restantes (HYPE buy/sell, FARTCOIN sell) não foram espelhados. O copy trade
+está quebrado.
+
+### Diagnóstico (3 bugs)
+
+**Bug 1: WebSocket cai e não reconecta (CRÍTICO)**
+
+O executor se inscreve via WebSocket nos fills do trader. A HL fecha a
+conexão com:
+```
+ERROR:websocket:Connection to remote host was lost. - goodbye
+ERROR:websocket:fin=1 opcode=8 data=b'\x03\xe8Inactive' - goodbye
+ERROR:websocket:fin=1 opcode=8 data=b'\x03\xe8Expired' - goodbye
+```
+
+O executor NÃO tem lógica de reconexão. Quando o WS cai, ele para de
+receber fills permanentemente. Todos os fills do trader após a queda do
+WS são perdidos.
+
+**Bug 2: Drift check falha com "Connection refused"**
+
+```
+drift.check_failed: {"error": "[Errno 111] Connection refused"}
+```
+
+Quando o engine reinicia, o executor tenta o drift check antes do gateway
+estar pronto. Deveria ter retry/backoff.
+
+**Bug 3: Drift detectado mas não corrigido**
+
+```
+drift.detected: {"symbol": "FARTCOIN", "expected": -416.0, "actual": 0.0, "rel_drift": 1.0}
+```
+
+O drift check detecta que deveríamos ter -416 FARTCOIN mas temos 0. Mas
+só loga o warning — não envia ordem para corrigir. O drift deveria ser
+corretivo (enviar ordem para alinhar a posição).
+
+### O que implementar
+
+1. **Reconexão automática de WebSocket**
+   - Quando o WS cai, reconectar com backoff exponencial (1s, 2s, 4s, 8s, max 60s)
+   - A cada reconexão, re-inscrever nos fills de TODOS os traders ativos
+   - Logar `ws.reconnecting` e `ws.reconnected`
+
+2. **Heartbeat/keepalive do WS**
+   - Enviar ping a cada 20s para evitar `Inactive`
+   - A HL fecha conexões inativas após ~30s
+
+3. **Drift check com retry**
+   - Quando o gateway não responde, retry com backoff (3 tentativas, 2s entre cada)
+   - Não logar erro na primeira tentativa
+
+4. **Drift check corretivo**
+   - Quando detecta drift (expected vs actual != 0), enviar ordem para alinhar
+   - Usar o mesmo fluxo do `on_target_fill` (calcular delta, enviar intent)
+   - Logar `drift.correcting` com symbol, expected, actual, delta
+
+5. **Reconciliation no startup**
+   - Quando o executor sobe, comparar posição atual (clearinghouse) com o ledger
+   - Enviar ordens para alinhar posições desalinhadas
+   - Útil para quando o executor esteve offline e perdeu fills
+
+### Arquivos
+
+- `engine/strategies/copy_trade/executor.py` — `run_forever()`, `drift_check()`, WS subscription
+- `engine/exchanges/hyperliquid/adapter.py` — `subscribe_user_fills()` (adicionar ping/reconnect)
+- `engine/strategies/base_runner.py` — `GatewayClient` (retry no drift check)
+
+### Prioridade: CRÍTICA
+
+Sem este fix, o copy trade não funciona — o executor perde fills do trader
+quando o WS cai (que acontece frequentemente). O trader fez +$2,371 em 2
+dias e não espelhamos nada.
