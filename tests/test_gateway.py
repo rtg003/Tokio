@@ -60,14 +60,70 @@ def test_dry_run_intent_records_but_never_hits_venue(client, gateway_state, pape
 
 
 def test_rejected_intent_is_logged_not_sent(client, gateway_state, paper) -> None:
-    register_strategy(gateway_state.db, "dm_big")
+    # Uma ordem abaixo do mínimo é rejeitada de vez (não há o que truncar) e
+    # nunca chega à venue.
+    register_strategy(gateway_state.db, "dm_small")
     before = len(paper.placed_orders)
     resp = client.post("/intent", json={
-        "strategy_id": "dm_big", "symbol": "BTC", "side": "buy",
-        "notional_usd": 999_999.0,
+        "strategy_id": "dm_small", "symbol": "ETH", "side": "buy",
+        "notional_usd": 0.4,
     }).json()
-    assert resp["ok"] is False and "max_order_notional" in resp["reason"]
+    assert resp["ok"] is False and "below_min_notional" in resp["reason"]
     assert len(paper.placed_orders) == before
+
+
+def test_intent_truncated_to_cap(client, gateway_state, paper) -> None:
+    """Ordem grande NÃO é rejeitada: entra truncada até o cap (não zera a
+    posição). Cap por estratégia = $500 (default); pedido ~ $2240 @ BTC=100k."""
+    register_strategy(gateway_state.db, "ct_trunc", module="copy_trade")
+    resp = client.post("/intent", json={
+        "strategy_id": "ct_trunc", "symbol": "BTC", "side": "buy",
+        "notional_usd": 2240.0,
+    }).json()
+    assert resp["ok"] is True
+    assert resp["status"] == "filled"
+    # 500 / 100_000 = 0.005 (floor a szDecimals=4), notional final $500 (≤ cap).
+    assert paper.placed_orders[-1].size == 0.005
+    row = gateway_state.db.query(
+        "SELECT size FROM orders WHERE cloid = ?", (resp["cloid"],))[0]
+    assert row["size"] == 0.005
+
+
+def test_intent_rejected_when_cap_full(client, gateway_state, paper) -> None:
+    """Sem espaço no cap (0) → rejeita 'strategy_cap_full'; espaço < mínimo →
+    'cap_room_below_min'. Nada é enviado à venue nos dois casos."""
+    register_strategy(gateway_state.db, "ct_full", module="copy_trade")
+    before = len(paper.placed_orders)
+    full = client.post("/intent", json={
+        "strategy_id": "ct_full", "symbol": "BTC", "side": "buy",
+        "notional_usd": 100.0, "strategy_cap_usd": 0.0,
+    }).json()
+    assert full["ok"] is False and full["reason"] == "strategy_cap_full"
+    below = client.post("/intent", json={
+        "strategy_id": "ct_full", "symbol": "BTC", "side": "buy",
+        "notional_usd": 100.0, "strategy_cap_usd": 5.0,
+    }).json()
+    assert below["ok"] is False and below["reason"] == "cap_room_below_min"
+    assert len(paper.placed_orders) == before
+
+
+def test_api_pnl_summary_realized_plus_unrealized(client, gateway_state, paper) -> None:
+    """KPI = realizado (fills) + não-realizado (posições abertas na venue)."""
+    from engine.exchanges.base import Position
+
+    register_strategy(gateway_state.db, "ct_pnl", module="copy_trade")
+    gateway_state.db.insert("fills", {
+        "cloid": "0xpnl1", "strategy_id": "ct_pnl", "symbol": "BTC",
+        "side": "sell", "price": 100_000.0, "size": 0.001, "fee": 0.5,
+        "realized_pnl": 50.0, "ts": "2026-07-05T10:00:00Z",
+    })
+    paper._positions["BTC"] = Position(
+        symbol="BTC", size=0.01, entry_price=100_000.0, unrealized_pnl=123.0)
+    s = client.get("/api/pnl/summary?strategy_id=ct_pnl").json()
+    assert s["n_trades"] == 1
+    assert s["realized_pnl"] == 50.0
+    assert s["unrealized_pnl"] == 123.0
+    assert s["total_pnl"] == 173.0
 
 
 def test_control_api_requires_token(client, gateway_state) -> None:

@@ -1285,3 +1285,70 @@ o gap ordem→fill.
   absoluto, `wait_ready`, reconnect/re-subscribe do WsSupervisor).
 - `python -m pytest -q`: 1 falha PRÉ-EXISTENTE e não relacionada
   (`test_scan_approves_swing_rejects_traps`), o resto verde.
+
+---
+
+## UPDATE-0022 · 2026-07-07 · Status: PENDENTE
+
+**Origem**: PR (merged na main)
+
+**Tipo**: operacao + config
+
+**Resumo**: três correções de execução no copy_trade. Racional incluso para você
+não "corrigir" de volta:
+
+1. **Truncamento ao cap (não rejeitar)** — `engine/gateway/risk_enforcer.py` +
+   `server.py`. Antes, uma ordem cujo notional estourava o cap era rejeitada
+   **inteira** e ficávamos **sem posição** (ex.: HYPE ~$2.240 vs cap $500 → nada
+   executado). Agora o enforcer calcula o **teto vinculante** (menor entre teto
+   por-ordem, espaço no cap da estratégia e no cap total) e devolve
+   `truncated_to_cap`; o gateway **encolhe o size** (floor ao szDecimals, nunca
+   estoura o cap) e envia o que couber. Só rejeita quando NÃO há espaço
+   (`strategy_cap_full`/`total_cap_full`/`max_order_notional_full`) ou o espaço é
+   menor que o mínimo ($10 → `cap_room_below_min`). Log novo: `decision.truncated`.
+   **Os caps continuam invioláveis** — muda só o comportamento no estouro
+   (truncar em vez de zerar).
+2. **KPI de PnL com não-realizado** — novo `GET /api/pnl/summary`
+   (`?strategy_id=&network=&since=&until=`) devolve `realized_pnl` (fills) +
+   `unrealized_pnl` (posições abertas na venue, escopadas aos símbolos da
+   estratégia, §5.1) + `total_pnl`. O KPI mostrava **$0** porque só somava
+   `realized_pnl` e posições abertas têm realized NULL. A dashboard passa a usar
+   `total_pnl` (sub-label "USDC · realizado + não-realizado").
+3. **Fix do IOC "could not immediately match" (asset=135 = HYPE, testnet)** — as
+   ordens market do HL são IOC agressivas com slippage **fixo de 1%** no SDK; em
+   ativos voláteis/ilíquidos o preço não cruza o book e o HL rejeita. Agora o
+   adapter tenta **slippages crescentes** (`execution.market_slippage_steps`,
+   default `[0.05, 0.10, 0.15]`) e só desiste após esgotá-los; qualquer erro que
+   não seja "could not immediately match" para na hora (mais slippage não
+   resolve). Os erros passam a trazer o **nome do coin** ("HYPE: …") em vez de só
+   "asset=135".
+
+**Config nova** (`config/settings.yaml` → `execution.market_slippage_steps`).
+Não mexe em `logic_version` (não é discovery).
+
+### Ações do Hermes
+
+1. **Obrigatório:** deploy na VPS (engine + gateway + web):
+   ```bash
+   cd /home/tokio/Tokio
+   git pull --ff-only origin main
+   sudo systemctl restart tokio-engine.service tokio.service
+   # rebuild do web se seu runbook exigir (nova rota /api/pnl/summary consumida
+   # pela dashboard de copy trade)
+   ```
+   (ajuste nomes dos services/rebuild ao seu runbook.)
+2. Confirmar no scan/observação:
+   - reenvio de HYPE **preenche** (sem "could not immediately match"); se o cap
+     apertar, ver `decision.truncated` no log em vez de rejeição total;
+   - KPI de PnL da dashboard **≠ $0** quando há posição aberta (reflete
+     realizado + não-realizado);
+   - rejeições de ordem agora mostram o nome do coin.
+
+### Validação esperada
+
+- `python -m pytest tests/test_gateway.py tests/test_risk_enforcer.py tests/test_hl_adapter_slippage.py -q`
+  verde (novos: truncamento ao cap, rejeição sem espaço, `/api/pnl/summary`
+  realizado+não-realizado, retry de slippage com nome do coin).
+- `python -m pytest -q`: 1 falha PRÉ-EXISTENTE e não relacionada
+  (`test_scan_approves_swing_rejects_traps`), o resto verde.
+- `cd web && npx tsc --noEmit` limpo.

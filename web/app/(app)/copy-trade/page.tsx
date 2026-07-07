@@ -14,6 +14,7 @@ import {
   getFillsSummary,
   getMetrics,
   getOrders,
+  getPnlSummary,
   getPositions,
   getTraders,
   traderOptions,
@@ -108,9 +109,10 @@ export default async function CopyTradeDashboard({
   const network = selectedEnv === "all" ? null : selectedEnv;
   const balanceEnv = selectedEnv === "all" ? null : selectedEnv;
   const balance = await getBalance(balanceEnv);
-  const [metrics, fillsSummary, orders, fills, positions] = await Promise.all([
+  const [metrics, fillsSummary, pnlSummary, orders, fills, positions] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
     getFillsSummary(ledgerStrategyIds, sinceTs, untilTs, network),
+    getPnlSummary(ledgerStrategyIds, sinceTs, untilTs, network),
     getOrders(ledgerStrategyIds, sinceTs, untilTs, network),
     getFills(ledgerStrategyIds, sinceTs, untilTs, network),
     getPositions(ledgerStrategyIds, network),
@@ -140,6 +142,7 @@ export default async function CopyTradeDashboard({
         balance={balance}
         metrics={metrics}
         fillsSummary={fillsSummary}
+        pnlSummary={pnlSummary}
         periodLabel={PERIOD_LABEL[period]}
         envFiltered={selectedEnv !== "all"}
       />

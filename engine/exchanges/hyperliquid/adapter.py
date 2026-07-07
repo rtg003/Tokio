@@ -27,6 +27,17 @@ from engine.exchanges.base import (
 TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz"
 MAINNET_API_URL = "https://api.hyperliquid.xyz"
 
+# HL rejeita um IOC agressivo que não cruza o book com esta mensagem. É o único
+# erro que vale a pena repetir alargando o slippage — os demais (margem, size,
+# etc.) não mudam com mais slippage.
+_IOC_NO_MATCH = "could not immediately match"
+# Slippage padrão quando não vier da config (market_open/close do SDK usam 1%).
+_DEFAULT_SLIPPAGE_STEPS = [0.05, 0.10, 0.15]
+
+
+def _is_ioc_no_match(error: str | None) -> bool:
+    return bool(error) and _IOC_NO_MATCH in error.lower()
+
 
 class HyperliquidAdapter(ExchangeAdapter):
     name = "hyperliquid"
@@ -36,6 +47,7 @@ class HyperliquidAdapter(ExchangeAdapter):
         network: str = "testnet",
         account_address: str | None = None,
         agent_private_key: str | None = None,
+        slippage_steps: list[float] | None = None,
     ) -> None:
         # Imports are local so the rest of the engine (and tests with the
         # PaperAdapter) never require the SDK at import time.
@@ -60,6 +72,8 @@ class HyperliquidAdapter(ExchangeAdapter):
         self._meta_cache: dict[str, dict[str, Any]] | None = None
         self._lock = threading.Lock()
         self._ws: Any | None = None
+        self.slippage_steps = list(slippage_steps) if slippage_steps else list(
+            _DEFAULT_SLIPPAGE_STEPS)
 
     # -- helpers ---------------------------------------------------------
     def _meta(self) -> dict[str, dict[str, Any]]:
@@ -85,34 +99,60 @@ class HyperliquidAdapter(ExchangeAdapter):
                     exchange.vault_address = request.subaccount_address
                 is_buy = request.side == "buy"
                 cloid = self._to_cloid(request.cloid)
-                if request.order_type == "market":
-                    resp = exchange.market_open(
-                        request.symbol, is_buy, request.size, None, 0.01, cloid=cloid
-                    ) if not request.reduce_only else exchange.market_close(
-                        request.symbol, request.size, None, 0.01, cloid=cloid
-                    )
-                else:
-                    assert request.price is not None, "limit order requires price"
-                    resp = exchange.order(
-                        request.symbol,
-                        is_buy,
-                        request.size,
-                        request.price,
-                        {"limit": {"tif": "Gtc"}},
-                        reduce_only=request.reduce_only,
-                        cloid=cloid,
-                    )
-                if request.subaccount_address:
-                    exchange.vault_address = None
-            return self._parse_order_response(resp, request)
+                try:
+                    if request.order_type == "market":
+                        result = self._place_market_with_retry(
+                            exchange, request, is_buy, cloid)
+                    else:
+                        assert request.price is not None, "limit order requires price"
+                        resp = exchange.order(
+                            request.symbol,
+                            is_buy,
+                            request.size,
+                            request.price,
+                            {"limit": {"tif": "Gtc"}},
+                            reduce_only=request.reduce_only,
+                            cloid=cloid,
+                        )
+                        result = self._parse_order_response(resp, request)
+                finally:
+                    if request.subaccount_address:
+                        exchange.vault_address = None
+            return result
         except Exception as exc:  # noqa: BLE001 — surfaced as a structured error
-            return OrderResult(ok=False, cloid=request.cloid, status="error", error=str(exc))
+            return OrderResult(ok=False, cloid=request.cloid, status="error",
+                               error=f"{request.symbol}: {exc}")
+
+    def _place_market_with_retry(
+        self, exchange: Any, request: OrderRequest, is_buy: bool, cloid: Any,
+    ) -> OrderResult:
+        """Market = IOC agressivo. Se o preço a `slippage` do mid não cruzar o
+        book ("could not immediately match"), alarga o slippage e tenta de novo.
+        Qualquer outro erro para na hora (mais slippage não resolve)."""
+        last: OrderResult | None = None
+        for slippage in self.slippage_steps:
+            if request.reduce_only:
+                resp = exchange.market_close(
+                    request.symbol, request.size, None, slippage, cloid=cloid)
+            else:
+                resp = exchange.market_open(
+                    request.symbol, is_buy, request.size, None, slippage, cloid=cloid)
+            result = self._parse_order_response(resp, request)
+            if result.ok:
+                return result
+            last = result
+            if not _is_ioc_no_match(result.error):
+                return result
+        return last if last is not None else OrderResult(
+            ok=False, cloid=request.cloid, status="rejected",
+            error=f"{request.symbol}: no slippage steps configured")
 
     @staticmethod
     def _parse_order_response(resp: dict[str, Any], request: OrderRequest) -> OrderResult:
+        # Erros carregam o NOME do coin (o SDK só reporta 'asset=<idx>').
         if resp.get("status") != "ok":
             return OrderResult(ok=False, cloid=request.cloid, status="rejected",
-                               error=str(resp), raw=resp)
+                               error=f"{request.symbol}: {resp}", raw=resp)
         statuses = resp["response"]["data"]["statuses"]
         st = statuses[0] if statuses else {}
         if "filled" in st:
@@ -125,7 +165,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             return OrderResult(ok=True, exchange_order_id=str(st["resting"].get("oid")),
                                cloid=request.cloid, status="acked", raw=resp)
         return OrderResult(ok=False, cloid=request.cloid, status="rejected",
-                           error=str(st.get("error", st)), raw=resp)
+                           error=f"{request.symbol}: {st.get('error', st)}", raw=resp)
 
     def cancel(self, symbol: str, exchange_order_id: str | None = None,
                cloid: str | None = None) -> bool:
@@ -239,13 +279,19 @@ def make_adapter(
     *,
     account_address: str | None = None,
     agent_private_key: str | None = None,
+    slippage_steps: list[float] | None = None,
 ) -> ExchangeAdapter:
     """Factory used by the gateway; venue and network come from settings."""
     if exchange == "hyperliquid":
+        if slippage_steps is None:
+            from engine.core.config import get_settings
+
+            slippage_steps = get_settings().execution.market_slippage_steps
         return HyperliquidAdapter(
             network=network,
             account_address=account_address,
             agent_private_key=agent_private_key,
+            slippage_steps=slippage_steps,
         )
     if exchange == "paper":
         from engine.exchanges.paper import PaperAdapter

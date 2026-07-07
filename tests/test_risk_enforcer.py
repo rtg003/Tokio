@@ -17,11 +17,13 @@ def test_rejects_below_min_notional(settings: Settings) -> None:
     assert not v.allowed and "below_min_notional" in v.reason
 
 
-def test_rejects_above_max_order_notional(settings: Settings) -> None:
+def test_truncates_above_max_order_notional(settings: Settings) -> None:
+    # Acima do teto por-ordem NÃO é mais rejeitado: entra truncado ao teto.
     enf, _ = make_enforcer(settings)
     v = enf.check_intent(strategy_id="s", symbol="BTC", notional_usd=10_000,
                          leverage=None, prices={})
-    assert not v.allowed and "max_order_notional" in v.reason
+    assert v.allowed and v.reason == "truncated_to_cap"
+    assert v.max_notional_usd == settings.risk.max_order_notional_usd
 
 
 def test_rejects_leverage_above_global(settings: Settings) -> None:
@@ -31,7 +33,9 @@ def test_rejects_leverage_above_global(settings: Settings) -> None:
     assert not v.allowed and "max_leverage" in v.reason
 
 
-def test_strategy_exposure_cap(settings: Settings) -> None:
+def test_strategy_exposure_cap_truncates_to_room(settings: Settings) -> None:
+    # Exposição ~490 num cap de 500 → sobra $10 de espaço; o pedido de $100 entra
+    # truncado a $10 (o cap continua respeitado, mas não zeramos a ordem).
     enf, ledger = make_enforcer(settings)
     cloid = make_cloid("hungry")
     ledger.register_order(cloid, "hungry")
@@ -39,10 +43,11 @@ def test_strategy_exposure_cap(settings: Settings) -> None:
                       price=100_000, size=0.0049, fee=0)  # ~490 USD exposure
     v = enf.check_intent(strategy_id="hungry", symbol="BTC", notional_usd=100,
                          leverage=None, prices={"BTC": 100_000})
-    assert not v.allowed and "strategy_exposure_cap" in v.reason
+    assert v.allowed and v.reason == "truncated_to_cap"
+    assert v.max_notional_usd == 10.0  # 500 (cap) - 490 (exposto)
 
 
-def test_total_exposure_cap_across_strategies(settings: Settings) -> None:
+def test_total_exposure_cap_across_strategies_truncates(settings: Settings) -> None:
     settings.risk.max_strategy_exposure_usd = 5_000
     enf, ledger = make_enforcer(settings)
     for sid in ("a", "b", "c", "d"):
@@ -50,9 +55,24 @@ def test_total_exposure_cap_across_strategies(settings: Settings) -> None:
         ledger.register_order(cloid, sid)
         ledger.apply_fill(cloid=cloid, symbol="ETH", side="buy",
                           price=1_000, size=0.49, fee=0)  # 490 each => 1960 total
+    # Cap total = 2000, já expostos 1960 → sobra $40; pedido de $100 trunca a $40.
     v = enf.check_intent(strategy_id="e", symbol="ETH", notional_usd=100,
                          leverage=None, prices={"ETH": 1_000})
-    assert not v.allowed and "total_exposure_cap" in v.reason
+    assert v.allowed and v.reason == "truncated_to_cap"
+    assert v.max_notional_usd == 40.0  # 2000 (cap total) - 1960 (exposto)
+
+
+def test_rejects_when_cap_has_no_room(settings: Settings) -> None:
+    # Cap por estratégia totalmente consumido → sem espaço → rejeita de vez
+    # (nada a truncar).
+    enf, ledger = make_enforcer(settings)
+    cloid = make_cloid("full")
+    ledger.register_order(cloid, "full")
+    ledger.apply_fill(cloid=cloid, symbol="BTC", side="buy",
+                      price=100_000, size=0.005, fee=0)  # 500 USD == cap
+    v = enf.check_intent(strategy_id="full", symbol="BTC", notional_usd=100,
+                         leverage=None, prices={"BTC": 100_000})
+    assert not v.allowed and v.reason == "strategy_cap_full"
 
 
 def test_kill_switch_blocks_everything(settings: Settings) -> None:

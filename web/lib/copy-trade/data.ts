@@ -81,6 +81,15 @@ export type FillsSummary = {
   win_rate: number | null;
 };
 
+export type PnlSummary = {
+  n_trades: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  fees: number;
+  win_rate: number | null;
+};
+
 export type Position = Record<string, any> & {
   symbol: string;
   size: number;
@@ -194,6 +203,33 @@ export async function getFillsSummary(
     network,
   );
   return gatewayGet<FillsSummary>(`/api/fills/summary?${q.toString()}`);
+}
+
+export async function getPnlSummary(
+  strategyIds: string[],
+  since: string,
+  until: string,
+  network?: "testnet" | "mainnet" | null,
+): Promise<PnlSummary | null> {
+  if (strategyIds.length === 0) {
+    return {
+      n_trades: 0,
+      realized_pnl: 0,
+      unrealized_pnl: 0,
+      total_pnl: 0,
+      fees: 0,
+      win_rate: null,
+    };
+  }
+  const q = withNetwork(
+    new URLSearchParams({
+      strategy_id: strategyIds.join(","),
+      since,
+      until,
+    }),
+    network,
+  );
+  return gatewayGet<PnlSummary>(`/api/pnl/summary?${q.toString()}`);
 }
 
 export async function getOrders(

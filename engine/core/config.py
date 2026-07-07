@@ -30,6 +30,14 @@ class RiskSettings(BaseModel):
     min_order_notional_usd: float = 10.0
 
 
+class ExecutionSettings(BaseModel):
+    # Ordens market no HL são IOC agressivas (limit no mid ± slippage). Um
+    # slippage fixo de 1% não cruza o book de ativos ilíquidos/voláteis (ex.:
+    # HYPE) → "could not immediately match against any resting orders". Tentamos
+    # cada slippage em ordem, alargando, antes de desistir.
+    market_slippage_steps: list[float] = [0.05, 0.10, 0.15]
+
+
 class RateLimitSettings(BaseModel):
     default_strategy_budget_per_min: int = 30
     reserve_for_cancels: float = 0.2
@@ -69,6 +77,7 @@ class CopyTradeSettings(BaseModel):
 class Settings(BaseModel):
     exchange: ExchangeSettings = Field(default_factory=ExchangeSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
+    execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     wip_limits: WipLimits = Field(default_factory=WipLimits)
     fees: FeeSettings = Field(default_factory=FeeSettings)

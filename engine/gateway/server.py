@@ -10,6 +10,7 @@ network and requires the shared `GATEWAY_CONTROL_TOKEN`.
 """
 from __future__ import annotations
 
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -276,6 +277,28 @@ class GatewayState:
             reduce_only=intent.reduce_only,
         )
         cloid = make_cloid(intent.strategy_id)
+        # Truncate-to-cap: the enforcer allowed the intent but capped its
+        # notional. Shrink the size (floor to sz_decimals so we NEVER breach the
+        # cap) instead of dropping the order entirely.
+        if verdict.allowed and verdict.max_notional_usd is not None:
+            requested_size = size
+            max_size = verdict.max_notional_usd / price
+            if sz_decimals > 0:
+                factor = 10 ** sz_decimals
+                max_size = math.floor(max_size * factor) / factor
+            else:
+                max_size = float(math.floor(max_size))
+            if abs(size) > max_size:
+                size = math.copysign(max_size, size)
+            notional = abs(size) * price
+            if abs(size) < 1e-12:
+                return {"ok": False, "reason": "cap_room_below_min", "cloid": cloid}
+            self.logger.warning(
+                "decision.truncated",
+                {"cloid": cloid, "symbol": intent.symbol,
+                 "requested_size": requested_size, "capped_size": size,
+                 "max_notional_usd": round(verdict.max_notional_usd, 4)},
+                strategy_id=intent.strategy_id)
         decision_payload = {
             "cloid": cloid, "symbol": intent.symbol, "side": intent.side,
             "size": size, "notional_usd": round(notional, 4),
@@ -825,6 +848,40 @@ def build_app(state: GatewayState) -> FastAPI:
 
     _positions_cache: dict[str, dict[str, Any]] = {}
 
+    def _scoped_positions(
+        strategy_ids: list[str], network_filter: str | None,
+    ) -> list[dict[str, Any]]:
+        """Posições da venue ESCOPADAS aos símbolos que o(s) strategy_id(s)
+        negocia(m) (ADR 0010 §5.1). A venue não atribui posição por strategy_id,
+        então aproximamos o isolamento pelos símbolos com ordens/fills daquele(s)
+        strategy_id(s). 15s de cache (info API é rate-limited). Falha da venue ou
+        ambiente não configurado devolve [] (não derruba a UI)."""
+        try:
+            adapter = state._adapter_for(network_filter)
+        except ValueError:
+            return []   # ambiente não configurado → sem posições
+        placeholders = _in_clause(strategy_ids)
+        sym_rows = state.db.query(
+            f"SELECT DISTINCT symbol FROM orders WHERE strategy_id IN ({placeholders}) "
+            f"UNION "
+            f"SELECT DISTINCT symbol FROM fills WHERE strategy_id IN ({placeholders})",
+            [*strategy_ids, *strategy_ids],
+        )
+        symbols = {r["symbol"] for r in sym_rows}
+        if not symbols:
+            return []
+        now = time.time()
+        cached = _positions_cache.get(adapter.network)
+        if cached is None or now - cached["ts"] > 15:
+            try:
+                fetched = [vars(p) for p in adapter.positions()]
+            except Exception:  # noqa: BLE001 — venue hiccup não pode 500 a UI
+                return []
+            _positions_cache[adapter.network] = {"data": fetched, "ts": now}
+        data = _positions_cache[adapter.network]["data"]
+        return [{**p, "network": adapter.network}
+                for p in data if p.get("symbol") in symbols]
+
     @app.get("/api/positions")
     def api_positions(
         strategy_id: str | None = None,
@@ -833,43 +890,71 @@ def build_app(state: GatewayState) -> FastAPI:
         """Posições abertas no clearinghouse do ambiente, ESCOPADAS aos símbolos
         que o módulo negocia (ADR 0010 §5.1).
 
-        A venue não atribui posição por strategy_id, então aproximamos o
-        isolamento filtrando pelos símbolos com ordens/fills do(s) strategy_id(s)
-        pedido(s). ?strategy_id é OBRIGATÓRIO; ?network=testnet|mainnet escolhe o
-        adapter (default = ambiente configurado). 15s de cache (info API é
-        rate-limited). Falha da venue devolve [] (não derruba a UI)."""
+        ?strategy_id é OBRIGATÓRIO; ?network=testnet|mainnet escolhe o adapter
+        (default = ambiente configurado). Falha da venue devolve [] (não derruba
+        a UI)."""
         try:
             strategy_ids = _strategy_ids_csv(strategy_id)
             network_filter = _parse_network(network)
-            try:
-                adapter = state._adapter_for(network_filter)
-            except ValueError:
-                return []   # ambiente não configurado → sem posições
-            placeholders = _in_clause(strategy_ids)
-            sym_rows = state.db.query(
-                f"SELECT DISTINCT symbol FROM orders WHERE strategy_id IN ({placeholders}) "
-                f"UNION "
-                f"SELECT DISTINCT symbol FROM fills WHERE strategy_id IN ({placeholders})",
-                [*strategy_ids, *strategy_ids],
-            )
-            symbols = {r["symbol"] for r in sym_rows}
-            if not symbols:
-                return []
-            now = time.time()
-            cached = _positions_cache.get(adapter.network)
-            if cached is None or now - cached["ts"] > 15:
-                try:
-                    fetched = [vars(p) for p in adapter.positions()]
-                except Exception as exc:  # noqa: BLE001 — venue hiccup não pode 500 a UI
-                    return []
-                _positions_cache[adapter.network] = {"data": fetched, "ts": now}
-            data = _positions_cache[adapter.network]["data"]
-            return [{**p, "network": adapter.network}
-                    for p in data if p.get("symbol") in symbols]
+            return _scoped_positions(strategy_ids, network_filter)
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"positions: {str(exc)[:200]}")
+
+    @app.get("/api/pnl/summary")
+    def api_pnl_summary(
+        strategy_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        network: str | None = None,
+    ) -> dict[str, Any]:
+        """PnL realizado (fills) + não-realizado (posições abertas na venue).
+
+        O KPI mostrava $0 porque só somávamos realized_pnl e posições abertas têm
+        realized_pnl NULL. ?strategy_id é OBRIGATÓRIO (ADR 0010 §5.1);
+        ?network=testnet|mainnet filtra fills e escolhe o adapter. Falha da venue
+        → unrealized_pnl = 0 (não derruba a UI)."""
+        try:
+            strategy_ids = _strategy_ids_csv(strategy_id)
+            network_filter = _parse_network(network)
+            where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
+            params: list[Any] = [*strategy_ids]
+            if network_filter:
+                where.append("network = ?")
+                params.append(network_filter)
+            if since:
+                where.append("ts >= ?")
+                params.append(since)
+            if until:
+                where.append("ts <= ?")
+                params.append(until)
+            sql = f"""
+                SELECT COUNT(*) AS n_trades,
+                       COALESCE(SUM(realized_pnl), 0) AS realized_pnl,
+                       COALESCE(SUM(fee), 0) AS fees,
+                       AVG(CASE WHEN realized_pnl IS NOT NULL AND realized_pnl > 0
+                                THEN 1.0 ELSE 0.0 END) AS win_rate
+                FROM fills
+                WHERE {' AND '.join(where)}
+            """
+            rows = state.db.query(sql, params)
+            row = dict(rows[0]) if rows else {}
+            realized = float(row.get("realized_pnl") or 0)
+            positions = _scoped_positions(strategy_ids, network_filter)
+            unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+            return {
+                "n_trades": int(row.get("n_trades") or 0),
+                "realized_pnl": realized,
+                "unrealized_pnl": unrealized,
+                "total_pnl": realized + unrealized,
+                "fees": float(row.get("fees") or 0),
+                "win_rate": row.get("win_rate"),
+            }
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"pnl/summary: {str(exc)[:200]}")
 
     # -- /api/metrics (daily metrics scoped by strategy_ids, ADR 0010) -----
     @app.get("/api/metrics")

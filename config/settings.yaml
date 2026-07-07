@@ -13,6 +13,11 @@ risk:
   max_leverage_global: 5.0             # leverage always truncated by this ceiling
   min_order_notional_usd: 10.0         # Hyperliquid minimum
 
+execution:
+  # Ordens market (IOC agressivo). Tenta cada slippage em ordem antes de desistir
+  # — 1% fixo do SDK não cruza o book de ativos voláteis (ex.: HYPE).
+  market_slippage_steps: [0.05, 0.10, 0.15]
+
 rate_limit:
   # Per-strategy request budget managed by the gateway (address budget is finite:
   # 1 request per 1 USDC of cumulative volume + 10k initial buffer).

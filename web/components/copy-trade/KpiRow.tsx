@@ -1,10 +1,11 @@
 import { fmtNum, fmtSigned, pnlClass } from "@/lib/format";
-import { Balance, FillsSummary, Metrics } from "@/lib/copy-trade/data";
+import { Balance, FillsSummary, Metrics, PnlSummary } from "@/lib/copy-trade/data";
 
 type Props = {
   balance: Balance;
   metrics: Metrics[] | null;
   fillsSummary: FillsSummary | null;
+  pnlSummary?: PnlSummary | null;
   periodLabel: string;
   envFiltered?: boolean;
 };
@@ -13,13 +14,21 @@ export default function KpiRow({
   balance,
   metrics,
   fillsSummary,
+  pnlSummary = null,
   periodLabel,
   envFiltered = false,
 }: Props) {
   const m = metrics ?? [];
   const summary = fillsSummary ?? { n_trades: 0, net_pnl: 0, fees: 0, win_rate: null };
   const metricsPnl = m.reduce((s, r) => s + (r.net_pnl ?? 0), 0);
-  const netPnl = envFiltered ? summary.net_pnl : metricsPnl;
+  // PnL líquido = realizado + não-realizado (posições abertas). Cai para o
+  // cálculo antigo (só realizado) se o endpoint de PnL estiver indisponível.
+  const netPnl =
+    pnlSummary !== null
+      ? pnlSummary.total_pnl
+      : envFiltered
+        ? summary.net_pnl
+        : metricsPnl;
   const nTrades = summary.n_trades;
   const withWr = m.filter((r) => r.win_rate !== null);
   const metricsWinRate = withWr.length
@@ -49,7 +58,7 @@ export default function KpiRow({
       <div className="kpi">
         <div className="lab">PnL líquido</div>
         <div className={`val ${pnlClass(netPnl)}`}>{fmtSigned(netPnl)}</div>
-        <div className="sub">USDC · após fees + slippage</div>
+        <div className="sub">USDC · realizado + não-realizado</div>
       </div>
       <div className="kpi">
         <div className="lab">Trades</div>

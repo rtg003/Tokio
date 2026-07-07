@@ -27,6 +27,9 @@ from engine.gateway.ledger import Ledger
 class RiskVerdict:
     allowed: bool
     reason: str = "ok"
+    # When set, the intent is allowed but must be truncated so its notional does
+    # not exceed this ceiling (the binding cap). None = no truncation needed.
+    max_notional_usd: float | None = None
 
 
 class RateBudget:
@@ -143,22 +146,39 @@ class RiskEnforcer:
         r = self.settings.risk
         if notional_usd < r.min_order_notional_usd:
             return RiskVerdict(False, f"below_min_notional_{r.min_order_notional_usd}")
-        if notional_usd > r.max_order_notional_usd:
-            return RiskVerdict(False, f"exceeds_max_order_notional_{r.max_order_notional_usd}")
         if leverage is not None and leverage > r.max_leverage_global:
             return RiskVerdict(False, f"exceeds_max_leverage_{r.max_leverage_global}")
 
+        # Truncate-to-cap: instead of rejecting an oversized intent outright
+        # (which leaves us with NO position), compute the binding ceiling across
+        # the per-order cap and — for risk-adding orders — the per-strategy and
+        # total exposure caps. The smallest applicable ceiling wins.
+        ceilings: list[tuple[str, float]] = [
+            ("max_order_notional", r.max_order_notional_usd)
+        ]
         if not reduce_only:
-            # Reduce-only orders shrink exposure; caps apply to risk-adding orders.
+            # Reduce-only orders shrink exposure; exposure caps apply only to
+            # risk-adding orders.
             cap = strategy_cap_usd if strategy_cap_usd is not None else r.max_strategy_exposure_usd
             book = self.ledger.book(strategy_id)
-            if book.exposure_usd(prices) + notional_usd > cap:
-                return RiskVerdict(False, f"exceeds_strategy_exposure_cap_{cap}")
-
+            ceilings.append(("strategy_cap", cap - book.exposure_usd(prices)))
             total = sum(b.exposure_usd(prices) for b in self.ledger.books().values())
-            if total + notional_usd > r.max_total_exposure_usd:
-                return RiskVerdict(False, f"exceeds_total_exposure_cap_{r.max_total_exposure_usd}")
+            ceilings.append(("total_cap", r.max_total_exposure_usd - total))
+
+        reason_key, ceiling = min(ceilings, key=lambda c: c[1])
+        truncated: float | None = None
+        if notional_usd > ceiling:
+            if ceiling <= 0:
+                # No room at all under the binding cap → nothing to send.
+                return RiskVerdict(False, f"{reason_key}_full")
+            if ceiling < r.min_order_notional_usd:
+                # The room left is smaller than the minimum order → truncating
+                # would only produce a dust order the venue rejects.
+                return RiskVerdict(False, "cap_room_below_min")
+            truncated = ceiling
 
         if not self.rate_budget.try_consume(strategy_id):
             return RiskVerdict(False, "rate_budget_exhausted")
+        if truncated is not None:
+            return RiskVerdict(True, "truncated_to_cap", max_notional_usd=truncated)
         return RiskVerdict(True)
