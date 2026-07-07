@@ -15,11 +15,11 @@ collection:
   deep_dive_max: 300              # v11: abre o funil; ajuste fino pelo Hermes
   external_dive_quota: 60         # v11: vagas extras reservadas a fontes externas, com fallback p/ leaderboard
   external_interleave_after: 100  # v11: insere externos cedo na fila para não morrerem por orçamento
-  request_budget: 5000            # v11: 300×~7 + quota externa + margem
+  request_budget: 2800            # v11: 300×~7 + quota externa + margem
   min_request_interval_s: 1.3     # v11: throttle HTTP ajustável pelo Hermes
   min_equity_usd: 1000            # v11: alinhado ao piso F20; corte barato usa equity aproximada do leaderboard
   cheap_cut_equity_filter: false  # v14: false => F20 só no hard filter (equity real do deep dive); true => aplica banda F20 no corte barato (equity aproximada do leaderboard, comportamento antigo)
-  cheap_cut_last_activity_days: 7  # v14: null => desligado; N => corta candidatos sem fill nos últimos N dias ANTES do deep dive (1 request curto por candidato do corte barato; opt-in por custo de request_budget)
+  cheap_cut_last_activity_days: null  # v14: null => desligado; N => corta candidatos sem fill nos últimos N dias ANTES do deep dive (1 request curto por candidato do corte barato; opt-in por custo de request_budget)
   # v6: coleta prioriza por PnL 7d (atividade recente), não PnL all-time
   sort_by: "pnl_7d"               # v6: ordena coleta por PnL 7d (desc) em vez de all-time
   deep_sort_by: "roi_30d"         # v11: roi_30d | pnl_7d | equity_asc
