@@ -57,6 +57,46 @@ class GatewayClient:
         resp.raise_for_status()
         return resp.json()
 
+    def ledger(self) -> dict[str, Any]:
+        """Virtual per-strategy book snapshot (attributed by strategy_id).
+
+        Primary, §5.1-attributed source for reconcile/drift:
+        ledger[sid]["positions"][symbol]["size"].
+        """
+        resp = self._client.get("/ledger")
+        resp.raise_for_status()
+        return resp.json()
+
+    def positions(self, strategy_ids: list[str],
+                  network: str | None = None) -> list[dict[str, Any]]:
+        """Real clearinghouse positions scoped to the given strategies (§5.1).
+
+        Used ONLY for the venue cross-check (observability) — never to correct a
+        single strategy, since venue positions aren't attributable per strategy.
+        """
+        if not strategy_ids:
+            return []
+        params: dict[str, Any] = {"strategy_id": ",".join(strategy_ids)}
+        if network is not None:
+            params["network"] = network
+        resp = self._client.get("/api/positions", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
+    def wait_ready(self, attempts: int = 3, delay: float = 2.0) -> bool:
+        """Poll /health with backoff so a runner started before the gateway
+        doesn't spam 'Connection refused'. Returns True once healthy."""
+        for attempt in range(1, attempts + 1):
+            try:
+                self.health()
+                return True
+            except Exception:  # noqa: BLE001 — gateway may not be up yet
+                if attempt == attempts:
+                    return False
+                time.sleep(delay)
+        return False
+
     def close(self) -> None:
         self._client.close()
 

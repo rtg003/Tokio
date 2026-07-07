@@ -1482,7 +1482,7 @@ está completamente quebrado para este trader.
 
 ### Prioridade: CRÍTICA
 
-## UPDATE-0020 · 2026-07-07 · Status: PENDENTE
+## UPDATE-0020 · 2026-07-07 · Status: APLICADO em 2026-07-07
 
 Origem: Hermes — bugs críticos no executor de copy trade (trades não espelhados)
 Tipo: bug + engine

@@ -436,7 +436,13 @@ def build_app(state: GatewayState) -> FastAPI:
             meta = adapter.market_meta(symbol)
         except KeyError:
             return {"ok": False, "reason": "unknown_symbol", "symbol": symbol}
-        return {"ok": True, **meta}
+        # mid price lets the copy-trade reconcile size absolute positions without
+        # a second RTT (UPDATE-0020); best-effort — 0.0 if the venue is quiet.
+        try:
+            mid = float(adapter.mid_price(symbol))
+        except Exception:  # noqa: BLE001 — meta is still useful without a price
+            mid = 0.0
+        return {"ok": True, "mid": mid, **meta}
 
     # -- control API (internal network only; web is the only client) -------
     @app.post("/control/strategy/{strategy_id}/pause", dependencies=[Depends(_control_auth)])

@@ -1205,3 +1205,83 @@ KPIs → Posições → Trades e Ordens em Aberto → Traders.
   `test_api_positions_scoped_to_strategy_symbols`,
   `test_api_positions_requires_strategy_id`).
 - `cd web && npx tsc --noEmit` sem erros.
+
+## UPDATE-0021 · 2026-07-07 · Status: PENDENTE
+
+Origem: Cursor — correção DEFINITIVA do espelhamento do copy trade (fecha o
+UPDATE-0020: trader 0xdef5 fez 19 fills / +$2.371 e só 1 foi espelhada).
+
+Tipo: engine (executor + WS resiliente) + gateway (market-meta) + config
+
+Resumo: o motivo de "rodar em círculos" era arquitetural — consertar só o
+WebSocket recupera apenas fills FUTUROS (o SDK descarta o snapshot de reconexão)
+e o estado do executor era só em memória (perdido no restart). Reescrevi o
+espelhamento em torno de uma **reconciliação ancorada na posição REAL do
+trader** (clearinghouse via REST, independente de WS/restart) que converge o
+espelho símbolo a símbolo, **por trader → por estratégia** (§5.1/§5.2), e tornei
+os dois WebSockets resilientes (o SDK oficial não reconecta).
+
+### O que mudou
+
+1. **Reconciliação corretiva (backbone)** — `engine/strategies/copy_trade/executor.py`
+   `reconcile()`: laço EXTERNO por trader ativo (TESTNET/MAINNET + strategy
+   `active`), INTERNO por símbolo. Para cada estratégia `ct_*`:
+   compara a posição REAL do trader (`target_positions_fn`, clearinghouse) com a
+   **nossa posição atribuída no ledger por estratégia** (`ledger[sid].positions`,
+   fonte §5.1 — NUNCA o clearinghouse agregado) e emite o delta até o espelho.
+   Loga `drift.correcting {strategy_id, symbol, target_now, desired, actual, delta}`.
+   Recupera os 18 fills perdidos sem depender de nenhum evento de WS.
+2. **Sizing absoluto unificado** `_desired_mirror()` usado pelo caminho rápido
+   (WS `on_target_fill`) E pela reconciliação, então um nunca "corrige" o outro.
+   **Mudança de semântica intencional:** `fixed_usdc` agora = manter `$value` de
+   exposição na direção do trader enquanto ele estiver posicionado (NÃO escala
+   quando o trader dobra); é stateless (requisito p/ reconciliar após restart).
+   `percent` inalterado.
+3. **Anti-duplo-envio:** após emitir no reconcile, atualiza `_my_pos` otimista +
+   cooldown por chave (cobre o gap ordem→fill até o ledger refletir).
+4. **WS resiliente** — novo `engine/exchanges/hyperliquid/ws_supervisor.py`
+   (`WsSupervisor`): rastreia todas as subscrições, watchdog detecta thread
+   morta/silêncio e reconecta com backoff + re-subscribe; ping a cada 20s
+   (o SDK pinga só a cada 50s e a HL derruba socket inativo ~30s). Usado tanto
+   pelo watcher de fills do trader (`HyperliquidWatcher`) quanto pelo WS de
+   own-fills do gateway (`adapter.subscribe_user_fills`) — este último mantém o
+   ledger por estratégia (âncora do reconcile) fresco.
+5. **Retry de startup** — `GatewayClient.wait_ready()` (backoff 3×2s) resolve o
+   "Connection refused" quando o engine sobe antes do gateway; startup faz um
+   `reconcile()` (reconstrói a posição após restart/gap).
+6. **Gateway** — `/api/market-meta` agora inclui `mid` (preço) para o reconcile
+   dimensionar posições sem um RTT extra.
+7. **Config** (`engine/core/config.py` `CopyTradeSettings`): novos
+   `reconcile_interval_s=20.0`, `ws_stale_timeout_s=35.0`,
+   `ws_reconnect_max_backoff_s=60.0`. Não mexe em `logic_version` (não é
+   discovery).
+
+Nota (follow-up deliberado, NÃO bloqueia): aplicar `apply_fill` a partir da
+resposta síncrona da ordem market ficou de fora para evitar duplo-cont no ledger
+(a resposta síncrona não traz `tid` para dedup contra o WS). A resiliência do WS
+de own-fills já mantém o ledger fresco; o cooldown + `_my_pos` otimista amortecem
+o gap ordem→fill.
+
+### Ações do Hermes
+
+1. **Obrigatório:** deploy na VPS (só engine + gateway; sem rebuild do web):
+   ```bash
+   cd /home/tokio/Tokio
+   git pull --ff-only origin main
+   sudo systemctl restart tokio-engine.service tokio.service
+   ```
+   (ajuste nomes dos services ao seu runbook.)
+2. Acompanhar os logs do runner copy_trade e confirmar no scan/observação:
+   - `ws.reconnected` aparece após uma queda do socket (sem restart manual);
+   - `drift.correcting` emite as correções e o espelho de **FARTCOIN** e **HYPE**
+     do trader 0xdef5 converge (posições passam a bater com as do trader);
+   - sem enxurrada de ordens duplicadas (cooldown/otimista segurando).
+
+### Validação esperada
+
+- `python -m pytest tests/test_copy_trade.py tests/test_ws_supervisor.py tests/test_gateway.py -q`
+  verde (novos: recuperação de fills perdidos FARTCOIN+HYPE, escopo por
+  trader→estratégia no mesmo símbolo, idempotência, cooldown, `fixed_usdc`
+  absoluto, `wait_ready`, reconnect/re-subscribe do WsSupervisor).
+- `python -m pytest -q`: 1 falha PRÉ-EXISTENTE e não relacionada
+  (`test_scan_approves_swing_rejects_traps`), o resto verde.

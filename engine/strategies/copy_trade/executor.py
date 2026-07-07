@@ -75,14 +75,25 @@ class FillWatcher(Protocol):
 
 
 class HyperliquidWatcher:
-    """Read-only WS subscription to arbitrary addresses via the official SDK."""
+    """Read-only access to arbitrary addresses via the official SDK.
 
-    def __init__(self, network: str = "testnet") -> None:
+    REST (positions/equity) uses a stable `skip_ws` Info; live fills go through a
+    resilient `WsSupervisor` that reconnects + re-subscribes when the SDK's socket
+    dies (the SDK itself never reconnects — UPDATE-0020)."""
+
+    def __init__(self, network: str = "testnet", *, logger: Any | None = None,
+                 max_backoff_s: float = 60.0) -> None:
         from engine.exchanges.hyperliquid.adapter import MAINNET_API_URL, TESTNET_API_URL
+        from engine.exchanges.hyperliquid.ws_supervisor import WsSupervisor
         from hyperliquid.info import Info
 
         base = TESTNET_API_URL if network == "testnet" else MAINNET_API_URL
-        self.info = Info(base_url=base, skip_ws=False)
+        self._rest = Info(base_url=base, skip_ws=True)
+        self._ws = WsSupervisor(
+            make_info=lambda: Info(base_url=base, skip_ws=False),
+            max_backoff_s=max_backoff_s, logger=logger, name="ws-targetfills",
+        )
+        self._started = False
 
     def subscribe(self, address: str, callback: Callable[[dict[str, Any]], None]) -> None:
         def _handler(msg: dict[str, Any]) -> None:
@@ -92,11 +103,26 @@ class HyperliquidWatcher:
             for fill in data.get("fills", []):
                 callback(fill)
 
-        self.info.subscribe({"type": "userFills", "user": address}, _handler)
+        self._ws.subscribe({"type": "userFills", "user": address}, _handler)
+        if not self._started:
+            self._ws.start()
+            self._started = True
 
     def target_equity(self, address: str) -> float:
-        state = self.info.user_state(address)
+        state = self._rest.user_state(address)
         return float(state.get("marginSummary", {}).get("accountValue", 0))
+
+    def target_positions(self, address: str) -> dict[str, float]:
+        """Trader's real signed position per symbol (clearinghouse, WS-independent).
+        The reconcile anchor — converges our mirror regardless of missed fills."""
+        state = self._rest.user_state(address)
+        out: dict[str, float] = {}
+        for ap in state.get("assetPositions", []):
+            p = ap.get("position", {})
+            szi = float(p.get("szi") or 0)
+            if szi != 0:
+                out[p["coin"]] = szi
+        return out
 
 
 class CopyTradeExecutor:
@@ -109,6 +135,7 @@ class CopyTradeExecutor:
         watcher: FillWatcher,
         my_equity_fn: Callable[[], float] | None = None,
         target_equity_fn: Callable[[str], float] | None = None,
+        target_positions_fn: Callable[[str], dict[str, float]] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.db = db or Database(self.settings.sqlite_path)
@@ -117,14 +144,24 @@ class CopyTradeExecutor:
         self.logger = EventLogger("runner-copytrade", self.settings.logs_dir, db=self.db)
         self.my_equity_fn = my_equity_fn or (lambda: 1_000.0)
         self.target_equity_fn = target_equity_fn or (lambda _addr: 0.0)
+        # Real signed position of the trader per symbol — the reconcile anchor
+        # (clearinghouse, WS-independent). Empty in tests unless injected.
+        self.target_positions_fn = target_positions_fn or (lambda _addr: {})
         self.traders: dict[str, TraderConfig] = {}
         self._subscribed: set[str] = set()
         # (strategy_id, symbol) -> sizes for mirroring + drift check
         self._target_pos: dict[tuple[str, str], float] = {}
         self._my_pos: dict[tuple[str, str], float] = {}
+        # (strategy_id, symbol) -> monotonic ts of last reconcile intent; the
+        # optimistic anti-double-send window (order sent, fill not yet in ledger).
+        self._reconcile_cooldown: dict[tuple[str, str], float] = {}
         # symbol -> szDecimals (static venue metadata; cached to avoid per-fill RTT)
         self._sz_decimals: dict[str, int] = {}
         self.reload_traders()
+
+    # cooldown after a reconcile intent — long enough for the fill to land in
+    # the ledger (own-fills WS) but short vs. the reconcile interval.
+    RECONCILE_COOLDOWN_S = 15.0
 
     # -- setup ---------------------------------------------------------------
     def reload_traders(self) -> None:
@@ -205,7 +242,10 @@ class CopyTradeExecutor:
         self._target_pos[key] = new_target
 
         my_prev = self._my_pos.get(key, 0.0)
-        my_new = self._mirror_size(cfg, prev_target, new_target, my_prev, px)
+        # Absolute sizing on the trader's CURRENT position — same map the
+        # reconcile uses, so the fast path (WS) and the corrective path never
+        # fight each other. Stateless: survives missed fills / restarts.
+        my_new = self._desired_mirror(cfg, symbol, new_target, px)
         # Round the TARGET position to the venue's step (szDecimals) so the size
         # we send is always a valid multiple — the HL API rejects otherwise with
         # "float_to_wire causes rounding". my_prev is already on the grid from a
@@ -280,33 +320,166 @@ class CopyTradeExecutor:
         # round(), never int()/truncation: HL needs the nearest valid multiple.
         return round(size, sz_decimals) if sz_decimals > 0 else float(round(size))
 
-    def _mirror_size(self, cfg: TraderConfig, prev_target: float, new_target: float,
-                     my_prev: float, px: float) -> float:
-        if new_target == 0.0:
+    def _desired_mirror(self, cfg: TraderConfig, symbol: str,
+                        target_now: float, px: float) -> float:
+        """Absolute mirrored position we SHOULD hold given the trader's current
+        signed position `target_now`. Stateless (no dependence on our previous
+        size) so the reconcile converges after any missed fill or restart.
+
+        Semantics (UPDATE-0020, intentional change for `fixed_usdc`):
+          target_now == 0   -> 0.0                       (trader flat -> we close)
+          fixed_usdc        -> ($value / px) * sign      (hold $value of exposure,
+                                                           does NOT scale w/ trader)
+          percent           -> (|target_now|*px*value*my_eq/target_eq)/px * sign
+                               (proportional to the trader's notional — unchanged)
+        The result is rounded to the venue step by the caller.
+        """
+        if target_now == 0.0:
             return 0.0
-        if prev_target == 0.0 or my_prev == 0.0:
-            # opening from flat (ours or theirs): size by configured mode
-            if cfg.mode == "fixed_usdc":
-                notional = cfg.value
-            else:  # percent: proportional to equity ratio
-                target_eq = self.target_equity_fn(cfg.address) or 0.0
-                if target_eq <= 0:
-                    self.logger.warning("decision.no_target_equity",
-                                        {"address": cfg.address},
-                                        strategy_id=cfg.strategy_id)
-                    return my_prev
-                notional = abs(new_target) * px * cfg.value * (
-                    self.my_equity_fn() / target_eq)
-            return (notional / px) * (1 if new_target > 0 else -1)
-        # scale ours by the same factor as the target's position change
-        return my_prev * (new_target / prev_target)
+        sign = 1.0 if target_now > 0 else -1.0
+        if cfg.mode == "fixed_usdc":
+            if px <= 0:
+                return 0.0
+            return (cfg.value / px) * sign
+        # percent: proportional to the trader's notional and the equity ratio
+        target_eq = self.target_equity_fn(cfg.address) or 0.0
+        if target_eq <= 0 or px <= 0:
+            self.logger.warning("decision.no_target_equity", {"address": cfg.address},
+                                strategy_id=cfg.strategy_id)
+            return self._my_pos.get((cfg.strategy_id, symbol), 0.0)
+        notional = abs(target_now) * px * cfg.value * (self.my_equity_fn() / target_eq)
+        return (notional / px) * sign
+
+    # -- reconcile (corrective, per trader -> per strategy) ---------------------
+    def reconcile(self) -> list[dict[str, Any]]:
+        """Target-anchored reconciliation — the backbone that recovers missed
+        fills and restarts (UPDATE-0020). Scoped strictly per trader, then per
+        strategy (`ct_*`): each strategy's expected mirror is compared ONLY to
+        ITS OWN attributed ledger book (§5.1/§5.2), never the aggregate
+        clearinghouse. Overlapping symbols across `ct_*` reconcile in isolation.
+
+        For each active trader: read the trader's real position (clearinghouse,
+        WS-independent) and our per-strategy ledger position; per symbol emit the
+        delta needed to reach `_desired_mirror`. Returns the corrections emitted.
+        """
+        corrections: list[dict[str, Any]] = []
+        try:
+            ledger = self.gateway.ledger()
+        except Exception as exc:  # noqa: BLE001 — gateway may be booting/unreachable
+            self.logger.warning("reconcile.ledger_failed", {"error": str(exc)[:200]})
+            return corrections
+
+        now = time.monotonic()
+        for cfg in list(self.traders.values()):
+            sid = cfg.strategy_id
+            trader_status = self._trader_status(cfg.address)
+            if trader_status not in ("TESTNET", "MAINNET"):
+                continue
+            if self._strategy_status(sid) not in ("dry_run", "active"):
+                continue
+            environment = environment_for_status(trader_status)
+            try:
+                target_pos = self.target_positions_fn(cfg.address)
+            except Exception as exc:  # noqa: BLE001 — one trader must not kill the loop
+                self.logger.warning("reconcile.target_positions_failed",
+                                    {"address": cfg.address, "error": str(exc)[:200]},
+                                    strategy_id=sid)
+                continue
+            mine = ledger.get(sid, {}).get("positions", {})
+            symbols = set(target_pos) | set(mine)
+            for symbol in symbols:
+                if symbol in cfg.blocked_assets:
+                    continue
+                target_now = float(target_pos.get(symbol, 0.0))
+                actual = float(mine.get(symbol, {}).get("size", 0.0))
+                px = self._mid_price(symbol, environment)
+                if px <= 0:
+                    continue
+                desired = self._desired_mirror(cfg, symbol, target_now, px)
+                sz_decimals = self._sz_decimals_for(symbol, environment)
+                if sz_decimals is not None:
+                    desired = self._round_to_step(desired, sz_decimals)
+                delta = desired - actual
+                key = (sid, symbol)
+                # step / min-notional guards (same as on_target_fill)
+                if sz_decimals is not None and abs(delta) < 10 ** (-sz_decimals):
+                    continue
+                if abs(delta) * px < self.settings.risk.min_order_notional_usd:
+                    continue
+                # anti-double-send: skip if we already corrected this key and the
+                # fill hasn't had time to reflect in the ledger yet.
+                last = self._reconcile_cooldown.get(key)
+                if last is not None and now - last < self.RECONCILE_COOLDOWN_S:
+                    continue
+                reduce_only = abs(desired) < abs(actual) or desired == 0.0
+                info = {"symbol": symbol, "target_now": target_now,
+                        "desired": desired, "actual": actual, "delta": delta}
+                self.logger.warning("drift.correcting", info, strategy_id=sid)
+                result = self.gateway.send_intent(
+                    strategy_id=sid,
+                    symbol=symbol,
+                    side="buy" if delta > 0 else "sell",
+                    size=abs(delta),
+                    order_type="market",
+                    reduce_only=reduce_only,
+                    leverage=cfg.max_leverage,
+                    dry_run=self._is_dry_run(cfg),
+                    environment=environment,
+                )
+                if result.get("ok"):
+                    # optimistic: assume it fills; cooldown covers order->ledger gap
+                    self._my_pos[key] = desired
+                    self._target_pos[key] = target_now
+                    self._reconcile_cooldown[key] = now
+                corrections.append({"strategy_id": sid, **info, "result": result})
+        # venue cross-check (observability only — never corrects across strategies)
+        self._venue_cross_check(ledger)
+        return corrections
+
+    def _mid_price(self, symbol: str, environment: str | None) -> float:
+        """Best-effort mid price for reconcile sizing (via gateway market-meta)."""
+        try:
+            meta = self.gateway.market_meta(symbol, environment)
+        except Exception:  # noqa: BLE001
+            return 0.0
+        return float(meta.get("mid") or meta.get("mid_price") or 0.0)
+
+    def _venue_cross_check(self, ledger: dict[str, Any]) -> None:
+        """Σ(ledger position per symbol) vs the real clearinghouse per symbol.
+        Logs `reconcile.venue_mismatch` — respects §5.1 (does NOT correct by
+        crossing strategies, since venue positions aren't attributable)."""
+        sids = [c.strategy_id for c in self.traders.values()
+                if self._trader_status(c.address) in ("TESTNET", "MAINNET")]
+        if not sids:
+            return
+        try:
+            venue = self.gateway.positions(sids, self.settings.copy_trade.watch_network)
+        except Exception:  # noqa: BLE001 — cross-check is best-effort
+            return
+        ledger_by_symbol: dict[str, float] = {}
+        for sid in sids:
+            for symbol, pos in ledger.get(sid, {}).get("positions", {}).items():
+                ledger_by_symbol[symbol] = ledger_by_symbol.get(symbol, 0.0) + \
+                    float(pos.get("size", 0.0))
+        venue_by_symbol: dict[str, float] = {}
+        for p in venue:
+            sym = p.get("symbol") or p.get("coin")
+            if sym:
+                venue_by_symbol[sym] = venue_by_symbol.get(sym, 0.0) + \
+                    float(p.get("size", p.get("szi", 0.0)) or 0.0)
+        for symbol in set(ledger_by_symbol) | set(venue_by_symbol):
+            led = ledger_by_symbol.get(symbol, 0.0)
+            ven = venue_by_symbol.get(symbol, 0.0)
+            if abs(led - ven) > max(abs(led), abs(ven), 1e-9) * DRIFT_TOLERANCE:
+                self.logger.warning("reconcile.venue_mismatch",
+                                    {"symbol": symbol, "ledger_sum": led, "venue": ven})
 
     # -- drift check ------------------------------------------------------------
     def drift_check(self) -> list[dict[str, Any]]:
         """Compare expected mirrored sizes vs. the gateway ledger. Alerts on >5%."""
         drifts: list[dict[str, Any]] = []
         try:
-            ledger = self.gateway._client.get("/ledger").json()  # noqa: SLF001
+            ledger = self.gateway.ledger()
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("drift.check_failed", {"error": str(exc)[:200]})
             return drifts
@@ -324,14 +497,30 @@ class CopyTradeExecutor:
 
     # -- process loop --------------------------------------------------------------
     def run_forever(self, drift_interval_s: float = 60.0,
-                    reload_interval_s: float = 30.0) -> None:
+                    reload_interval_s: float = 30.0,
+                    reconcile_interval_s: float | None = None) -> None:
         self.logger.info("strategy.runner_start",
                          {"module": "copy_trade",
                           "traders": [t.strategy_id for t in self.traders.values()],
                           "copying": [t.strategy_id for t in self.traders.values()
                                       if t.status in ("TESTNET", "MAINNET")]})
+        if reconcile_interval_s is None:
+            reconcile_interval_s = self.settings.copy_trade.reconcile_interval_s
+        # Startup: wait for the gateway before the first reconcile so a runner
+        # started ahead of the gateway doesn't fail with "Connection refused"
+        # (UPDATE-0020 item 3). Silent until the last attempt.
+        if not self.gateway.wait_ready():
+            self.logger.error("gateway.unreachable_on_start", {})
+        else:
+            # Startup reconcile rebuilds our mirror from the trader's real
+            # position after a restart/gap — recovers the missed fills.
+            try:
+                self.reconcile()
+            except Exception as exc:  # noqa: BLE001 — never crash the boot
+                self.logger.warning("reconcile.startup_failed", {"error": str(exc)[:200]})
         last_drift = 0.0
         last_reload = 0.0
+        last_reconcile = time.monotonic()
         while True:
             if self.settings.kill_file.exists():
                 self.logger.error("killswitch.runner_halt", {})
@@ -342,8 +531,16 @@ class CopyTradeExecutor:
                 # controle entram sem restart do runner
                 self.reload_traders()
                 last_reload = now
+            if now - last_reconcile >= reconcile_interval_s:
+                # corrective backbone: converges each strategy to its trader's
+                # real position, symbol by symbol (recovers missed fills).
+                try:
+                    self.reconcile()
+                except Exception as exc:  # noqa: BLE001 — a cycle error must not kill the loop
+                    self.logger.warning("reconcile.cycle_failed", {"error": str(exc)[:200]})
+                last_reconcile = now
             if now - last_drift >= drift_interval_s:
-                self.drift_check()
+                self.drift_check()  # read-only alert; the corrective is reconcile()
                 self.logger.info("health.heartbeat",
                                  {"targets": len(self._target_pos)})
                 last_drift = now
@@ -352,7 +549,15 @@ class CopyTradeExecutor:
 
 def main() -> None:
     settings = get_settings()
-    watcher = HyperliquidWatcher(settings.copy_trade.watch_network)
+    db = Database(settings.sqlite_path)
+    # Shared logger so the WS supervisor's reconnect events land in the same
+    # per-strategy log stream as the executor's decisions.
+    logger = EventLogger("runner-copytrade", settings.logs_dir, db=db)
+    watcher = HyperliquidWatcher(
+        settings.copy_trade.watch_network,
+        logger=logger,
+        max_backoff_s=settings.copy_trade.ws_reconnect_max_backoff_s,
+    )
     gateway = GatewayClient()
 
     def my_equity() -> float:
@@ -363,10 +568,12 @@ def main() -> None:
 
     executor = CopyTradeExecutor(
         settings=settings,
+        db=db,
         watcher=watcher,
         gateway=gateway,
         my_equity_fn=my_equity,
         target_equity_fn=watcher.target_equity,
+        target_positions_fn=watcher.target_positions,
     )
     executor.run_forever()
 

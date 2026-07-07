@@ -18,6 +18,9 @@ TARGET = "0x00000000000000000000000000000000000000aa"
 class FakeWatcher:
     def __init__(self) -> None:
         self.subs: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
+        # address -> {symbol: signed size} — the trader's real clearinghouse
+        # position, the reconcile anchor (WS-independent).
+        self.positions: dict[str, dict[str, float]] = {}
 
     def subscribe(self, address: str, callback: Callable[[dict[str, Any]], None]) -> None:
         self.subs.setdefault(address, []).append(callback)
@@ -26,17 +29,24 @@ class FakeWatcher:
         for cb in self.subs.get(address, []):
             cb(fill)
 
+    def target_positions(self, address: str) -> dict[str, float]:
+        return dict(self.positions.get(address, {}))
+
 
 class RecordingGateway:
-    """Records intents; simulates ledger endpoint for the drift check."""
+    """Records intents; simulates ledger/positions endpoints for drift + reconcile."""
 
     def __init__(self) -> None:
         self.intents: list[dict[str, Any]] = []
         self.ledger_response: dict[str, Any] = {}
+        self.positions_response: list[dict[str, Any]] = []
         # per-symbol szDecimals; default high so rounding is a no-op unless a test
         # sets it (keeps sizing-focused tests independent of the step grid).
         self.sz_decimals: dict[str, int] = {}
         self.default_sz_decimals = 8
+        # per-symbol mid price used by reconcile sizing; 0 => reconcile skips it.
+        self.mids: dict[str, float] = {}
+        self.default_mid = 0.0
 
         outer = self
 
@@ -56,9 +66,20 @@ class RecordingGateway:
     def cancel(self, **payload: Any) -> dict[str, Any]:
         return {"ok": True}
 
+    def ledger(self) -> dict[str, Any]:
+        return self.ledger_response
+
+    def positions(self, strategy_ids: list[str],
+                  network: str | None = None) -> list[dict[str, Any]]:
+        return self.positions_response
+
+    def wait_ready(self, attempts: int = 3, delay: float = 2.0) -> bool:
+        return True
+
     def market_meta(self, symbol: str, environment: str | None = None) -> dict[str, Any]:
         sz = self.sz_decimals.get(symbol, self.default_sz_decimals)
-        return {"ok": True, "szDecimals": sz, "maxLeverage": 50, "minNotional": 10.0}
+        return {"ok": True, "szDecimals": sz, "maxLeverage": 50, "minNotional": 10.0,
+                "mid": self.mids.get(symbol, self.default_mid)}
 
 
 def seed_trader(db: Database, **overrides: Any) -> None:
@@ -79,7 +100,8 @@ def make_executor(settings: Settings, db: Database,
     seed_trader(db, **overrides)
     ex = CopyTradeExecutor(settings=settings, db=db, gateway=gw, watcher=watcher,
                            my_equity_fn=lambda: 1_000.0,
-                           target_equity_fn=lambda _a: 100_000.0)
+                           target_equity_fn=lambda _a: 100_000.0,
+                           target_positions_fn=watcher.target_positions)
     return ex, watcher, gw
 
 
@@ -137,7 +159,9 @@ def test_percent_mode_proportional_to_equity(settings, db) -> None:
 
 
 def test_partial_reduction_mirrors_proportionally(settings, db) -> None:
-    ex, watcher, gw = make_executor(settings, db, value=1000.0)
+    # percent mode still scales with the trader's position (proportional to the
+    # equity ratio); a 50% reduction by the trader halves our mirror too.
+    ex, watcher, gw = make_executor(settings, db, mode="percent", value=1.0)
     watcher.emit(TARGET, fill("ETH", "B", 10.0, 2_000.0, start_pos=0.0))   # open
     watcher.emit(TARGET, fill("ETH", "A", 5.0, 2_100.0, start_pos=10.0))   # -50%
     assert len(gw.intents) == 2
@@ -159,10 +183,11 @@ def test_full_close_mirrors_flat(settings, db) -> None:
 
 
 def test_below_min_notional_skipped_and_logged(settings, db) -> None:
-    ex, watcher, gw = make_executor(settings, db, value=20.0)
-    watcher.emit(TARGET, fill("BTC", "B", 1.0, 50_000.0, start_pos=0.0))   # 20 USD open ok
-    # whale trims 2% -> our delta ~0.4 USD < 10 USD minimum -> skip
-    watcher.emit(TARGET, fill("BTC", "A", 0.02, 50_000.0, start_pos=1.0))
+    # percent mode so a tiny trim by the whale yields a tiny (non-zero) delta.
+    ex, watcher, gw = make_executor(settings, db, mode="percent", value=1.0)
+    watcher.emit(TARGET, fill("BTC", "B", 1.0, 50_000.0, start_pos=0.0))   # 0.01 BTC open ok
+    # whale trims 1% -> our delta ~0.0001 BTC (~5 USD) < 10 USD minimum -> skip
+    watcher.emit(TARGET, fill("BTC", "A", 0.01, 50_000.0, start_pos=1.0))
     assert len(gw.intents) == 1
     logs = db.query("SELECT event_type FROM events WHERE event_type = 'decision.skipped_min_notional'")
     assert logs
@@ -241,3 +266,143 @@ def test_mirror_size_hype_0_decimals(settings, db) -> None:
 def test_mirror_config_validation() -> None:
     with pytest.raises(Exception):
         TraderConfig(name="x", address="0xabc", mode="yolo")
+
+
+# -- absolute fixed_usdc semantics (UPDATE-0020) -----------------------------
+
+def test_fixed_usdc_does_not_scale_when_trader_doubles(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    # open: whale long 1 FARTCOIN @ 1.0 -> we hold $100 -> 100 units
+    watcher.emit(TARGET, fill("FARTCOIN", "B", 1.0, 1.0, start_pos=0.0))
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["size"] == pytest.approx(100.0)
+    # whale DOUBLES to 2 FARTCOIN -> our $100 exposure is unchanged -> no order
+    watcher.emit(TARGET, fill("FARTCOIN", "B", 1.0, 1.0, start_pos=1.0))
+    assert len(gw.intents) == 1  # absolute sizing: we did NOT double
+
+
+def test_fixed_usdc_closes_when_trader_flattens(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    watcher.emit(TARGET, fill("FARTCOIN", "B", 1.0, 1.0, start_pos=0.0))
+    watcher.emit(TARGET, fill("FARTCOIN", "A", 1.0, 1.0, start_pos=1.0))  # -> flat
+    close = gw.intents[1]
+    assert close["side"] == "sell"
+    assert close["reduce_only"] is True
+    assert close["size"] == pytest.approx(100.0)
+    assert ex._my_pos[("ct_whale01", "FARTCOIN")] == 0.0
+
+
+# -- reconcile: recovers missed fills, per trader -> per strategy -------------
+
+def test_reconcile_recovers_missed_fills_both_symbols(settings, db) -> None:
+    """The UPDATE-0020 bug: trader has a real position we never mirrored.
+    reconcile converges the strategy to the mirror of EVERY symbol, from the
+    trader's real position — independent of any WS event."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    # trader's real clearinghouse position (short FARTCOIN, long HYPE)
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0, "HYPE": 200.0}
+    gw.mids = {"FARTCOIN": 1.0, "HYPE": 20.0}
+    # our per-strategy ledger book is empty (18 fills were lost)
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+
+    corrections = ex.reconcile()
+    by_symbol = {i["symbol"]: i for i in gw.intents}
+    assert set(by_symbol) == {"FARTCOIN", "HYPE"}
+    # FARTCOIN: $100 short @1.0 -> -100 units -> sell 100
+    assert by_symbol["FARTCOIN"]["side"] == "sell"
+    assert by_symbol["FARTCOIN"]["size"] == pytest.approx(100.0)
+    # HYPE: $100 long @20 -> +5 units -> buy 5
+    assert by_symbol["HYPE"]["side"] == "buy"
+    assert by_symbol["HYPE"]["size"] == pytest.approx(5.0)
+    # every correction is tied to THIS strategy_id
+    assert all(i["strategy_id"] == "ct_whale01" for i in gw.intents)
+    assert len(corrections) == 2
+
+
+def test_reconcile_is_idempotent_once_ledger_aligned(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0  # isolate ledger-based idempotency from cooldown
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+    ex.reconcile()
+    assert len(gw.intents) == 1
+    # the fill lands in the ledger -> a 2nd reconcile must emit NOTHING
+    gw.ledger_response = {"ct_whale01": {"positions": {"FARTCOIN": {"size": -100.0}}}}
+    ex.reconcile()
+    assert len(gw.intents) == 1  # no new intents
+
+
+def test_reconcile_cooldown_blocks_double_send(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+    ex.reconcile()
+    ex.reconcile()  # ledger not yet updated, but cooldown must prevent a re-send
+    assert len(gw.intents) == 1
+
+
+def test_reconcile_isolated_per_strategy_same_symbol(settings, db) -> None:
+    """Two ct_* on the SAME symbol reconcile in separate books (§5.2): each
+    strategy is compared only to ITS OWN ledger, never the aggregate."""
+    other = "0x00000000000000000000000000000000000000bb"
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    db.upsert("traders", {"address": other, "name": "beta", "status": "TESTNET",
+                          "mode": "fixed_usdc", "value": 100.0, "max_leverage": 3.0,
+                          "blocked_assets": "[]", "dry_run": 0, "thresholds": "{}"},
+              ("address",))
+    ex.reload_traders()
+    # both traders long 1 BTC -> both want +$100 = 0.002 BTC @ 50k
+    watcher.positions[TARGET] = {"BTC": 1.0}
+    watcher.positions[other] = {"BTC": 2.0}
+    gw.mids = {"BTC": 50_000.0}
+    # ct_whale01 already aligned in ITS book; ct_beta's book is empty.
+    gw.ledger_response = {
+        "ct_whale01": {"positions": {"BTC": {"size": 0.002}}},
+        "ct_beta": {"positions": {}},
+    }
+    ex.reconcile()
+    # only ct_beta needs a correction — proves per-strategy isolation (an
+    # aggregate view would have seen 0.002 and emitted nothing for either)
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["strategy_id"] == "ct_beta"
+    assert gw.intents[0]["side"] == "buy"
+    assert gw.intents[0]["size"] == pytest.approx(0.002)
+
+
+def test_reconcile_skips_when_no_mid(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}
+    gw.mids = {}  # no price -> reconcile must skip, never send a $0-priced order
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+    ex.reconcile()
+    assert gw.intents == []
+
+
+def test_reconcile_ignores_non_operable_trader(settings, db) -> None:
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    db.execute("UPDATE traders SET status = 'SALVO' WHERE address = ?", (TARGET,))
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+    ex.reconcile()
+    assert gw.intents == []
+
+
+def test_gateway_wait_ready_tolerates_early_failures() -> None:
+    from engine.strategies.base_runner import GatewayClient
+
+    gw = GatewayClient()
+    calls = {"n": 0}
+
+    def flaky_health() -> dict[str, Any]:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ConnectionError("gateway not up yet")
+        return {"ok": True}
+
+    gw.health = flaky_health  # type: ignore[method-assign]
+    assert gw.wait_ready(attempts=3, delay=0.0) is True
+    assert calls["n"] == 3
+    gw.close()

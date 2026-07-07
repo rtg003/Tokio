@@ -50,12 +50,16 @@ class HyperliquidAdapter(ExchangeAdapter):
         key = agent_private_key or os.environ["HL_AGENT_PRIVATE_KEY"]
         wallet = Account.from_key(key)
 
-        self.info = Info(base_url=base_url, skip_ws=False)
+        # REST-only Info; the WS lives in a resilient supervisor (own-fills must
+        # not silently die — it feeds the per-strategy ledger the reconcile relies on).
+        self.info = Info(base_url=base_url, skip_ws=True)
+        self._base_url = base_url
         self.exchange = Exchange(
             wallet, base_url=base_url, account_address=self.account_address
         )
         self._meta_cache: dict[str, dict[str, Any]] | None = None
         self._lock = threading.Lock()
+        self._ws: Any | None = None
 
     # -- helpers ---------------------------------------------------------
     def _meta(self) -> dict[str, dict[str, Any]]:
@@ -176,6 +180,20 @@ class HyperliquidAdapter(ExchangeAdapter):
     def subscribe_own_fills(self, callback: FillCallback) -> None:
         self.subscribe_user_fills(self.account_address, callback)
 
+    def _ensure_ws(self) -> Any:
+        if self._ws is None:
+            from hyperliquid.info import Info
+
+            from engine.exchanges.hyperliquid.ws_supervisor import WsSupervisor
+
+            base = self._base_url
+            self._ws = WsSupervisor(
+                make_info=lambda: Info(base_url=base, skip_ws=False),
+                name=f"ws-ownfills-{self.network}",
+            )
+            self._ws.start()
+        return self._ws
+
     def subscribe_user_fills(self, address: str, callback: FillCallback) -> None:
         def _handler(msg: dict[str, Any]) -> None:
             data = msg.get("data", {})
@@ -186,7 +204,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             for fill in data.get("fills", []):
                 callback(fill)
 
-        self.info.subscribe({"type": "userFills", "user": address}, _handler)
+        self._ensure_ws().subscribe({"type": "userFills", "user": address}, _handler)
 
     def market_meta(self, symbol: str) -> dict[str, Any]:
         asset = self._meta().get(symbol)
@@ -208,10 +226,11 @@ class HyperliquidAdapter(ExchangeAdapter):
         return self.info.candles_snapshot(symbol, interval, start_ms, end_ms)
 
     def close(self) -> None:
-        try:
-            self.info.disconnect_websocket()
-        except Exception:  # noqa: BLE001
-            pass
+        if self._ws is not None:
+            try:
+                self._ws.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def make_adapter(
