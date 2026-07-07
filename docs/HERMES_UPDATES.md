@@ -1288,7 +1288,7 @@ o gap ordem→fill.
 
 ---
 
-## UPDATE-0022 · 2026-07-07 · Status: PENDENTE
+## UPDATE-0022 · 2026-07-07 · Status: APLICADO em 2026-07-07
 
 **Origem**: PR (merged na main)
 
