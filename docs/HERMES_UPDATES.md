@@ -1097,7 +1097,7 @@ gateway foi **mantido como backstop** para qualquer origem de intent.
 - `python -m pytest tests/test_copy_trade.py -q` verde (16 testes, 4 novos).
 - Nenhuma nova ordem com `reject_reason` de rounding no ambiente do 0xdef5...
 
-## UPDATE-0018 · 2026-07-06 · Status: PENDENTE
+## UPDATE-0018 · 2026-07-06 · Status: APLICADO em 2026-07-07
 
 Origem: Cursor — corte barato do discovery mais limpo (UPDATE-0016 do CURSOR_UPDATES)
 
