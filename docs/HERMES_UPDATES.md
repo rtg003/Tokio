@@ -1355,7 +1355,7 @@ Não mexe em `logic_version` (não é discovery).
 
 ---
 
-## UPDATE-0023 · 2026-07-07 · Status: PENDENTE
+## UPDATE-0023 · 2026-07-07 · Status: APLICADO em 2026-07-08
 
 **Origem**: PR (merged na main)
 
