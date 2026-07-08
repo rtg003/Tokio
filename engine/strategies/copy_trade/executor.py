@@ -155,13 +155,24 @@ class CopyTradeExecutor:
         # (strategy_id, symbol) -> monotonic ts of last reconcile intent; the
         # optimistic anti-double-send window (order sent, fill not yet in ledger).
         self._reconcile_cooldown: dict[tuple[str, str], float] = {}
+        # (strategy_id, symbol) -> consecutive reconcile attempts that still see
+        # drift. Caps runaway retries (a persistently-rejected order must not loop
+        # forever — the 407-rejections incident). Reset to 0 once the key aligns.
+        self._reconcile_attempts: dict[tuple[str, str], int] = {}
         # symbol -> szDecimals (static venue metadata; cached to avoid per-fill RTT)
         self._sz_decimals: dict[str, int] = {}
         self.reload_traders()
 
-    # cooldown after a reconcile intent — long enough for the fill to land in
-    # the ledger (own-fills WS) but short vs. the reconcile interval.
-    RECONCILE_COOLDOWN_S = 15.0
+    # cooldown after a reconcile intent — MUST exceed the reconcile interval
+    # (60s) so a symbol is never re-sent before its fill has had time to land in
+    # the ledger (own-fills WS). 15s < 20s caused the 5-6x runaway: every cycle
+    # re-sent the full delta because the cooldown had already expired.
+    RECONCILE_COOLDOWN_S = 120.0
+
+    # consecutive reconcile attempts on the same (strategy, symbol) before we stop
+    # correcting and log `reconcile.stuck` — a persistently-rejected order must not
+    # loop forever.
+    RECONCILE_MAX_ATTEMPTS = 3
 
     # -- setup ---------------------------------------------------------------
     def reload_traders(self) -> None:
@@ -385,13 +396,13 @@ class CopyTradeExecutor:
                                     {"address": cfg.address, "error": str(exc)[:200]},
                                     strategy_id=sid)
                 continue
-            mine = ledger.get(sid, {}).get("positions", {})
+            mine = (ledger.get(sid) or {}).get("positions", {})
             symbols = set(target_pos) | set(mine)
             for symbol in symbols:
                 if symbol in cfg.blocked_assets:
                     continue
+                key = (sid, symbol)
                 target_now = float(target_pos.get(symbol, 0.0))
-                actual = float(mine.get(symbol, {}).get("size", 0.0))
                 px = self._mid_price(symbol, environment)
                 if px <= 0:
                     continue
@@ -399,17 +410,44 @@ class CopyTradeExecutor:
                 sz_decimals = self._sz_decimals_for(symbol, environment)
                 if sz_decimals is not None:
                     desired = self._round_to_step(desired, sz_decimals)
+                # `actual` = whichever of {ledger, our optimistic memory} is CLOSER
+                # to `desired`. While an order is in flight the ledger still shows
+                # the old size; trusting the optimistic `_my_pos` there prevents a
+                # duplicate full-size re-send (the runaway). Uses distance-to-desired
+                # rather than a signed max() so it works for shorts too.
+                ledger_actual = float((mine.get(symbol) or {}).get("size", 0.0))
+                optimistic = self._my_pos.get(key)
+                actual = ledger_actual
+                if optimistic is not None and \
+                        abs(desired - optimistic) < abs(desired - ledger_actual):
+                    actual = optimistic
                 delta = desired - actual
-                key = (sid, symbol)
                 # step / min-notional guards (same as on_target_fill)
                 if sz_decimals is not None and abs(delta) < 10 ** (-sz_decimals):
+                    self._reconcile_attempts.pop(key, None)
                     continue
                 if abs(delta) * px < self.settings.risk.min_order_notional_usd:
+                    self._reconcile_attempts.pop(key, None)
+                    continue
+                # drift tolerance: don't chase sub-5% differences (cents).
+                base = max(abs(desired), abs(actual))
+                if base > 0 and abs(delta) <= DRIFT_TOLERANCE * base:
+                    self._reconcile_attempts.pop(key, None)
                     continue
                 # anti-double-send: skip if we already corrected this key and the
                 # fill hasn't had time to reflect in the ledger yet.
                 last = self._reconcile_cooldown.get(key)
                 if last is not None and now - last < self.RECONCILE_COOLDOWN_S:
+                    continue
+                # runaway guard: a symbol that keeps drifting after N corrections
+                # (e.g. persistently rejected) is stuck — stop and alert.
+                attempts = self._reconcile_attempts.get(key, 0)
+                if attempts >= self.RECONCILE_MAX_ATTEMPTS:
+                    self.logger.warning(
+                        "reconcile.stuck",
+                        {"symbol": symbol, "desired": desired, "actual": actual,
+                         "delta": delta, "attempts": attempts},
+                        strategy_id=sid)
                     continue
                 reduce_only = abs(desired) < abs(actual) or desired == 0.0
                 info = {"symbol": symbol, "target_now": target_now,
@@ -426,6 +464,9 @@ class CopyTradeExecutor:
                     dry_run=self._is_dry_run(cfg),
                     environment=environment,
                 )
+                # count every SEND (not just fills): a persistently-rejected symbol
+                # must still reach the stuck cap instead of looping forever.
+                self._reconcile_attempts[key] = attempts + 1
                 if result.get("ok"):
                     # optimistic: assume it fills; cooldown covers order->ledger gap
                     self._my_pos[key] = desired
@@ -458,9 +499,9 @@ class CopyTradeExecutor:
             return
         ledger_by_symbol: dict[str, float] = {}
         for sid in sids:
-            for symbol, pos in ledger.get(sid, {}).get("positions", {}).items():
+            for symbol, pos in (ledger.get(sid) or {}).get("positions", {}).items():
                 ledger_by_symbol[symbol] = ledger_by_symbol.get(symbol, 0.0) + \
-                    float(pos.get("size", 0.0))
+                    float((pos or {}).get("size", 0.0))
         venue_by_symbol: dict[str, float] = {}
         for p in venue:
             sym = p.get("symbol") or p.get("coin")
@@ -484,8 +525,8 @@ class CopyTradeExecutor:
             self.logger.warning("drift.check_failed", {"error": str(exc)[:200]})
             return drifts
         for (sid, symbol), expected in self._my_pos.items():
-            actual = (ledger.get(sid, {}).get("positions", {})
-                      .get(symbol, {}).get("size", 0.0))
+            positions = (ledger.get(sid) or {}).get("positions", {})
+            actual = (positions.get(symbol) or {}).get("size", 0.0)
             base = max(abs(expected), 1e-9)
             rel = abs(actual - expected) / base
             if expected != 0 and rel > DRIFT_TOLERANCE:

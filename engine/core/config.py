@@ -68,7 +68,9 @@ class CopyTradeSettings(BaseModel):
     watch_network: str = "mainnet"
     # Reconciliação ancorada na posição real do trader (rede de segurança que
     # recupera fills perdidos e restart — UPDATE-0020). Independe do WS.
-    reconcile_interval_s: float = 20.0
+    # Mín. 60s: DEVE ser menor que RECONCILE_COOLDOWN_S (120s) para não re-enviar
+    # a mesma correção antes do fill refletir no ledger (UPDATE-0023).
+    reconcile_interval_s: float = 60.0
     # WS resiliente: reconecta se ficar silencioso além do timeout; backoff máx.
     ws_stale_timeout_s: float = 35.0
     ws_reconnect_max_backoff_s: float = 60.0

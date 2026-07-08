@@ -390,6 +390,59 @@ def test_reconcile_ignores_non_operable_trader(settings, db) -> None:
     assert gw.intents == []
 
 
+def test_reconcile_optimistic_actual_blocks_short_resend(settings, db) -> None:
+    """UPDATE-0023 regression: with the ledger lagging (fill not yet recorded), the
+    optimistic `_my_pos` must count as `actual` so we don't re-send a full-size
+    correction. Proven on a SHORT — where a naive max(ledger, _my_pos) would fail."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0  # isolate the fix from the cooldown
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}  # ledger stays empty
+    ex.reconcile()
+    assert len(gw.intents) == 1
+    assert ex._my_pos[("ct_whale01", "FARTCOIN")] == pytest.approx(-100.0)
+    # ledger STILL empty, cooldown disabled — only the optimistic actual can block
+    ex.reconcile()
+    assert len(gw.intents) == 1  # no duplicate short
+
+
+def test_reconcile_respects_drift_tolerance(settings, db) -> None:
+    """Sub-5% drift is noise (cents) — reconcile must not chase it; >5% corrects."""
+    # 2% drift: desired -1000 vs ledger -980 -> skip
+    ex, watcher, gw = make_executor(settings, db, value=1_000.0)
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {"FARTCOIN": {"size": -980.0}}}}
+    ex.reconcile()
+    assert gw.intents == []
+    # 10% drift: desired -1000 vs ledger -900 -> one correction
+    gw.ledger_response = {"ct_whale01": {"positions": {"FARTCOIN": {"size": -900.0}}}}
+    ex.reconcile()
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["side"] == "sell"
+    assert gw.intents[0]["size"] == pytest.approx(100.0)
+
+
+def test_reconcile_stuck_after_three_attempts(settings, db) -> None:
+    """A persistently-rejected symbol must stop after RECONCILE_MAX_ATTEMPTS and log
+    `reconcile.stuck` instead of looping forever (the 407-rejections incident)."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0  # drive attempts back-to-back
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}  # never reflects
+
+    def failing(**payload):  # rejected: _my_pos not advanced, drift persists
+        gw.intents.append(payload)
+        return {"ok": False, "reason": "rejected"}
+
+    gw.send_intent = failing
+    for _ in range(5):
+        ex.reconcile()
+    assert len(gw.intents) == ex.RECONCILE_MAX_ATTEMPTS  # 3 sends, then stuck
+
+
 def test_gateway_wait_ready_tolerates_early_failures() -> None:
     from engine.strategies.base_runner import GatewayClient
 

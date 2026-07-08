@@ -1352,3 +1352,79 @@ Não mexe em `logic_version` (não é discovery).
 - `python -m pytest -q`: 1 falha PRÉ-EXISTENTE e não relacionada
   (`test_scan_approves_swing_rejects_traps`), o resto verde.
 - `cd web && npx tsc --noEmit` limpo.
+
+---
+
+## UPDATE-0023 · 2026-07-07 · Status: PENDENTE
+
+**Origem**: PR (merged na main)
+
+**Tipo**: bugfix CRÍTICO + operacao (limpeza de banco)
+
+**Prioridade**: CRÍTICA — o copy trade está **pausado**. Só retomar após o deploy
+**e** a limpeza abaixo.
+
+**Resumo**: o `reconcile()` corretivo do UPDATE-0021 **empilhava ordens**. Ele roda
+periodicamente e, enquanto a ordem anterior não refletia no clearinghouse/ledger, cada
+ciclo detectava o mesmo drift (`actual=0.0`) e reenviava a correção inteira. Resultado
+real (testnet): posições **5-6x** maiores que o desejado, **407 ordens rejeitadas**,
+**−$873**. Causa-raiz: `RECONCILE_COOLDOWN_S=15s` era **menor** que o intervalo de
+reconcile (20s), então o cooldown expirava antes do próximo ciclo. Correções:
+
+1. **Cooldown por símbolo 15s → 120s** e **intervalo de reconcile 20s → 60s**
+   (`copy_trade.reconcile_interval_s`). O cooldown agora cobre ≥2 ciclos: tempo de
+   sobra para o fill cair no ledger antes de qualquer reenvio.
+2. **`actual` otimista** — o reconcile passa a considerar a nossa posição otimista
+   (`_my_pos`, gravada ao enviar) além do ledger, escolhendo a **mais próxima do
+   desejado**. Enquanto o ledger está atrasado, isso evita duplicar a ordem. (Funciona
+   para long e short — um `max()` ingênuo quebraria em posições short, o caso do bug.)
+3. **Tolerância de drift 5%** — não corrige diferenças ≤5% (centavos); fecho total
+   (desejado 0) continua corrigindo.
+4. **Teto de 3 tentativas por símbolo** — se um símbolo continua drifting após 3
+   correções (ex.: ordem persistentemente rejeitada), para e loga `reconcile.stuck`
+   em vez de repetir para sempre.
+5. **Hardening `NoneType.get`** — o erro `BTC: 'NoneType' object has no attribute
+   'get'` vinha de leituras encadeadas onde o valor era `None` (não ausente).
+   Guardas em `reconcile()`/`drift_check()` e no `_parse_order_response` do adapter
+   (resposta vazia do SDK vira rejeição nomeada em vez de exceção).
+
+**Config alterada** (`config/settings.yaml` → `copy_trade.reconcile_interval_s: 60`).
+Não mexe em `logic_version` (não é discovery).
+
+### Ações do Hermes (NESTA ORDEM)
+
+1. **Parar o runner** (evita corrida durante a limpeza do banco):
+   ```bash
+   sudo systemctl stop tokio-engine.service
+   ```
+2. **Deploy do código**:
+   ```bash
+   cd /home/tokio/Tokio
+   git pull --ff-only origin main
+   ```
+3. **Limpar ordens em aberto travadas** da corrida (NÃO-destrutivo — preserva
+   fills/histórico das 407 rejeições). Ajuste o caminho do SQLite ao seu runbook:
+   ```bash
+   sqlite3 /caminho/para/tokio.db \
+     "UPDATE orders
+         SET status='cancelled',
+             closed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+             reject_reason='cleanup UPDATE-0023 (reconcile runaway)'
+       WHERE status IN ('created','sent','acked','partially_filled');"
+   ```
+   (Se preferir apagar de vez — destrutivo — confirme com o rtg003 antes.)
+4. **Subir de novo** e retomar o copy trade:
+   ```bash
+   sudo systemctl restart tokio-engine.service tokio.service
+   ```
+5. Confirmar em operação:
+   - `drift.correcting` **não** se repete para o mesmo símbolo dentro de 120s;
+   - nenhuma `reconcile.stuck` nem `NoneType.get` em operação normal;
+   - posições convergem ao alvo **sem inflar** (não mais 5-6x).
+
+### Validação esperada
+
+- `python -m pytest tests/test_copy_trade.py -q` verde (novos: `actual` otimista em
+  short, tolerância de drift, teto de tentativas → `reconcile.stuck`).
+- `python -m pytest -q`: 1 falha PRÉ-EXISTENTE e não relacionada
+  (`test_scan_approves_swing_rejects_traps`), o resto verde.

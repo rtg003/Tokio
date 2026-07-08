@@ -50,3 +50,6 @@ copy_trade:
   # Endereços-alvo descobertos vivem na mainnet pública da Hyperliquid.
   # A rede de execução (TESTNET/MAINNET) é decidida por trader no status.
   watch_network: mainnet
+  # Intervalo do reconcile corretivo. Mín. 60s e < cooldown por símbolo (120s)
+  # para não empilhar ordens antes do fill refletir no ledger (UPDATE-0023).
+  reconcile_interval_s: 60

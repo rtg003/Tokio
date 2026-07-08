@@ -150,6 +150,11 @@ class HyperliquidAdapter(ExchangeAdapter):
     @staticmethod
     def _parse_order_response(resp: dict[str, Any], request: OrderRequest) -> OrderResult:
         # Erros carregam o NOME do coin (o SDK só reporta 'asset=<idx>').
+        # Defesa: o SDK pode devolver None/algo não-dict (timeout, coin sem book);
+        # sem isto o `.get` estoura "'NoneType' object has no attribute 'get'".
+        if not isinstance(resp, dict):
+            return OrderResult(ok=False, cloid=request.cloid, status="rejected",
+                               error=f"{request.symbol}: empty response", raw=None)
         if resp.get("status") != "ok":
             return OrderResult(ok=False, cloid=request.cloid, status="rejected",
                                error=f"{request.symbol}: {resp}", raw=resp)
