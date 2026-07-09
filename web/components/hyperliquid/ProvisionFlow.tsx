@@ -113,10 +113,24 @@ export function ProvisionFlow({ env }: { env: Env }) {
       });
       const act = await actRes.json().catch(() => ({}));
       if (!actRes.ok || !(act as { ok?: boolean }).ok) {
+        const a = act as {
+          error?: unknown;
+          detail?: string;
+          reason?: string;
+        };
+        // `error` pode vir como objeto (resposta crua da HL) — serializa p/ não
+        // renderizar "[object Object]"; `reason` cobre o 502 do próprio proxy
+        // (ex.: gateway_unreachable = timeout, não recusa da HL).
+        const raw =
+          typeof a.error === "string"
+            ? a.error
+            : a.error
+              ? JSON.stringify(a.error)
+              : (a.detail ?? a.reason);
         setError(
-          (act as { error?: string; detail?: string }).error ??
-            (act as { detail?: string }).detail ??
-            "Ativação recusada pelo Hyperliquid.",
+          a.reason === "gateway_unreachable"
+            ? "Sem resposta do gateway a tempo (pode ter concluído no servidor — recarregue e confira o status)."
+            : `Ativação recusada: ${raw ?? "motivo desconhecido"}`,
         );
         return;
       }

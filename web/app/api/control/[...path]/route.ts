@@ -82,7 +82,10 @@ export async function POST(
       },
       ...(body ? { body } : {}),
       cache: "no-store",
-      signal: AbortSignal.timeout(5000),
+      // POSTs de controle podem encadear várias chamadas externas (ex.:
+      // hl/agents/activate submete o approveAgent à HL, lê extra_agents e
+      // recarrega o adapter). 5s cortava o fluxo no meio; 30s cobre o pior caso.
+      signal: AbortSignal.timeout(30000),
     });
     return NextResponse.json(await r.json(), { status: r.status });
   } catch {
