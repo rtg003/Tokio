@@ -1428,3 +1428,50 @@ Não mexe em `logic_version` (não é discovery).
   short, tolerância de drift, teto de tentativas → `reconcile.stuck`).
 - `python -m pytest -q`: 1 falha PRÉ-EXISTENTE e não relacionada
   (`test_scan_approves_swing_rejects_traps`), o resto verde.
+
+---
+
+## UPDATE-0024 · 2026-07-08 · Status: PENDENTE
+
+**Origem**: diretiva rtg003 (limpeza operacional)
+
+**Tipo**: operacao (SQLite — DESTRUTIVO)
+
+**Contexto**: no UPDATE-0023 a limpeza das ordens travadas foi **finalizar**
+(`status='cancelled'`, `reject_reason='cleanup UPDATE-0023 (reconcile runaway)'`).
+O rtg003 decidiu **apagar de vez** essas ordens — elas não têm valor de auditoria e
+poluem a tabela `orders`. Este update só mexe no banco; **não há mudança de código**.
+
+**Escopo do DELETE** (preciso, para não apagar histórico legítimo):
+- as ordens finalizadas pela limpeza do 0023 (marcadas com aquele `reject_reason`); e
+- qualquer ordem ainda em estado não-terminal que tenha sobrado
+  (`created`/`sent`/`acked`/`partially_filled`).
+
+A tabela `fills` e as ordens concluídas (`filled`/`rejected`/outras `cancelled`
+legítimas) **ficam intactas**.
+
+### Ações do Hermes
+
+1. **Backup do SQLite antes** (obrigatório — §5.4):
+   ```bash
+   cp /caminho/para/tokio.db /caminho/para/tokio.db.bak-UPDATE-0024
+   ```
+2. **Apagar as ordens travadas** (ajuste o caminho ao seu runbook):
+   ```bash
+   sqlite3 /caminho/para/tokio.db \
+     "DELETE FROM orders
+       WHERE reject_reason = 'cleanup UPDATE-0023 (reconcile runaway)'
+          OR status IN ('created','sent','acked','partially_filled');"
+   ```
+3. (Opcional) conferir a contagem antes/depois:
+   ```bash
+   sqlite3 /caminho/para/tokio.db \
+     "SELECT status, COUNT(*) FROM orders GROUP BY status;"
+   ```
+
+Não requer restart de serviço (os runners não dependem dessas linhas). Nenhum
+`logic_version` muda.
+
+### Validação esperada
+- `orders` sem linhas em estado não-terminal nem com o `reject_reason` do 0023.
+- Copy trade segue operando normal (0023 já deployado); dashboard/KPI inalterados.
