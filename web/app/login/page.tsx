@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { WalletProvider } from "@/components/wallet/WalletProvider";
+import { SiweButton } from "@/components/wallet/SiweButton";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -55,8 +57,13 @@ export default function LoginPage() {
           {loading ? "Entrando…" : "Entrar"}
         </button>
         {error && <div className="error">{error}</div>}
+        <div className="or-sep">ou</div>
+        <WalletProvider>
+          <SiweButton />
+        </WalletProvider>
         <div className="hint">
-          cadastro desabilitado — senha operacional definida no .env da VPS
+          cadastro desabilitado — senha operacional definida no .env da VPS;
+          login por carteira restrito à allowlist
         </div>
       </form>
     </div>

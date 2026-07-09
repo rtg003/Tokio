@@ -43,23 +43,92 @@ export function passwordMatches(candidate: string): boolean {
   return Boolean(expected) && safeEqual(candidate, expected);
 }
 
-export async function signSession(): Promise<string | null> {
+export type SessionMethod = "password" | "siwe";
+
+export interface SessionClaims {
+  exp: number;
+  method: SessionMethod;
+  address?: string;
+}
+
+// Token: `${payload}.${hmac(payload)}`.
+//  - password (legado): payload = `${exp}`  (retrocompatível — nunca quebrar sessões vivas)
+//  - siwe:              payload = `${exp}|siwe|${address}`
+// O separador interno é "|" para não colidir com o "." que separa payload/assinatura.
+function encodePayload(claims: SessionClaims): string {
+  if (claims.method === "siwe" && claims.address) {
+    return `${claims.exp}|siwe|${claims.address.toLowerCase()}`;
+  }
+  return String(claims.exp);
+}
+
+function decodePayload(payload: string): SessionClaims | null {
+  const parts = payload.split("|");
+  const exp = Number(parts[0]);
+  if (!Number.isFinite(exp)) return null;
+  if (parts.length === 1) return { exp, method: "password" };
+  if (parts.length === 3 && parts[1] === "siwe") {
+    return { exp, method: "siwe", address: parts[2] };
+  }
+  return null;
+}
+
+export async function signSession(
+  opts: { method?: SessionMethod; address?: string } = {},
+): Promise<string | null> {
   const secret = process.env.DASHBOARD_AUTH_SECRET;
   if (!secret) return null;
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
-  const payload = String(exp);
+  const payload = encodePayload({
+    exp,
+    method: opts.method ?? "password",
+    address: opts.address,
+  });
   return `${payload}.${await hmac(secret, payload)}`;
 }
 
-export async function verifySession(token: string | undefined | null): Promise<boolean> {
+async function verifyToken(token: string | undefined | null): Promise<SessionClaims | null> {
   const secret = process.env.DASHBOARD_AUTH_SECRET;
-  if (!secret || !token) return false;
-  const [payload, signature] = token.split(".");
-  if (!payload || !signature) return false;
-  const exp = Number(payload);
-  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
+  if (!secret || !token) return null;
+  const idx = token.lastIndexOf(".");
+  if (idx <= 0) return null;
+  const payload = token.slice(0, idx);
+  const signature = token.slice(idx + 1);
+  if (!payload || !signature) return null;
+  const claims = decodePayload(payload);
+  if (!claims) return null;
+  if (claims.exp < Math.floor(Date.now() / 1000)) return null;
   const expected = await hmac(secret, payload);
-  return safeEqual(signature, expected);
+  if (!safeEqual(signature, expected)) return null;
+  return claims;
+}
+
+export async function verifySession(token: string | undefined | null): Promise<boolean> {
+  return (await verifyToken(token)) !== null;
+}
+
+export async function sessionClaims(token: string | undefined | null): Promise<SessionClaims | null> {
+  return verifyToken(token);
+}
+
+// SIWE: allowlist de endereços autorizados a logar por carteira.
+// `AUTH_ALLOWED_ADDRESSES` = lista separada por vírgula (case-insensitive).
+// Vazio/ausente = NENHUM endereço autorizado (fecha por padrão — SIWE inativo
+// até o operador declarar explicitamente quem pode entrar).
+export function allowedAddresses(): string[] {
+  return (process.env.AUTH_ALLOWED_ADDRESSES ?? "")
+    .split(",")
+    .map((a) => a.trim().toLowerCase())
+    .filter((a) => a.length > 0);
+}
+
+export function siweConfigured(): boolean {
+  return Boolean(process.env.DASHBOARD_AUTH_SECRET) && allowedAddresses().length > 0;
+}
+
+export function addressAllowed(address: string): boolean {
+  const target = address.trim().toLowerCase();
+  return allowedAddresses().some((a) => safeEqual(a, target));
 }
 
 export function secureCookieEnabled(): boolean {

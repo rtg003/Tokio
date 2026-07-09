@@ -183,7 +183,7 @@ aprovação **exige/aceita** expiração explícita, qual o **máximo vigente**,
 agents expiram de fato (ADR 0001 não fixa). Alimenta o banner de validade e o
 `expiry_scan` (F4). **Ação P0:** ler `validUntil` retornado após o V4 e registrar aqui.
 
-## V6 — Compat wagmi@2 / viem@2 / siwe@3 com Next 15.1 + React 19 + node:22-alpine ⏳ PENDENTE (build real)
+## V6 — Compat wagmi@2 / viem@2 / react-query com Next 15.1 + React 19 ✅ RESOLVIDO (build real)
 
 Fatos de código:
 - `web/package.json`: Next **15.1.0**, React **19.0.0**, npm; **sem** wagmi/viem/siwe/
@@ -191,12 +191,20 @@ Fatos de código:
 - `web/Dockerfile`: 3 estágios, todos `FROM node:22-alpine`; instala com
   `npm install --no-audit --no-fund` (deps stage). Não usa `--legacy-peer-deps` hoje.
 
-Não é resolvível só lendo: React 19 é recente e wagmi v2 exige `@tanstack/react-query`
-como peer. **Ação P0 (build real, branch descartável ou container):** adicionar
-`wagmi@^2 viem@^2 @tanstack/react-query siwe@^3`, rodar `npm install` + `npm run build`
-com base `node:22-alpine`; confirmar que resolve **sem** `--legacy-peer-deps`
-silencioso e que o build standalone passa. Colar o resultado aqui. Este é o principal
-risco de prazo do módulo.
+**Resultado do build real (2026-07-09):** `npm install wagmi@^2 viem@^2
+@tanstack/react-query@^5` resolveu **sem ERESOLVE** e **sem** `--legacy-peer-deps`
+(448 pacotes; só warnings de deprecação). `npm run build` **PASSOU** — todas as
+rotas geradas, standalone ok.
+
+**Desvio vs plano original (D4):** o pacote **`siwe`** foi **descartado**. `siwe@3`
+faz peer-dep de `ethers`; puxá-lo para um stack baseado em viem é redundante. Usamos
+o módulo nativo **`viem/siwe`** (`generateSiweNonce`/`createSiweMessage`/`parseSiweMessage`)
++ `verifyMessage` do viem. Deps finais: `wagmi@^2.19`, `viem@^2.55`,
+`@tanstack/react-query@^5.101`.
+
+**Ressalva:** o build rodou em macOS (darwin), não em `node:22-alpine`. O build Docker
+no deploy deve reconfirmar (risco baixo — variantes musl do `sharp` existem). Sem
+`--legacy-peer-deps` no Dockerfile.
 
 ## V7 — Propagação de `TOKIO_KEYRING_SECRET` + backup sem `.env` ✅ RESOLVIDO (c/ passo operacional)
 
@@ -257,15 +265,15 @@ Travas de continuidade a implementar (P2/P3) e **provar vivo**:
 | V3 | `extra_agents` | ✅ RESOLVIDO | — |
 | V4 | re-aprovar mesmo nome | ⏳ testnet + MetaMask | D4 / rotação (P2/P4) |
 | V5 | `valid_until` | ⏳ testnet | banner/expiry (P4) |
-| V6 | build wagmi/viem/siwe | ⏳ build real | P1/P2 (risco de prazo) |
+| V6 | build wagmi/viem (+react-query) | ✅ RESOLVIDO (build real; `siwe`→`viem/siwe`) | — |
 | V7 | secret no deploy + backup sem `.env` | ✅ RESOLVIDO (+passo op.) | — |
 | V8 | rede web→gateway | ✅ RESOLVIDO | — |
 | V9 | invariante Hermes | ⏳ smoke test P2 | P3 (limpeza `.env`) |
 
-**Resolvidos por código (5/9):** V1, V3, V7, V8 e — com a ressalva de confirmar na
-testnet antes de mainnet — V2. **Exigem validação viva (4/9):** V4 e V5 (testnet +
-MetaMask), V6 (build real do web), V9 (smoke test no P2). Nenhum dos pendentes bloqueia
-começar P1 (SIWE); V6 é o que mais convém antecipar por ser risco de prazo.
+**Resolvidos (6/9):** V1, V3, V6 (build real), V7, V8 e — com a ressalva de confirmar
+na testnet antes de mainnet — V2. **Exigem validação viva (3/9):** V4 e V5 (testnet +
+MetaMask), V9 (smoke test no P2). Nenhum dos pendentes bloqueia P1 (SIWE, já
+implementado) nem começar P2.
 
 **Decisão pedida ao rtg003 (portão):**
 1. Aprovar seguir para P1 com os 5 itens resolvidos.

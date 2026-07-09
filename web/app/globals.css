@@ -283,6 +283,11 @@ th.num { text-align: right; }
 .logincard .btn { width: 100%; margin-top: 22px; padding: 11px; }
 .logincard .hint { margin-top: 16px; text-align: center; }
 .logincard .error { margin-top: 14px; font: 400 11.5px var(--mono); color: var(--neg); }
+.or-sep { margin: 18px 0 4px; text-align: center; font: 500 10px var(--mono); letter-spacing: 0.18em; color: var(--faint); text-transform: uppercase; }
+.logincard .siwe .btn { width: 100%; margin-top: 8px; padding: 11px; }
+.logincard .siwe .error { text-align: center; }
+.siwe-disconnect { display: block; width: 100%; margin-top: 8px; background: none; border: none; font: 400 11px var(--mono); color: var(--faint); cursor: pointer; text-align: center; }
+.siwe-disconnect:hover { color: var(--muted); }
 .loginstatus {
   position: absolute; top: 0; left: 0; right: 0; height: 34px; display: flex; align-items: center; gap: 18px;
   padding: 0 18px; border-bottom: 1px solid var(--line); font: 500 11px var(--mono); color: var(--muted);

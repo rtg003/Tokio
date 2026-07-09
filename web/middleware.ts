@@ -22,15 +22,18 @@ export async function middleware(request: NextRequest) {
   }
   const isLogin = request.nextUrl.pathname === "/login";
   const isLoginApi = request.nextUrl.pathname === "/api/login";
+  // Rotas SIWE são parte do fluxo de login por carteira → públicas como /login.
+  const isSiweApi = request.nextUrl.pathname.startsWith("/api/auth/siwe/");
+  const isPublic = isLogin || isLoginApi || isSiweApi;
   if (!authConfigured()) {
-    if (!isLogin && !isLoginApi) {
+    if (!isPublic) {
       return NextResponse.redirect(publicUrl(request, "/login"));
     }
     return NextResponse.next({ request });
   }
 
   const ok = await verifySession(request.cookies.get(SESSION_COOKIE)?.value);
-  if (!ok && !isLogin && !isLoginApi) {
+  if (!ok && !isPublic) {
     return NextResponse.redirect(publicUrl(request, "/login"));
   }
   if (ok && isLogin) {

@@ -121,6 +121,22 @@ banco de dados do Tokio. A antiga réplica Supabase e o Supabase Auth foram
 removidos da arquitetura; novas telas e relatórios devem ler do SQLite via
 gateway interno. Backup local e offsite do SQLite é obrigatório.
 
+### 5.5 Login por carteira (SIWE) e keyring de agent wallets (ADR 0011)
+
+Desde a spec `hl-auth` v2.0, a dashboard aceita, além da senha, **login por
+carteira MetaMask (SIWE/EIP-4361)**. A verificação vive na web (edge): nonce
+de uso único + allowlist `AUTH_ALLOWED_ADDRESSES` (vazia ⇒ SIWE desligado).
+Ambos os caminhos emitem o mesmo cookie `tokio_session` e continuam sendo
+**ato humano** para os combos de gate — nada disso torna gates contornáveis.
+
+Invariante inegociável: **SIWE e o keyring NÃO adicionam gate no caminho de
+ordem** (`/intent`, `/cancel`). O Hermes e os runners não logam por SIWE. O
+keyring (P2+) muda só a *origem* da agent key (`.env` → SQLite cifrado
+AES-256-GCM), mantendo o gateway como único signatário (ADR 0001) com
+precedência keyring > `.env` e fallback durante a transição. Gate humano de
+mainnet preservado. Detalhes e fases em `docs/decisions/0011-siwe-e-keyring-hl.md`
+e `docs/specs/SPEC_HL_METAMASK_AUTH_v2.md`.
+
 ## 6. Persistência deste protocolo
 
 - Registrado como decisão em
