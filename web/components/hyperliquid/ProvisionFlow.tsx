@@ -7,8 +7,10 @@ import {
   useConnect,
   useDisconnect,
   useSignTypedData,
+  useSwitchChain,
 } from "wagmi";
 import { injected } from "wagmi/connectors";
+import { arbitrumSepolia } from "wagmi/chains";
 import type { Env } from "@/lib/hyperliquid/data";
 
 // Fluxo de provisionamento de agent wallet HL (EIP-712 approveAgent):
@@ -36,10 +38,11 @@ type PrepareResponse = {
 
 export function ProvisionFlow({ env }: { env: Env }) {
   const router = useRouter();
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, chainId } = useAccount();
   const { connectAsync } = useConnect();
   const { disconnect } = useDisconnect();
   const { signTypedDataAsync } = useSignTypedData();
+  const { switchChainAsync } = useSwitchChain();
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +81,15 @@ export function ProvisionFlow({ env }: { env: Env }) {
       // viem deriva o EIP712Domain a partir de `domain`; remover a entrada
       // evita o erro "Cannot redefine EIP712Domain".
       const { EIP712Domain: _ignored, ...types } = prep.typed_data.types;
+
+      // O domain do approveAgent usa chainId 0x66eee (Arbitrum Sepolia) p/ os
+      // dois ambientes (V2). O wagmi só sabe assinar numa cadeia que está na
+      // config — se a MetaMask estiver noutra rede (ex.: Ethereum Mainnet), o
+      // `signTypedData` lança "Chain not configured". Garantimos a rede antes.
+      if (chainId !== arbitrumSepolia.id) {
+        setStep("Troque para Arbitrum Sepolia na MetaMask…");
+        await switchChainAsync({ chainId: arbitrumSepolia.id });
+      }
 
       setStep("Assine o approveAgent na MetaMask…");
       const signature = await signTypedDataAsync({
