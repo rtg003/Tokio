@@ -1475,3 +1475,73 @@ Não requer restart de serviço (os runners não dependem dessas linhas). Nenhum
 ### Validação esperada
 - `orders` sem linhas em estado não-terminal nem com o `reject_reason` do 0023.
 - Copy trade segue operando normal (0023 já deployado); dashboard/KPI inalterados.
+
+## UPDATE-0025 · 2026-07-09 · Status: PENDENTE
+
+**Origem**: push direto na main (hl-auth P1 `81c7f37` + P2 `dc37e11`)
+
+**Tipo**: config + infra (novos secrets + migration + deps)
+
+**Contexto**: entrou a feature **hl-auth v2.0** (SPEC v2.0, ADR 0011):
+1. **P1 — login MetaMask (SIWE/EIP-4361)** convivendo com a senha. É só login
+   humano na dashboard; emite o mesmo cookie `tokio_session`. **NÃO** toca o
+   caminho de ordem (`/intent`, `/cancel`) nem exige nada do Hermes/runners.
+2. **P2 — keyring cifrado de agent wallets HL** (AES-256-GCM no SQLite) +
+   página `/hyperliquid` para provisionar agents assinando `approveAgent`
+   (EIP-712) na MetaMask. O gateway resolve a agent key por ambiente na ordem
+   **keyring (hl_agents active) → fallback `.env`** — segue como único
+   signatário (ADR 0001). Provisão habilitada **só na testnet** neste passo;
+   mainnet bloqueada na UI (gate humano, entra no P3).
+
+O autodeploy (pull-based) já rebuilda engine+web e roda a migration sozinho.
+**A única ação humana é preencher dois secrets novos no `.env` da VPS** — sem
+eles a feature degrada para o estado atual (chaves do `.env`, login por senha),
+**sem** perder execução.
+
+### Ações do Hermes
+
+1. **Adicionar ao `/home/tokio/Tokio/.env`** (fora de qualquer sessão de agente;
+   nunca commitar; nunca logar) — dois valores novos:
+   ```bash
+   # segredo do keyring (alta entropia) — gere UMA vez e guarde com o mesmo
+   # cuidado das chaves; perdê-lo torna as agent keys cifradas ilegíveis:
+   python -c "import secrets; print('TOKIO_KEYRING_SECRET=' + secrets.token_urlsafe(48))"
+
+   # endereços MetaMask autorizados a logar via SIWE (csv, case-insensitive).
+   # VAZIO = SIWE desligado (só senha). Ponha o(s) endereço(s) do rtg003:
+   # AUTH_ALLOWED_ADDRESSES=0xSEU_ENDERECO_METAMASK
+   ```
+   Cole as duas linhas no `.env` (o `TOKIO_KEYRING_SECRET=` já vem com o valor
+   gerado; preencha o `AUTH_ALLOWED_ADDRESSES=` com o endereço do rtg003).
+
+2. **Restart** para carregar os secrets (o autodeploy já terá feito o build da
+   `dc37e11`; se preferir forçar agora):
+   ```bash
+   sudo systemctl restart tokio-engine.service tokio.service
+   ```
+   O `python -m engine.cli db migrate` do autodeploy aplica a **migration 0014**
+   (`hl_agents` + `hl_auth_audit`); `pip install -e .` puxa `cryptography>=42`;
+   o `npm ci` da web instala `wagmi`/`viem`/`@tanstack/react-query`.
+
+3. **Backup offsite (§5.4 / DISCOVERY V7)**: o `hl_agents` (cifrado) **deve**
+   entrar no backup do SQLite — ele já entra por ser tabela do mesmo `.db`
+   (nada a fazer além de garantir que o backup roda). O `.env` continua **fora**
+   do backup offsite (contém o `TOKIO_KEYRING_SECRET` em claro).
+
+### ⚠️ Consequência operacional (testnet)
+
+Ao **ativar um agent testnet novo pela dashboard**, o adapter testnet passa a
+operar **na conta da wallet que aprovou o agent** (o `master_address` vira o
+`account_address` do ambiente, no lugar do `HL_ACCOUNT_ADDRESS` do `.env`).
+Isso é o comportamento desejado (requisito rtg003), mas significa que
+posições/saldo/ordens dos runners testnet passam a ser da nova wallet. Só
+provisione quando for essa a intenção. **Mainnet não é afetada** (provisão
+bloqueada na UI; chaves seguem no `.env`).
+
+### Validação esperada
+- Dashboard: aba **Sistema → Hyperliquid** carrega; chip **keyring ATIVO** se o
+  `TOKIO_KEYRING_SECRET` estiver setado.
+- Login: botão "Conectar carteira" no `/login` autentica um endereço da
+  allowlist; endereço fora dela é recusado; **senha continua funcionando**.
+- `/intent` e `/cancel` operam igual (INVARIANTE) — copy trade sem regressão.
+- Sem `logic_version` novo (não é discovery).
