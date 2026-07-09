@@ -6,11 +6,22 @@ import { authConfigured, SESSION_COOKIE, verifySession } from "@/lib/auth";
 // internal compose network; the web is its single authenticated client. The
 // browser never sees GATEWAY_CONTROL_TOKEN. Status changes still go through the
 // gateway, which refuses MAINNET unless credentials are configured.
-const ALLOWED_GET = new Set(["health", "ledger", "positions", "balance", "traders"]);
+const ALLOWED_GET = new Set([
+  "health",
+  "ledger",
+  "positions",
+  "balance",
+  "traders",
+  "hl/agents",
+]);
 const ALLOWED_POST_PATTERNS = [
   /^strategy\/[\w-]+\/(pause|activate)$/,
   // trader status/config: status changes are explicit authenticated human acts
   /^trader\/0x[0-9a-fA-F]{40}\/(status|config)$/,
+  // HL agent wallets: prepare/activate provisioning + revoke (gateway gates
+  // the control token; MAINNET still needs credentials configured server-side)
+  /^hl\/agents\/(prepare|activate)$/,
+  /^hl\/agents\/(testnet|mainnet)\/revoke$/,
 ];
 
 function gatewayBase(): string {

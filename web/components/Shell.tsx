@@ -138,6 +138,7 @@ export default function Shell({
         </nav>
         <div className="navlabel">Sistema</div>
         <nav className="nav">
+          {nav("/hyperliquid", "Hyperliquid", "HL")}
           {nav("/config", "Configurações", "⚙")}
           {nav("/logs", "Logs", "≡")}
         </nav>

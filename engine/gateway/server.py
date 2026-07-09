@@ -53,6 +53,61 @@ class CancelRequest(BaseModel):
     exchange_order_id: str | None = None
 
 
+class AgentPrepareRequest(BaseModel):
+    env: str = Field(pattern="^(testnet|mainnet)$")
+    master_address: str
+    agent_name: str = "engine_gateway"
+
+
+class AgentActivateRequest(BaseModel):
+    env: str = Field(pattern="^(testnet|mainnet)$")
+    agent_address: str
+    signature: str
+    nonce: int
+
+
+def _build_env_adapter(
+    settings: Settings, db: Database, env: str,
+) -> ExchangeAdapter | None:
+    """Resolve o adapter de um ambiente na ordem keyring > .env (D3).
+
+    1. keyring: se `TOKIO_KEYRING_SECRET` configurado e há agente `active`,
+       constrói o adapter com `account_address = master_address` (a wallet que
+       aprovou o agent — REQUISITO rtg003) + agent key decifrada.
+    2. fallback `.env` (compat durante a migração — P3 remove as chaves):
+       testnet usa HL_ACCOUNT_ADDRESS/HL_AGENT_PRIVATE_KEY; mainnet usa
+       HL_MAINNET_*. Sem nenhum dos dois ⇒ None (ambiente não configurado)."""
+    if settings.exchange.active != "hyperliquid":
+        return None
+    from engine.exchanges.hyperliquid.adapter import make_adapter
+    from engine.core import keyring as _keyring
+    from engine.gateway import hl_agents
+
+    if _keyring.keyring_configured():
+        try:
+            resolved = hl_agents.resolve_active_key(db, env)
+        except Exception:  # noqa: BLE001 — keyring corrompido não pode matar o boot
+            resolved = None
+        if resolved is not None:
+            master_address, agent_key = resolved
+            return make_adapter(
+                "hyperliquid", env,
+                account_address=master_address, agent_private_key=agent_key,
+            )
+    if env == "testnet":
+        if os.environ.get("HL_ACCOUNT_ADDRESS") and os.environ.get("HL_AGENT_PRIVATE_KEY"):
+            return make_adapter("hyperliquid", "testnet")
+    elif env == "mainnet":
+        addr = os.environ.get("HL_MAINNET_ACCOUNT_ADDRESS")
+        key = os.environ.get("HL_MAINNET_AGENT_PRIVATE_KEY")
+        if addr and key:
+            return make_adapter(
+                "hyperliquid", "mainnet",
+                account_address=addr, agent_private_key=key,
+            )
+    return None
+
+
 class GatewayState:
     def __init__(
         self,
@@ -77,11 +132,61 @@ class GatewayState:
         )
         self.started_at = time.time()
         self._kill_handled = False
+        # Caches das rotas read-only (info API é rate-limited). Ficam no state —
+        # não em closures — para o reload_adapter poder invalidá-los quando a
+        # conta do ambiente muda (novo master via keyring).
+        self._balance_cache: dict[str, dict[str, Any]] = {}
+        self._positions_cache: dict[str, dict[str, Any]] = {}
         for network, configured_adapter in self.adapters.items():
             configured_adapter.subscribe_own_fills(
                 lambda fill, env=network: self.on_own_fill({**fill, "_network": env})
             )
         self._seed_exchanges()
+
+    # -- hot-reload de adapter por ambiente (keyring > .env; D3/D5) ----------
+    def reload_adapter(self, env: str) -> bool:
+        """Reconstrói adapters[env] a partir do keyring (fallback .env). Sem
+        signer disponível (revogação/expiração) ⇒ remove o adapter do dict —
+        intents daquele env passam a falhar com 'ambiente não configurado', o
+        outro ambiente segue operando (fato §1.1). Nunca deixa o gateway sem
+        signer para um ambiente que TEM chave: se a construção falhar, mantém o
+        adapter anterior. Retorna True se há adapter vivo no env após o reload."""
+        old = self.adapters.get(env)
+        try:
+            adapter = _build_env_adapter(self.settings, self.db, env)
+        except Exception as exc:  # noqa: BLE001 — reload não pode derrubar o gateway
+            self.logger.error("adapter.reload_failed",
+                              {"env": env, "error": str(exc)[:200]})
+            return old is not None
+        if adapter is None:
+            if old is not None:
+                self.adapters.pop(env, None)
+                if old is not self.adapter:
+                    try:
+                        old.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+            self._balance_cache.pop(env, None)
+            self._positions_cache.pop(env, None)
+            self.logger.warning("adapter.removed", {"env": env})
+            return False
+        self.adapters[env] = adapter
+        adapter.subscribe_own_fills(
+            lambda fill, e=env: self.on_own_fill({**fill, "_network": e})
+        )
+        if self.adapter.network == env:
+            self.adapter = adapter
+        if old is not None and old is not adapter and old is not self.adapter:
+            try:
+                old.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._seed_exchanges()
+        self._balance_cache.pop(env, None)
+        self._positions_cache.pop(env, None)
+        self.logger.info("adapter.reloaded",
+                         {"env": env, "account": adapter.account_address})
+        return True
 
     def _seed_exchanges(self) -> None:
         for network, adapter in self.adapters.items():
@@ -421,8 +526,6 @@ def build_app(state: GatewayState) -> FastAPI:
     def positions() -> list[dict[str, Any]]:
         return [vars(p) for p in state.adapter.positions()]
 
-    _balance_cache: dict[str, dict[str, Any]] = {}
-
     @app.get("/balance")
     def balance(env: str | None = None) -> dict[str, Any]:
         # 30s cache: balance queries hit the venue's rate-limited info API.
@@ -431,15 +534,15 @@ def build_app(state: GatewayState) -> FastAPI:
         except ValueError as exc:
             return {"ok": False, "error": str(exc), "network": env}
         now = time.time()
-        cached = _balance_cache.get(adapter.network)
+        cached = state._balance_cache.get(adapter.network)
         if cached is None or now - cached["ts"] > 30:
             try:
                 balances = adapter.balances()
             except Exception as exc:  # noqa: BLE001 — venue hiccup must not 500 the UI
                 return {"ok": False, "error": str(exc)[:200],
                         "network": adapter.network}
-            _balance_cache[adapter.network] = {"data": balances, "ts": now}
-        data = _balance_cache[adapter.network]["data"]
+            state._balance_cache[adapter.network] = {"data": balances, "ts": now}
+        data = state._balance_cache[adapter.network]["data"]
         return {
             "ok": True,
             "equity_usd": float(data.get("USDC", 0.0)),
@@ -518,6 +621,63 @@ def build_app(state: GatewayState) -> FastAPI:
         state.enforcer.engage_kill_switch(reason)
         cancelled = state.handle_kill_engaged()
         return {"ok": True, "open_orders_cancelled": cancelled}
+
+    # -- HL agent wallets (keyring; SPEC hl-auth §8). NÃO tocam no caminho de
+    # ordem (/intent, /cancel). Leitura sem token (shape sem chaves); mutações
+    # exigem GATEWAY_CONTROL_TOKEN, como o resto do control API. -------------
+    @app.get("/hl/agents")
+    def hl_agents_list() -> dict[str, Any]:
+        from engine.core import keyring
+        from engine.gateway import hl_agents
+
+        return {
+            "agents": hl_agents.list_agents(state.db),
+            "adapters": sorted(state.adapters),
+            "keyring_configured": keyring.keyring_configured(),
+        }
+
+    @app.post("/control/hl/agents/prepare", dependencies=[Depends(_control_auth)])
+    def hl_agent_prepare(req: AgentPrepareRequest) -> dict[str, Any]:
+        from engine.gateway import hl_agents
+
+        try:
+            return hl_agents.prepare(
+                state.db, req.env, req.master_address, agent_name=req.agent_name,
+                actor=req.master_address,
+            )
+        except hl_agents.HlAgentError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/control/hl/agents/activate", dependencies=[Depends(_control_auth)])
+    def hl_agent_activate(req: AgentActivateRequest) -> dict[str, Any]:
+        from engine.gateway import hl_agents
+
+        try:
+            result = hl_agents.activate(
+                state.db, req.env, req.agent_address, req.signature, req.nonce,
+            )
+        except hl_agents.HlAgentError as exc:
+            raise HTTPException(400, str(exc))
+        if result.get("ok"):
+            reloaded = state.reload_adapter(req.env)
+            result["adapter_reloaded"] = reloaded
+            hl_agents.audit(state.db, actor="control_api", action="adapter_reload",
+                            env=req.env, detail={"reloaded": reloaded})
+        return result
+
+    @app.post("/control/hl/agents/{env}/revoke", dependencies=[Depends(_control_auth)])
+    def hl_agent_revoke(env: str) -> dict[str, Any]:
+        from engine.gateway import hl_agents
+
+        if env not in ("testnet", "mainnet"):
+            raise HTTPException(400, f"env inválido: {env}")
+        result = hl_agents.revoke(state.db, env)
+        if result.get("ok"):
+            reloaded = state.reload_adapter(env)
+            result["adapter_reloaded"] = reloaded
+            hl_agents.audit(state.db, actor="control_api", action="adapter_reload",
+                            env=env, detail={"reloaded": reloaded})
+        return result
 
     # ------------------------------------------------------------------
     # Read-only API para o dashboard Next.js ler direto do SQLite.
@@ -846,8 +1006,6 @@ def build_app(state: GatewayState) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"orders: {str(exc)[:200]}")
 
-    _positions_cache: dict[str, dict[str, Any]] = {}
-
     def _scoped_positions(
         strategy_ids: list[str], network_filter: str | None,
     ) -> list[dict[str, Any]]:
@@ -871,14 +1029,14 @@ def build_app(state: GatewayState) -> FastAPI:
         if not symbols:
             return []
         now = time.time()
-        cached = _positions_cache.get(adapter.network)
+        cached = state._positions_cache.get(adapter.network)
         if cached is None or now - cached["ts"] > 15:
             try:
                 fetched = [vars(p) for p in adapter.positions()]
             except Exception:  # noqa: BLE001 — venue hiccup não pode 500 a UI
                 return []
-            _positions_cache[adapter.network] = {"data": fetched, "ts": now}
-        data = _positions_cache[adapter.network]["data"]
+            state._positions_cache[adapter.network] = {"data": fetched, "ts": now}
+        data = state._positions_cache[adapter.network]["data"]
         return [{**p, "network": adapter.network}
                 for p in data if p.get("symbol") in symbols]
 
@@ -995,20 +1153,26 @@ def main() -> None:
     db.migrate()
     from engine.exchanges.hyperliquid.adapter import make_adapter
 
-    adapter = make_adapter(settings.exchange.active, settings.exchange.network)
-    adapters = {adapter.network: adapter}
     if settings.exchange.active == "hyperliquid":
-        if "testnet" not in adapters:
-            adapters["testnet"] = make_adapter("hyperliquid", "testnet")
-        mainnet_address = os.environ.get("HL_MAINNET_ACCOUNT_ADDRESS")
-        mainnet_key = os.environ.get("HL_MAINNET_AGENT_PRIVATE_KEY")
-        if mainnet_address and mainnet_key:
-            adapters["mainnet"] = make_adapter(
-                "hyperliquid",
-                "mainnet",
-                account_address=mainnet_address,
-                agent_private_key=mainnet_key,
-            )
+        # Resolução keyring > .env por ambiente (D3). O adapter default é o do
+        # ambiente configurado; garantimos que ele exista (senão o gateway não
+        # tem signer para o env ativo — falha explícita melhor que silenciosa).
+        default_env = settings.exchange.network
+        adapters: dict[str, ExchangeAdapter] = {}
+        for env in ("testnet", "mainnet"):
+            built = _build_env_adapter(settings, db, env)
+            if built is not None:
+                adapters[env] = built
+        adapter = adapters.get(default_env)
+        if adapter is None:
+            # Sem keyring nem .env para o ambiente ativo: cai no comportamento
+            # legado (make_adapter lê HL_ACCOUNT_ADDRESS/HL_AGENT_PRIVATE_KEY e
+            # estoura se ausentes) — startup guard explícito.
+            adapter = make_adapter(settings.exchange.active, default_env)
+            adapters[adapter.network] = adapter
+    else:
+        adapter = make_adapter(settings.exchange.active, settings.exchange.network)
+        adapters = {adapter.network: adapter}
     state = GatewayState(settings, adapter, db, adapters=adapters)
     state.watch_kill_file()
     app = build_app(state)

@@ -293,6 +293,25 @@ th.num { text-align: right; }
   padding: 0 18px; border-bottom: 1px solid var(--line); font: 500 11px var(--mono); color: var(--muted);
 }
 
+/* ============ HYPERLIQUID · AGENT WALLETS ============ */
+.pagelede { max-width: 760px; margin: -8px 0 22px; font: 400 13px var(--sans); color: var(--muted); line-height: 1.55; }
+.pagelede code { font: 500 12px var(--mono); color: var(--amber); }
+.btn-danger { border: 1px solid var(--neg-soft); color: var(--neg); background: var(--neg-soft); }
+.btn-danger:hover { background: var(--neg); color: var(--ink); }
+.envpanel { padding: 18px; }
+.agentgroup { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+.agentcard { border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 12px 14px; background: var(--surface-2); }
+.agentcard-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.agentcard-name { font: 600 12px var(--mono); color: var(--text); flex: 1; }
+.agentcard-body { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; margin: 0; }
+.agentcard-body dt { font: 500 10px var(--mono); letter-spacing: 0.06em; color: var(--faint); text-transform: uppercase; }
+.agentcard-body dd { margin: 2px 0 0; font: 500 12px var(--mono); color: var(--muted); }
+.agentcard-body .addr { color: var(--text); }
+.provision { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.provision-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.provision-step { margin-top: 10px; font: 500 12px var(--mono); color: var(--amber); }
+.provision .siwe-disconnect { width: auto; margin: 0; }
+
 /* ============ MOBILE ============ */
 @media (max-width: 1180px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 880px) {
