@@ -111,10 +111,16 @@ export function ProvisionFlow({ env }: { env: Env }) {
       setStep("Agent ativo · adapter recarregado.");
       router.refresh();
     } catch (err) {
+      // Superfície o erro real: o catch anterior colapsava tudo num texto
+      // genérico, escondendo a causa (chain mismatch, viem, provider…). Mantém
+      // a detecção de cancelamento amigável; o resto mostra a mensagem crua.
+      const msg = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error("[provision] falhou:", err);
       setError(
-        err instanceof Error && /reject|denied/i.test(err.message)
+        /reject|denied|user rejected/i.test(msg)
           ? "Assinatura cancelada na carteira."
-          : "Carteira indisponível ou erro inesperado.",
+          : `Erro: ${msg.slice(0, 300)}`,
       );
     } finally {
       setBusy(false);
