@@ -1545,3 +1545,39 @@ bloqueada na UI; chaves seguem no `.env`).
   allowlist; endereço fora dela é recusado; **senha continua funcionando**.
 - `/intent` e `/cancel` operam igual (INVARIANTE) — copy trade sem regressão.
 - Sem `logic_version` novo (não é discovery).
+
+## UPDATE-0026 · 2026-07-09 · Status: PENDENTE
+
+**Origem**: decisão rtg003 (2026-07-09) + push na main
+
+**Tipo**: config (esclarecimento) + infra (ajuste cosmético de UI)
+
+**Contexto**: complementa a **UPDATE-0025**. O rtg003 decidiu que o **login na
+dashboard é só por senha** — não vai usar o login por carteira (SIWE). Isso
+muda o que você precisa configurar:
+
+- **`AUTH_ALLOWED_ADDRESSES` é OPCIONAL e NÃO precisa ser preenchido.** Deixe
+  **vazio/ausente** (é o default seguro: SIWE desligado). Ignore o passo da
+  0025 que pedia para preenchê-lo.
+- **O único secret obrigatório do P2 continua sendo `TOKIO_KEYRING_SECRET`**
+  (uma vez, global — habilita cifrar as agent keys e provisionar pela UI).
+
+Além disso, um ajuste **cosmético** já foi para a main: a tela `/login` agora
+**omite** o separador "ou" + botão "Conectar carteira" quando a allowlist está
+vazia (com SIWE desligado, o botão não faz sentido). O código SIWE segue no
+repo, dormente — se um dia quiser ligar login por carteira, basta preencher
+`AUTH_ALLOWED_ADDRESSES` e reiniciar.
+
+### Ações do Hermes
+
+1. **Nenhuma ação nova de config** além do `TOKIO_KEYRING_SECRET` da 0025.
+   **Não** setar `AUTH_ALLOWED_ADDRESSES`.
+2. O ajuste de UI entra sozinho no próximo ciclo do autodeploy (build da web).
+   Sem restart extra além do que a 0025 já pede.
+
+### Validação esperada
+- `/login` mostra **apenas** o campo de senha (sem "ou"/botão de carteira);
+  login por senha funciona normalmente.
+- Aba **Sistema → Hyperliquid** carrega e provisiona na testnet usando só o
+  `TOKIO_KEYRING_SECRET`.
+- Sem `logic_version` novo.
