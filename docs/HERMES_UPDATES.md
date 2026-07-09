@@ -1476,7 +1476,7 @@ Não requer restart de serviço (os runners não dependem dessas linhas). Nenhum
 - `orders` sem linhas em estado não-terminal nem com o `reject_reason` do 0023.
 - Copy trade segue operando normal (0023 já deployado); dashboard/KPI inalterados.
 
-## UPDATE-0025 · 2026-07-09 · Status: PENDENTE
+## UPDATE-0025 · 2026-07-09 · Status: APLICADO em 2026-07-09
 
 **Origem**: push direto na main (hl-auth P1 `81c7f37` + P2 `dc37e11`)
 
@@ -1546,7 +1546,7 @@ bloqueada na UI; chaves seguem no `.env`).
 - `/intent` e `/cancel` operam igual (INVARIANTE) — copy trade sem regressão.
 - Sem `logic_version` novo (não é discovery).
 
-## UPDATE-0026 · 2026-07-09 · Status: PENDENTE
+## UPDATE-0026 · 2026-07-09 · Status: APLICADO em 2026-07-09
 
 **Origem**: decisão rtg003 (2026-07-09) + push na main
 
