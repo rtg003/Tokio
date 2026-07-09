@@ -1431,7 +1431,7 @@ Não mexe em `logic_version` (não é discovery).
 
 ---
 
-## UPDATE-0024 · 2026-07-08 · Status: PENDENTE
+## UPDATE-0024 · 2026-07-08 · Status: APLICADO em 2026-07-09
 
 **Origem**: diretiva rtg003 (limpeza operacional)
 
