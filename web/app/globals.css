@@ -252,7 +252,7 @@ th.num { text-align: right; }
 .select-status.status-sugerido { color: var(--yellow); border-color: var(--yellow); background: var(--yellow-soft); }
 .select-status.status-salvo { color: var(--amber); border-color: var(--amber); }
 .select-status.status-testnet { color: var(--info); border-color: var(--info); }
-.select-status.status-mainnet { color: var(--pos); border-color: var(--pos); }
+.select-status.status-mainnet { color: var(--neg); border-color: var(--neg); }
 .select-status.status-rejeitado { color: var(--neg); border-color: var(--neg); }
 .status-error { font: 400 10px var(--mono); color: var(--neg); max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 

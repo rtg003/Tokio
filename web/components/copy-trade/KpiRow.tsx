@@ -34,15 +34,31 @@ export default function KpiRow({
   const metricsWinRate = withWr.length
     ? (withWr.reduce((s, r) => s + (r.win_rate ?? 0), 0) / withWr.length) * 100
     : null;
+  // Win rate prefere o summary de fills (respeita wallet/exchange/trader/período);
+  // cai para a média diária por estratégia só se o summary não tiver amostra.
   const winRate =
-    envFiltered && summary.win_rate !== null
+    summary.win_rate !== null && summary.win_rate !== undefined
       ? summary.win_rate * 100
       : metricsWinRate;
-  const maxDd = m.reduce((worst, r) => Math.max(worst, Math.abs(r.max_drawdown ?? 0)), 0);
+  // Drawdown e Profit factor vêm do summary de fills (respeitam os filtros de
+  // wallet/exchange/período). Fallback para as métricas diárias por estratégia
+  // se o summary não trouxer os campos (gateway antigo).
+  const metricsMaxDd = m.reduce(
+    (worst, r) => Math.max(worst, Math.abs(r.max_drawdown ?? 0)),
+    0,
+  );
+  const maxDd =
+    summary.max_drawdown !== undefined && summary.max_drawdown !== null
+      ? summary.max_drawdown
+      : metricsMaxDd;
   const pfVals = m.filter((r) => r.profit_factor !== null);
-  const profitFactor = pfVals.length
+  const metricsPf = pfVals.length
     ? pfVals.reduce((s, r) => s + (r.profit_factor ?? 0), 0) / pfVals.length
     : null;
+  const profitFactor =
+    summary.profit_factor !== undefined && summary.profit_factor !== null
+      ? summary.profit_factor
+      : metricsPf;
 
   return (
     <div className="kpis">
@@ -72,7 +88,7 @@ export default function KpiRow({
       <div className="kpi">
         <div className="lab">Win rate</div>
         <div className="val">{winRate === null ? "—" : `${fmtNum(winRate, 1)}%`}</div>
-        <div className="sub">{envFiltered ? "fills no ambiente" : "média diária ponderada"}</div>
+        <div className="sub">fills no período</div>
       </div>
       <div className="kpi">
         <div className="lab">Drawdown</div>

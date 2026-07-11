@@ -30,6 +30,27 @@ from engine.gateway.ledger import Ledger, make_cloid
 from engine.gateway.risk_enforcer import RiskEnforcer
 
 
+def _max_drawdown_pct(realized_pnls: list[float]) -> float:
+    """Máximo drawdown (%) da curva de PnL realizado acumulado no período.
+
+    Trata a curva de PnL como equity partindo de 0: acumula, guarda o topo e
+    mede a maior queda pico→vale relativa ao topo (só quando o topo é positivo,
+    onde a % é definida). Sem pico positivo → 0.0 (curva sem drawdown de topo).
+    """
+    peak = 0.0
+    cum = 0.0
+    max_dd = 0.0
+    for p in realized_pnls:
+        cum += p
+        if cum > peak:
+            peak = cum
+        if peak > 0:
+            dd = (peak - cum) / peak * 100.0
+            if dd > max_dd:
+                max_dd = dd
+    return max_dd
+
+
 class IntentRequest(BaseModel):
     strategy_id: str
     symbol: str
@@ -822,11 +843,18 @@ def build_app(state: GatewayState) -> FastAPI:
         since: str | None = None,
         until: str | None = None,
         network: str | None = None,
+        wallet: str | None = None,
     ) -> dict[str, Any]:
-        """Agregados de fills no período (contagem, PnL, fees, win rate).
+        """Agregados de fills no período (contagem, PnL, fees, win rate,
+        profit factor e max drawdown).
 
         ADR 0010: ?strategy_id é OBRIGATÓRIO.
         ?network=testnet|mainnet filtra pela coluna fills.network.
+        ?wallet=0x… filtra pela conta de trading (fills.master_address).
+
+        `profit_factor` e `max_drawdown` são calculados a partir dos fills
+        FILTRADOS (respeitam wallet/network/período) — antes vinham de
+        strategy_metrics_daily, onde nunca eram gravados (ficavam zerados).
         """
         try:
             strategy_ids = _strategy_ids_csv(strategy_id)
@@ -836,28 +864,49 @@ def build_app(state: GatewayState) -> FastAPI:
             if network_filter:
                 where.append("network = ?")
                 params.append(network_filter)
+            if wallet:
+                where.append("master_address = ?")
+                params.append(wallet)
             if since:
                 where.append("ts >= ?")
                 params.append(since)
             if until:
                 where.append("ts <= ?")
                 params.append(until)
+            where_sql = " AND ".join(where)
             sql = f"""
                 SELECT COUNT(*) AS n_trades,
                        COALESCE(SUM(realized_pnl), 0) AS net_pnl,
                        COALESCE(SUM(fee), 0) AS fees,
+                       COALESCE(SUM(CASE WHEN realized_pnl > 0
+                                THEN realized_pnl ELSE 0 END), 0) AS gross_win,
+                       COALESCE(SUM(CASE WHEN realized_pnl < 0
+                                THEN -realized_pnl ELSE 0 END), 0) AS gross_loss,
                        AVG(CASE WHEN realized_pnl IS NOT NULL AND realized_pnl > 0
                                 THEN 1.0 ELSE 0.0 END) AS win_rate
                 FROM fills
-                WHERE {' AND '.join(where)}
+                WHERE {where_sql}
             """
             rows = state.db.query(sql, params)
             row = dict(rows[0]) if rows else {}
+            gross_win = float(row.get("gross_win") or 0)
+            gross_loss = float(row.get("gross_loss") or 0)
+            profit_factor = gross_win / gross_loss if gross_loss > 0 else None
+            # Curva de PnL realizado ordenada por tempo p/ o max drawdown.
+            curve_rows = state.db.query(
+                f"SELECT realized_pnl FROM fills WHERE {where_sql} "
+                "AND realized_pnl IS NOT NULL ORDER BY ts ASC, id ASC",
+                params,
+            )
+            max_dd = _max_drawdown_pct(
+                [float(r["realized_pnl"]) for r in curve_rows])
             return {
                 "n_trades": int(row.get("n_trades") or 0),
                 "net_pnl": float(row.get("net_pnl") or 0),
                 "fees": float(row.get("fees") or 0),
                 "win_rate": row.get("win_rate"),
+                "profit_factor": profit_factor,
+                "max_drawdown": max_dd,
             }
         except HTTPException:
             raise
@@ -1140,13 +1189,15 @@ def build_app(state: GatewayState) -> FastAPI:
         since: str | None = None,
         until: str | None = None,
         network: str | None = None,
+        wallet: str | None = None,
     ) -> dict[str, Any]:
         """PnL realizado (fills) + não-realizado (posições abertas na venue).
 
         O KPI mostrava $0 porque só somávamos realized_pnl e posições abertas têm
         realized_pnl NULL. ?strategy_id é OBRIGATÓRIO (ADR 0010 §5.1);
-        ?network=testnet|mainnet filtra fills e escolhe o adapter. Falha da venue
-        → unrealized_pnl = 0 (não derruba a UI)."""
+        ?network=testnet|mainnet filtra fills e escolhe o adapter;
+        ?wallet=0x… filtra pela conta de trading (fills.master_address) e escopa
+        as posições ao mesmo master. Falha da venue → unrealized_pnl = 0."""
         try:
             strategy_ids = _strategy_ids_csv(strategy_id)
             network_filter = _parse_network(network)
@@ -1155,6 +1206,9 @@ def build_app(state: GatewayState) -> FastAPI:
             if network_filter:
                 where.append("network = ?")
                 params.append(network_filter)
+            if wallet:
+                where.append("master_address = ?")
+                params.append(wallet)
             if since:
                 where.append("ts >= ?")
                 params.append(since)
@@ -1173,7 +1227,7 @@ def build_app(state: GatewayState) -> FastAPI:
             rows = state.db.query(sql, params)
             row = dict(rows[0]) if rows else {}
             realized = float(row.get("realized_pnl") or 0)
-            positions = _scoped_positions(strategy_ids, network_filter)
+            positions = _scoped_positions(strategy_ids, network_filter, wallet)
             unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
             return {
                 "n_trades": int(row.get("n_trades") or 0),

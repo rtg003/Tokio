@@ -1753,3 +1753,64 @@ o banco com rejeições repetidas a cada ~60s.
 - `/balance?env=testnet` retorna as 7 chaves; `withdrawable_usd` bate com a HL.
 - Ativo ilíquido gera **um** log de skip e **nenhuma** linha `rejected` nova.
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
+
+## UPDATE-0030 · 2026-07-11 · Status: PENDENTE
+
+**Origem**: pedido rtg003 (correções da dashboard de Copy Trade pós-validação) +
+push na main
+
+**Tipo**: **purga de dados** (migrations `0017` e `0018`) + correções de UI/leitura
+(KPIs, filtros, cores, rótulos) — **sem secret novo, sem schema novo, sem
+`logic_version` novo**
+
+**Contexto**: correções pontuais na dashboard: os cards **Drawdown** e **Profit
+factor** viviam zerados (liam de `strategy_metrics_daily`, onde essas duas colunas
+nunca eram gravadas), o status **MAINNET** aparecia verde (deve ser vermelho), os
+filtros de wallet não chegavam a todos os cards, e a tabela de Trades estava
+poluída por rejeições de ativo sem liquidez. Também a limpeza de uma conta master
+obsoleta.
+
+### Purgas de dados
+
+- **`0017_purge_no_liquidity_rejects.sql`**: apaga linhas de `orders` com
+  `status IN ('rejected','error')` cujo `reject_reason` é o no-match do IOC
+  (`… could not immediately match …`, ex. CASHCAT). A **prevenção** já entrou no
+  UPDATE-0029 (o gateway agora não persiste mais essas como `rejected`); esta
+  migration limpa o histórico anterior. Idempotente; não há fills órfãos (essas
+  ordens nunca cruzaram).
+- **`0018_purge_master_d2c7.sql`**: apaga `orders`/`fills` da conta **master de
+  trading** `0xd2c7…` (a que aparece no filtro Wallet; `master_address`,
+  migration 0015). **Casamento por prefixo** (`lower(master_address) LIKE
+  '0xd2c7%'`) — o endereço completo não foi informado; confira que o prefixo é
+  único entre as contas master antes de aplicar. **NÃO** toca em `hl_agents` (não
+  remove o signer): se a wallet ainda deve sumir do dropdown, é um passo separado
+  e consciente. Idempotente.
+
+### Correções de leitura/UI (web + gateway, sem schema)
+
+1. **Drawdown/Profit factor**: agora calculados no `/api/fills/summary` a partir
+   dos fills FILTRADOS (PF = ganho bruto / perda bruta; DD = maior queda pico→vale
+   da curva de PnL realizado acumulado). Respeitam wallet/exchange/trader/período.
+2. **Filtros**: `wallet` passou a ser propagado para `/api/fills/summary` e
+   `/api/pnl/summary` (antes só orders/fills/positions/balance recebiam). Agora
+   **todos** os cards e tabelas da dashboard reagem aos 4 filtros (wallet,
+   exchange, trader, período).
+3. **Status MAINNET**: badge/select agora **vermelho** (era verde).
+4. **Rótulos dos combos**: "Todas Wallets", "Todas Exchanges", "Todos Traders".
+
+### Ações do Hermes
+
+1. Tudo entra no **ciclo normal** (autodeploy da web + `db.migrate()` no restart).
+   Sem passo manual. **Revise as duas migrations de purga antes do restart** —
+   são DELETEs; confira o backup do SQLite (§5.4) antes.
+2. Se o prefixo `0xd2c7` colidir com outra conta master, ajuste a `0018` para o
+   endereço completo antes de aplicar.
+
+### Validação esperada
+- Cards **Drawdown** e **Profit factor** mostram valores reais (não zerados) e
+  mudam ao trocar wallet/exchange/trader/período.
+- Selecionar uma wallet específica reflete em TODOS os cards e tabelas.
+- Status **MAINNET** em vermelho na tabela de Traders.
+- Nenhuma linha `rejected` de "could not immediately match" na tabela de Trades.
+- `orders`/`fills` da master `0xd2c7…` removidos.
+- `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.

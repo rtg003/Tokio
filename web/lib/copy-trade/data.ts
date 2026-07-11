@@ -92,6 +92,8 @@ export type FillsSummary = {
   net_pnl: number;
   fees: number;
   win_rate: number | null;
+  profit_factor?: number | null;
+  max_drawdown?: number | null;
 };
 
 export type PnlSummary = {
@@ -173,7 +175,7 @@ export function accountOptions(exchanges: Exchange[] | null): AccountOption[] {
         { value: "hl:master:testnet", label: "Hyperliquid - Testnet" },
         { value: "hl:master:mainnet", label: "Hyperliquid - Mainnet" },
       ];
-  return [{ value: "all", label: "Todos" }, ...options];
+  return [{ value: "all", label: "Todas Exchanges" }, ...options];
 }
 
 export async function getTraders(): Promise<Trader[] | null> {
@@ -195,7 +197,7 @@ export async function getWallets(): Promise<WalletOption[]> {
     seen.add(addr);
     options.push({ value: addr, label: `${addr.slice(0, 6)}…${addr.slice(-4)}` });
   }
-  return [{ value: "all", label: "Todas as wallets" }, ...options];
+  return [{ value: "all", label: "Todas Wallets" }, ...options];
 }
 
 export function environmentFromAccount(account: string | undefined): "testnet" | "mainnet" | "all" {
@@ -210,7 +212,7 @@ export function traderOptions(traders: Trader[] | null): TraderOption[] {
     t.copy_pinned === 1 || ["SALVO", "TESTNET", "MAINNET"].includes(t.status),
   );
   return [
-    { value: "all", label: "Todos" },
+    { value: "all", label: "Todos Traders" },
     ...rows.map((t) => ({
       value: t.address,
       label: String(t.name ?? t.address).slice(0, 12),
@@ -250,17 +252,21 @@ export async function getFillsSummary(
   since: string,
   until: string,
   network?: "testnet" | "mainnet" | null,
+  wallet?: string | null,
 ): Promise<FillsSummary | null> {
   if (strategyIds.length === 0) {
-    return { n_trades: 0, net_pnl: 0, fees: 0, win_rate: null };
+    return { n_trades: 0, net_pnl: 0, fees: 0, win_rate: null, profit_factor: null, max_drawdown: 0 };
   }
-  const q = withNetwork(
-    new URLSearchParams({
-      strategy_id: strategyIds.join(","),
-      since,
-      until,
-    }),
-    network,
+  const q = withWallet(
+    withNetwork(
+      new URLSearchParams({
+        strategy_id: strategyIds.join(","),
+        since,
+        until,
+      }),
+      network,
+    ),
+    wallet,
   );
   return gatewayGet<FillsSummary>(`/api/fills/summary?${q.toString()}`);
 }
@@ -270,6 +276,7 @@ export async function getPnlSummary(
   since: string,
   until: string,
   network?: "testnet" | "mainnet" | null,
+  wallet?: string | null,
 ): Promise<PnlSummary | null> {
   if (strategyIds.length === 0) {
     return {
@@ -281,13 +288,16 @@ export async function getPnlSummary(
       win_rate: null,
     };
   }
-  const q = withNetwork(
-    new URLSearchParams({
-      strategy_id: strategyIds.join(","),
-      since,
-      until,
-    }),
-    network,
+  const q = withWallet(
+    withNetwork(
+      new URLSearchParams({
+        strategy_id: strategyIds.join(","),
+        since,
+        until,
+      }),
+      network,
+    ),
+    wallet,
   );
   return gatewayGet<PnlSummary>(`/api/pnl/summary?${q.toString()}`);
 }

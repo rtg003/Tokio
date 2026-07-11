@@ -115,8 +115,8 @@ export default async function CopyTradeDashboard({
   const balance = await getBalance(balanceEnv, walletFilter);
   const [metrics, fillsSummary, pnlSummary, orders, fills, positions] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
-    getFillsSummary(ledgerStrategyIds, sinceTs, untilTs, network),
-    getPnlSummary(ledgerStrategyIds, sinceTs, untilTs, network),
+    getFillsSummary(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
+    getPnlSummary(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
     getOrders(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
     getFills(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
     getPositions(ledgerStrategyIds, network, walletFilter),
