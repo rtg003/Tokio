@@ -1616,7 +1616,7 @@ gate novo; INVARIANTE Hermes preservada).
   provisionado; "Todas as wallets" mostra tudo (inclusive histórico NULL).
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
 
-## UPDATE-0028 · 2026-07-11 · Status: PENDENTE
+## UPDATE-0028 · 2026-07-11 · Status: APLICADO em 2026-07-11
 
 **Origem**: pedido rtg003 (implementar P3 do plano hl-auth v2.0) + push na main
 
