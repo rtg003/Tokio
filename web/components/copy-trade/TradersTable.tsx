@@ -3,9 +3,10 @@ import { Trader } from "@/lib/copy-trade/data";
 import StatusSelect from "@/components/copy-trade/StatusSelect";
 
 const COLUMN_TIPS: Record<string, string> = {
-  "#": "Posição atual na lista filtrada.",
+  "#": "Posição atual na lista filtrada (ordenada por cópia simulada líquida).",
+  "SIM NET": "PnL líquido simulado copiando com taxas, slippage e teto 3x. Métrica decisiva do ranking.",
   Trader: "Nome e endereço da carteira analisada. Verde = copiando; amarelo = salvo.",
-  Score: "Nota composta 0-100 do funil. Use como leitura rápida; a cópia simulada pesa mais.",
+  Score: "Nota composta 0-100 do funil (informativa). A ordenação usa a cópia simulada líquida.",
   Coorte: "Grupo operacional do trader conforme perfil de holding, risco e comportamento.",
   "PnL 30d": "Lucro ou prejuízo do trader nos últimos 30 dias, em USDC.",
   "Win rate": "Percentual de trades vencedores. Deve ser interpretado junto com PF e DD.",
@@ -14,12 +15,12 @@ const COLUMN_TIPS: Record<string, string> = {
   Status: "Ação operacional imediata. SALVO observa; TESTNET copia em testnet; MAINNET usa dinheiro real.",
   "Trades 30d": "Número de trades fechados nos últimos 30 dias. Pouca amostra reduz confiança.",
   "Hold méd.": "Tempo médio de posição. Ajuda a filtrar scalpers que não sobrevivem à latência.",
+  "SIM EXP": "Expectância líquida por trade na cópia simulada (net / trade fechado).",
+  "SIM DD": "Drawdown máximo da curva de equity da cópia simulada.",
   "TWRR 30d": "Retorno ponderado pelo tempo nos últimos 30 dias.",
   "Alav. méd.": "Alavancagem média histórica.",
   "Alav. atual": "Maior alavancagem em posições abertas no scan.",
   "Margem disp.": "Percentual de margem livre. Baixo valor aumenta risco de liquidação.",
-  "Cópia sim.": "PnL líquido simulado copiando com $1k, taxas, slippage e teto 3x.",
-  "Cobertura": "Dias cobertos pelo histórico analisado. Histórico curto é menos confiável.",
   "Metades A": "Resultado simulado nas duas metades da janela; ambas positivas indicam persistência.",
   Equity: "Equity do trader. Traders grandes demais podem não espelhar bem com banca pequena.",
   Ativos: "Principais ativos operados. Ajuda a avaliar concentração e compatibilidade.",
@@ -93,22 +94,23 @@ export default function TradersTable({
             <thead>
               <tr>
                 <Th label="#" className="num" />
+                <Th label="SIM NET" className="num" />
                 <Th label="Trader" />
                 <Th label="Score" />
                 <Th label="Coorte" />
-                <Th label="PnL 30d" className="num" />
                 <Th label="Win rate" className="num" />
                 <Th label="PF" className="num" />
+                <Th label="TWRR 30d" className="num" />
+                <Th label="PnL 30d" className="num" />
                 <Th label="Max DD" className="num" />
                 <Th label="Status" />
                 <Th label="Trades 30d" className="num" />
                 <Th label="Hold méd." className="num" />
-                <Th label="TWRR 30d" className="num" />
+                <Th label="SIM EXP" className="num" />
+                <Th label="SIM DD" className="num" />
                 <Th label="Alav. méd." className="num" />
                 <Th label="Alav. atual" className="num" />
                 <Th label="Margem disp." className="num" />
-                <Th label="Cópia sim." className="num" />
-                <Th label="Cobertura" className="num" />
                 <Th label="Metades A" className="num" />
                 <Th label="Equity" className="num" />
                 <Th label="Janelas" />
@@ -128,6 +130,11 @@ export default function TradersTable({
                 return (
                   <tr key={t.address}>
                     <td className="num">{i + 1}</td>
+                    <td className={`num ${pnlClass(t.sim_net_pnl_usd)}`}>
+                      {t.sim_net_pnl_usd === null || t.sim_net_pnl_usd === undefined
+                        ? "—"
+                        : `$${fmtSigned(t.sim_net_pnl_usd, 2)}`}
+                    </td>
                     <td>
                       <span className={`trader-name ${nameClass}`}>{t.name ?? shortAddr(t.address)}</span>
                       <span className="sub addr">{shortAddr(t.address)}</span>
@@ -141,9 +148,6 @@ export default function TradersTable({
                       </span>
                     </td>
                     <td>{t.cohort ?? "—"}</td>
-                    <td className={`num ${pnlClass(t.pnl_30d)}`}>
-                      {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : `$${fmtSigned(t.pnl_30d, 2)}`}
-                    </td>
                     <td className="num">
                       {t.win_rate === null || t.win_rate === undefined
                         ? "—"
@@ -153,6 +157,14 @@ export default function TradersTable({
                       {t.profit_factor === null || t.profit_factor === undefined
                         ? "—"
                         : fmtNum(t.profit_factor, 2)}
+                    </td>
+                    <td className={`num ${pnlClass(t.twrr_30d)}`}>
+                      {t.twrr_30d === null || t.twrr_30d === undefined
+                        ? "—"
+                        : `${fmtNum(t.twrr_30d, 1)}%`}
+                    </td>
+                    <td className={`num ${pnlClass(t.pnl_30d)}`}>
+                      {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : `$${fmtSigned(t.pnl_30d, 2)}`}
                     </td>
                     <td className="num">
                       {t.max_drawdown === null || t.max_drawdown === undefined
@@ -168,10 +180,15 @@ export default function TradersTable({
                         ? "—"
                         : `${fmtNum(t.avg_holding_hours, 1)}h`}
                     </td>
-                    <td className={`num ${pnlClass(t.twrr_30d)}`}>
-                      {t.twrr_30d === null || t.twrr_30d === undefined
+                    <td className={`num ${pnlClass(t.sim_expectancy_usd)}`}>
+                      {t.sim_expectancy_usd === null || t.sim_expectancy_usd === undefined
                         ? "—"
-                        : `${fmtNum(t.twrr_30d, 1)}%`}
+                        : `$${fmtSigned(t.sim_expectancy_usd, 2)}`}
+                    </td>
+                    <td className="num">
+                      {t.sim_max_dd_pct === null || t.sim_max_dd_pct === undefined
+                        ? "—"
+                        : `−${fmtNum(t.sim_max_dd_pct, 1)}%`}
                     </td>
                     <td className="num">
                       {t.avg_leverage === null || t.avg_leverage === undefined
@@ -187,16 +204,6 @@ export default function TradersTable({
                       {t.available_margin_pct === null || t.available_margin_pct === undefined
                         ? "—"
                         : `${fmtNum(t.available_margin_pct, 0)}%`}
-                    </td>
-                    <td className={`num ${pnlClass(t.sim_net_pnl_usd)}`}>
-                      {t.sim_net_pnl_usd === null || t.sim_net_pnl_usd === undefined
-                        ? "—"
-                        : `$${fmtSigned(t.sim_net_pnl_usd, 2)}`}
-                    </td>
-                    <td className="num">
-                      {t.coverage_days === null || t.coverage_days === undefined
-                        ? "—"
-                        : `${fmtNum(t.coverage_days, 0)}d`}
                     </td>
                     <td className="num">
                       {t.sim_half_new_net === null || t.sim_half_new_net === undefined

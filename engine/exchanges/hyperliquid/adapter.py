@@ -199,6 +199,9 @@ class HyperliquidAdapter(ExchangeAdapter):
                 leverage=float(p.get("leverage", {}).get("value") or 0) or None,
                 liquidation_px=float(p.get("liquidationPx") or 0) or None,
                 position_value=float(p.get("positionValue") or 0) or None,
+                margin_used=float(p.get("marginUsed") or 0) or None,
+                # cumFunding.sinceOpen: + = pagamos funding, − = recebemos.
+                cum_funding=float((p.get("cumFunding") or {}).get("sinceOpen") or 0),
             ))
         return out
 
@@ -207,6 +210,13 @@ class HyperliquidAdapter(ExchangeAdapter):
         state = self.info.user_state(addr)
         summary = state.get("marginSummary", {})
         perp_equity = float(summary.get("accountValue", 0))
+        margin_used = float(summary.get("totalMarginUsed", 0) or 0)
+        withdrawable = float(state.get("withdrawable", 0) or 0)
+        # PnL não-realizado agregado das posições abertas (infla accountValue vs.
+        # a UI da HL, que mostra withdrawable + spot).
+        unrealized = 0.0
+        for ap in state.get("assetPositions", []):
+            unrealized += float(ap.get("position", {}).get("unrealizedPnl") or 0)
         # Somar saldo spot USDC (HL unificado — spot + perp)
         try:
             spot_state = self.info.spot_user_state(addr)
@@ -218,8 +228,15 @@ class HyperliquidAdapter(ExchangeAdapter):
         except Exception:
             spot_usdc = 0.0
         return {
+            # chaves legadas mantidas por compatibilidade
             "USDC": perp_equity + spot_usdc,
-            "withdrawable": float(state.get("withdrawable", 0)) + spot_usdc,
+            "withdrawable": withdrawable + spot_usdc,
+            # dict rico (bug /balance — AJUSTES 2026-07-11)
+            "accountValue": perp_equity,
+            "withdrawable_perp": withdrawable,
+            "spot_usdc": spot_usdc,
+            "unrealized_pnl": unrealized,
+            "margin_used": margin_used,
         }
 
     def subscribe_own_fills(self, callback: FillCallback) -> None:

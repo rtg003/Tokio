@@ -48,6 +48,9 @@ class Position:
     leverage: float | None = None
     liquidation_px: float | None = None
     position_value: float | None = None   # notional em USD (mark × |size|)
+    margin_used: float | None = None      # margem alocada na posição (USD)
+    cum_funding: float | None = None      # funding acumulado desde a abertura
+    #  (+ = pagamos, − = recebemos)
 
 
 FillCallback = Callable[[dict[str, Any]], None]

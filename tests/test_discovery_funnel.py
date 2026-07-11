@@ -159,7 +159,11 @@ def make_client() -> FakeClient:
                               "closedPnl": 30.0})
         t += 0.5 * H_MS
     profiles = {
-        GOOD: {"fills": swing_fills(),
+        # pnl_each=800: com sim_net agora no ranking (peso 0.30, AJUSTES
+        # 2026-07-11) o "trader saudável" precisa RENDER na cópia simulada — não
+        # basta PF/consistência. $800/trade → sim_net ~$457 (ratio $1k/$50k),
+        # levando o score ao terço superior da escala (test_..._full_scale).
+        GOOD: {"fills": swing_fills(pnl_each=800),
                "clearinghouse": healthy_clearinghouse()},
         SCALP: {"fills": scalper_fills},
         # início há 45d → último trade recente (passa F1/F2c) e cai no F10

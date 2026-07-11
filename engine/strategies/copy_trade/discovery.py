@@ -363,6 +363,19 @@ def cmd_report(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reclassify(args: argparse.Namespace) -> int:
+    """Recomputa o score de TODOS os traders com os pesos ATUAIS, sem refazer o
+    deep dive (Parte 2 — AJUSTES 2026-07-11)."""
+    cfg = funnel.load_config()
+    db = _db()
+    logger = EventLogger("discovery", get_settings().logs_dir, db=db)
+    logger.info("discovery.reclassify_started", {"reason": args.reason})
+    summary = funnel.reclassify_all(db, cfg, logger=logger)
+    print(f"reclassificados: {summary['total']} "
+          f"(approx={summary['approx']}, mudancas_status={summary['status_changes']})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="copy_trade.discovery")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -394,6 +407,10 @@ def main(argv: list[str] | None = None) -> int:
     rep = sub.add_parser("report")
     rep.add_argument("--last", action="store_true")
     rep.set_defaults(func=cmd_report)
+
+    rec = sub.add_parser("reclassify")
+    rec.add_argument("--reason", default="manual_reclassify")
+    rec.set_defaults(func=cmd_reclassify)
 
     args = parser.parse_args(argv)
     return args.func(args)

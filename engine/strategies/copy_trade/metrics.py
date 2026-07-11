@@ -453,6 +453,7 @@ class ScoreComponents:
     drawdown_quality: float = 0.0   # [0,1]
     copyability: float = 0.0        # [0,1]
     net_expectancy: float = 0.0     # [0,1]
+    sim_net: float = 0.0            # [0,1] — cópia simulada líquida 30d normalizada
     adjustments: list[tuple[str, float]] = field(default_factory=list)
 
 
@@ -464,6 +465,7 @@ def composite_score(c: ScoreComponents, weights: dict[str, float]) -> float:
         + weights["drawdown_quality"] * c.drawdown_quality
         + weights["copyability"] * c.copyability
         + weights["net_expectancy"] * c.net_expectancy
+        + weights.get("sim_net", 0.0) * c.sim_net
     )
     base += sum(v for _, v in c.adjustments)
     return max(0.0, min(100.0, round(base, 2)))

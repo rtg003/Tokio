@@ -678,6 +678,35 @@ def hard_filters(c: Candidate, cfg: dict[str, Any],
 
 
 # ----------------------------------------------------------------------------
+_COMPONENT_KEYS = (
+    "consistency", "profit_factor", "roi_log", "drawdown_quality",
+    "copyability", "net_expectancy", "sim_net",
+)
+
+
+def serialize_components(comps: M.ScoreComponents) -> str:
+    """Serializa os 7 componentes normalizados [0,1] + adjustments para JSON
+    (Parte 2 — reclassify sem refazer o deep dive)."""
+    payload = {k: getattr(comps, k) for k in _COMPONENT_KEYS}
+    payload["adjustments"] = [[name, val] for name, val in comps.adjustments]
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def deserialize_components(raw: str | None) -> M.ScoreComponents | None:
+    """Reconstrói ScoreComponents do JSON persistido; None se ausente/inválido."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    comps = M.ScoreComponents(
+        **{k: float(data.get(k, 0.0) or 0.0) for k in _COMPONENT_KEYS}
+    )
+    comps.adjustments = [(str(n), float(v)) for n, v in data.get("adjustments", [])]
+    return comps
+
+
 def score_candidate(c: Candidate, cfg: dict[str, Any]) -> float:
     """Estágio 3 — score composto + ajustes pós-score (spec v5)."""
     w = cfg["score_weights"]
@@ -698,6 +727,8 @@ def score_candidate(c: Candidate, cfg: dict[str, Any]) -> float:
             sweet_spot=tuple(cop["hold_sweet_spot_hours"]),
             freq_spot=tuple(cop["freq_sweet_spot_trades_day"])),
         net_expectancy=M.net_expectancy_score(c.avg_trade_pnl_pct, cost_pct),
+        # sim_net: cópia simulada líquida 30d normalizada — US$ 5k = score máximo.
+        sim_net=max(0.0, min(1.0, (c.sim_net_pnl_usd or 0.0) / 5000.0)),
     )
     if positive == 4:
         comps.adjustments.append(("consistencia_4/4", float(adj["full_consistency_bonus"])))
@@ -707,10 +738,9 @@ def score_candidate(c: Candidate, cfg: dict[str, Any]) -> float:
     if c.is_top20_alltime:
         comps.adjustments.append(("crowding_top20", float(adj["crowding_penalty"])))
 
-    # v5: penalizar PF absurdo (> 10 = ausência de perdas realizadas, não habilidade)
-    pf_absurd = float(adj.get("pf_absurd_threshold", 0))
-    if pf_absurd > 0 and c.pf is not None and c.pf > pf_absurd:
-        comps.adjustments.append(("pf_absurdo", float(adj.get("pf_absurd_penalty", 0))))
+    # (removido em 2026-07-11) penalidade de "PF absurdo" (> 10): rebaixava
+    # traders excelentes. PF é capado em 10.0 na exibição e sim_net (peso 0.30)
+    # é a régua decisiva.
 
     c.components = comps
     c.score = M.composite_score(comps, w)
@@ -1062,6 +1092,10 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             "coverage_days": c.coverage_days,
             "sim_half_old_net": c.sim_half_old_net,
             "sim_half_new_net": c.sim_half_new_net,
+            # Parte 2 (reclassify): persiste os 7 componentes normalizados [0,1]
+            # + adjustments p/ recomputar o score sem refazer o deep dive.
+            "score_components": serialize_components(c.components)
+            if c.components is not None else None,
         }
         # pinned: NUNCA escreve reject_reason — o valor anterior fica intacto.
         if not is_pinned:
@@ -1134,6 +1168,145 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
                     "payload": json.dumps(agg | {"levs": len(agg["levs"])},
                                           ensure_ascii=False, default=str),
                 })
+
+
+def _components_from_row(row: dict[str, Any], cfg: dict[str, Any],
+                         ) -> tuple[M.ScoreComponents, bool]:
+    """Reconstrói ScoreComponents de uma linha de `traders`.
+
+    Se `score_components` está persistido → reusa os componentes normalizados e
+    apenas RECOMPUTA `sim_net` (para o novo peso valer). Caso contrário (legado)
+    → best-effort a partir das métricas cruas persistidas, marcando approx=True.
+    Os adjustments são sempre reaplicados do que está salvo na linha (4/4 de
+    janelas + risco de liquidação); crowding não é persistido → omitido.
+    """
+    adj = cfg["score_adjustments"]
+
+    def _sim_net_norm() -> float:
+        v = row.get("sim_net_pnl_usd")
+        return max(0.0, min(1.0, (float(v) if v is not None else 0.0) / 5000.0))
+
+    stored = deserialize_components(row.get("score_components"))
+    if stored is not None:
+        stored.sim_net = _sim_net_norm()
+        approx = False
+        comps = stored
+    else:
+        approx = True
+        # windows_positive é uma string "x/4"
+        wp_raw = str(row.get("windows_positive") or "0/4")
+        try:
+            positive = int(wp_raw.split("/")[0])
+        except (ValueError, IndexError):
+            positive = 0
+        pf = float(row.get("profit_factor") or 0.0)
+        n_trades = int(row.get("n_trades_30d") or 0)
+        twrr = row.get("twrr_30d")
+        max_dd = row.get("max_drawdown")
+        comps = M.ScoreComponents(
+            consistency=M.consistency_score(positive, 4, 0.5),
+            profit_factor=M.pf_score_credit(pf, n_trades),
+            roi_log=M.roi_log_score(float(twrr) if twrr is not None else 0.0),
+            drawdown_quality=_dd_quality_approx(
+                float(max_dd) if max_dd is not None else 0.0,
+                cfg["hard_filters"].get("f5_dd_quality_bands")),
+            copyability=0.5,           # sem hold/liquidez persistidos: neutro
+            net_expectancy=0.0,        # avg_trade_pnl_pct não persistido → 0
+            sim_net=_sim_net_norm(),
+        )
+        # adjustments best-effort do que está salvo
+        if positive == 4:
+            comps.adjustments.append(
+                ("consistencia_4/4", float(adj["full_consistency_bonus"])))
+        liq = row.get("liq_distance")
+        if liq is not None and float(liq) < float(adj["liq_distance_threshold_pct"]):
+            comps.adjustments.append(
+                ("risco_liquidacao", float(adj["liq_distance_penalty"])))
+    return comps, approx
+
+
+def _dd_quality_approx(max_dd_pct: float, bands: list[list[float]] | None) -> float:
+    """Aproxima drawdown_quality só pela magnitude (sem o termo de recuperação,
+    que exige a curva de equity). Usado no reclassify best-effort de legados."""
+    if not bands:
+        return max(0.0, 1.0 - max_dd_pct / 25.0)
+    magnitude = 0.0
+    exceeded = True
+    for lo, hi, mult in bands:
+        if max_dd_pct <= lo:
+            exceeded = False
+            break
+        seg = min(max_dd_pct, hi) - lo
+        if seg > 0:
+            seg_frac = seg / (hi - lo)
+            magnitude = max(magnitude, mult * (1.0 - seg_frac * 0.5))
+        if max_dd_pct <= hi:
+            exceeded = False
+    return 0.0 if exceeded else magnitude
+
+
+def reclassify_all(db: Database, cfg: dict[str, Any],
+                   logger: Any | None = None) -> dict[str, Any]:
+    """Recomputa o score de TODOS os traders com os pesos ATUAIS, sem refazer o
+    deep dive (Parte 2 — AJUSTES 2026-07-11).
+
+    - Usa `score_components` persistido; legados caem no best-effort (approx).
+    - copy_pinned = 1 → NUNCA mexe no status (só recomputa score).
+    - min_score_for_suggestion > 0 → rebaixa/repromove SUGERIDO↔REJEITADO.
+    Retorna resumo {total, approx, status_changes}.
+    """
+    weights = cfg["score_weights"]
+    min_score = float(cfg.get("score_adjustments", {})
+                      .get("min_score_for_suggestion", 0) or 0)
+    rows = db.query("SELECT * FROM traders")
+    total = 0
+    approx_n = 0
+    status_changes = 0
+    for row in rows:
+        addr = row["address"]
+        old_score = row.get("score")
+        old_status = row.get("status")
+        pinned = row.get("copy_pinned") == 1
+
+        comps, approx = _components_from_row(row, cfg)
+        new_score = M.composite_score(comps, weights)
+        db.execute("UPDATE traders SET score = ?, score_components = ?, updated_at = ? "
+                   "WHERE address = ?",
+                   (new_score, serialize_components(comps), utcnow(), addr))
+        total += 1
+        if approx:
+            approx_n += 1
+
+        to_status = old_status
+        # gate humano: pinned nunca muda de status por processo automático.
+        if not pinned and min_score > 0:
+            if new_score < min_score and old_status == "SUGERIDO":
+                res = set_status(db, addr, "REJEITADO",
+                                 by="reclassify", logger=logger)
+                if res.get("ok") and not res.get("noop"):
+                    to_status = "REJEITADO"
+                    status_changes += 1
+            elif new_score >= min_score and old_status == "REJEITADO":
+                res = set_status(db, addr, "SUGERIDO",
+                                 by="reclassify", logger=logger)
+                if res.get("ok") and not res.get("noop"):
+                    to_status = "SUGERIDO"
+                    status_changes += 1
+
+        if logger:
+            logger.info("trader.reclassified", {
+                "address": addr,
+                "old_score": old_score,
+                "new_score": new_score,
+                "approx": approx,
+                "from_status": old_status,
+                "to_status": to_status,
+                "pinned": pinned,
+            })
+    summary = {"total": total, "approx": approx_n, "status_changes": status_changes}
+    if logger:
+        logger.info("discovery.reclassify_done", summary)
+    return summary
 
 
 def _near_miss_rows(result: ScanResult, limit: int = 15) -> list[dict[str, Any]]:

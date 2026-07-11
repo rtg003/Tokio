@@ -106,20 +106,19 @@ flowchart LR
 | `copy_simulation.max_copy_leverage` | teto de alavancagem da nossa cópia | 3x | equilíbrio entre executabilidade e sobrevivência | corrige top 1: fill virava 128x sem teto |
 | `copy_simulation.factor_floor` | parâmetro da simulação de cópia | 0.5 | modelo de replay da cópia com nosso sizing/custos | validado no laboratório walk-forward |
 | `copy_simulation.factor_cap` | parâmetro da simulação de cópia | 1.2 | modelo de replay da cópia com nosso sizing/custos | validado no laboratório walk-forward |
-| `score_weights.consistency` | peso do score informativo | 0.25 | score preservado para análise, não ranking final v9 | score v8 Spearman +0.125 |
-| `score_weights.profit_factor` | peso do score informativo | 0.2 | score preservado para análise, não ranking final v9 | score v8 Spearman +0.125 |
-| `score_weights.roi_log` | peso do score informativo | 0.15 | score preservado para análise, não ranking final v9 | score v8 Spearman +0.125 |
-| `score_weights.drawdown_quality` | peso do score informativo | 0.15 | score preservado para análise, não ranking final v9 | score v8 Spearman +0.125 |
-| `score_weights.copyability` | peso do score informativo | 0.15 | score preservado para análise, não ranking final v9 | score v8 Spearman +0.125 |
-| `score_weights.net_expectancy` | peso do score informativo | 0.1 | score preservado para análise, não ranking final v9 | score v8 Spearman +0.125 |
+| `score_weights.sim_net` | peso da cópia simulada líquida 30d no score | 0.30 | AJUSTES 2026-07-11: sim_net vira o componente decisivo do score (normalizado $5k = máximo) | melhor preditor do lucro real da cópia (lab RESULTADOS.md) |
+| `score_weights.consistency` | peso das janelas positivas + estabilidade | 0.20 | consistência ainda pesa, mas abaixo da cópia simulada | score v8 Spearman +0.125 |
+| `score_weights.profit_factor` | peso do PF normalizado | 0.15 | PF informa edge; capado em 10.0 na exibição | score v8 Spearman +0.125 |
+| `score_weights.net_expectancy` | peso da expectância líquida por trade | 0.15 | expectância líquida de custo de cópia | score v8 Spearman +0.125 |
+| `score_weights.drawdown_quality` | peso da qualidade do drawdown | 0.10 | DD do trader com faixas piecewise | score v8 Spearman +0.125 |
+| `score_weights.roi_log` | peso do ROI em log-scale | 0.05 | reduzido — enviesado por tamanho da banca | score v8 Spearman +0.125 |
+| `score_weights.copyability` | peso da copiabilidade heurística | 0.05 | reduzido — menos decisivo que a simulação | score v8 Spearman +0.125 |
 | `score_adjustments.full_consistency_bonus` | ajuste pós-score informativo | 5 | mantido para dossiê e auditoria histórica | score não decide aprovação v9 |
 | `score_adjustments.liq_distance_penalty` | ajuste pós-score informativo | -10 | mantido para dossiê e auditoria histórica | score não decide aprovação v9 |
 | `score_adjustments.liq_distance_threshold_pct` | ajuste pós-score informativo | 20.0 | mantido para dossiê e auditoria histórica | score não decide aprovação v9 |
 | `score_adjustments.crowding_penalty` | ajuste pós-score informativo | -5 | mantido para dossiê e auditoria histórica | score não decide aprovação v9 |
 | `score_adjustments.crowding_top_n` | ajuste pós-score informativo | 20 | mantido para dossiê e auditoria histórica | score não decide aprovação v9 |
 | `score_adjustments.min_score_for_suggestion` | piso mínimo do score para sugerir | 0 | score vira informativo; simulação decide | score completo Spearman +0.125, inferior à simulação nos extremos |
-| `score_adjustments.pf_absurd_penalty` | ajuste pós-score informativo | -5 | mantido para dossiê e auditoria histórica | score não decide aprovação v9 |
-| `score_adjustments.pf_absurd_threshold` | ajuste pós-score informativo | 10.0 | mantido para dossiê e auditoria histórica | score não decide aprovação v9 |
 | `copyability.hold_sweet_spot_hours` | heurística de copiabilidade informativa | `[4, 72]` | proxy mantido, mas simulação é a métrica real | copyability Spearman +0.044 |
 | `copyability.freq_sweet_spot_trades_day` | heurística de copiabilidade informativa | `[0.3, 20.0]` | proxy mantido, mas simulação é a métrica real | copyability Spearman +0.044 |
 | `cost_of_copy.taker_fee_pct` | taxa taker por perna | 0.045% | custo da HL usado na simulação | descontado em simulate_copy |

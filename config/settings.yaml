@@ -16,7 +16,7 @@ risk:
 execution:
   # Ordens market (IOC agressivo). Tenta cada slippage em ordem antes de desistir
   # — 1% fixo do SDK não cruza o book de ativos voláteis (ex.: HYPE).
-  market_slippage_steps: [0.05, 0.10, 0.15]
+  market_slippage_steps: [0.05, 0.10, 0.15, 0.30]
 
 rate_limit:
   # Per-strategy request budget managed by the gateway (address budget is finite:

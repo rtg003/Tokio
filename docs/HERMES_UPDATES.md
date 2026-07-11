@@ -1681,3 +1681,75 @@ dashboard) **segue intocado**.
 - Se a HL mainnet rejeitar o `approveAgent` (ressalva V2), o agent fica
   `pending` e o **motivo real** aparece na UI — nada é ativado (fail-safe).
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
+
+## UPDATE-0029 · 2026-07-11 · Status: PENDENTE
+
+**Origem**: pedido rtg003 (5 blocos de ajuste do copy-trade após validação E2E) +
+push na main
+
+**Tipo**: **schema novo** (migration `0016`) + score/ranking + UI (posições,
+saldo, tabela de traders) + robustez de execução (ativos ilíquidos) — **sem
+secret novo, sem `logic_version` novo**
+
+**Contexto**: o ranking de traders estava enganoso. O score composto penalizava
+`PF > 10` (`pf_absurd_penalty`) e **não usava a cópia simulada líquida**
+(`sim_net_pnl_usd`), então o melhor trader real da tabela (`0x1a5d`: PF 10.13,
+WR 85%, sim_net **$2.744**) ficava atrás de um pior. Além disso: a tela de
+Posições não mostrava margem/liquidação/funding, o `/balance` divergia da UI da
+HL (inflava equity com PnL não-realizado) e ativos ilíquidos da testnet poluíam
+o banco com rejeições repetidas a cada ~60s.
+
+### Schema — migration `0016_score_components.sql`
+
+- `ALTER TABLE traders ADD COLUMN score_components TEXT;` — JSON dos 7
+  componentes normalizados do score + ajustes aplicados (nullable; linhas legadas
+  ficam `NULL` e são recomputadas best-effort no reclassify).
+- `CREATE TABLE IF NOT EXISTS discovery_meta (key, value, updated_at);` — kv
+  interno; guarda `score_weights_hash` para o auto-trigger de reclassify.
+- **Roda no passo normal de `db.migrate()`** no start do serviço — nenhuma ação
+  manual na VPS. Idempotente.
+
+### O que mudou
+
+1. **Ranking (Parte 1)**: novo peso `sim_net: 0.30` (decisivo) e remoção do
+   `pf_absurd_penalty`/`pf_absurd_threshold`. `/api/traders` e a tabela ordenam
+   por `sim_net_pnl_usd DESC` (era `score DESC`). Tabela ganhou colunas **SIM
+   NET** (2ª posição), **SIM EXP** e **SIM DD**; saiu "Cobertura".
+2. **Reclassify (Parte 2)**: novo CLI `discovery reclassify` recomputa o score de
+   TODOS os traders a partir dos dados já persistidos (sem re-bater na corretora)
+   e loga `trader.reclassified` (old→new). **Auto-trigger**: se a régua de pesos
+   mudar, o scheduler reclassifica 1x no start (hash em `discovery_meta`) e loga
+   `discovery.reclassified_on_weight_change`. Traders `copy_pinned=1` **nunca**
+   têm status mexido (só recomputam score).
+3. **Posições (Parte 3)**: colunas Margem (`marginUsed`), Liq. Price
+   (`liquidationPx`), Funding (`cumFunding`; **+ = pagamos, − = recebemos**) e
+   TP/SL (sempre "—", placeholder p/ futuro).
+4. **`/balance`**: agora devolve 7 chaves (`equity_usd`, `withdrawable_usd`,
+   `available_usd`, `spot_usdc`, `unrealized_pnl`, `margin_used`, `network`). A
+   UI passa a exibir `withdrawable_usd` como o saldo que **bate com a UI da HL**
+   (equity segue disponível como métrica secundária).
+5. **Ativos ilíquidos (testnet)**: o executor mantém cache de ilíquidos (TTL 1h)
+   e **pula** o espelhamento logando `decision.skipped_illiquid_asset`/
+   `decision.skipped_no_liquidity` **uma vez** cada. No `/intent`, resposta IOC
+   sem match não vira mais linha `rejected` — a ordem recém-criada é removida e o
+   retorno é `status:"skipped", reason:"no_liquidity"`. `market_slippage_steps`
+   agora sobe até `0.30` (`[0.05, 0.10, 0.15, 0.30]`).
+
+### Ações do Hermes
+
+1. Tudo entra no **ciclo normal** (autodeploy da web + `db.migrate()` no restart
+   do `tokio-engine.service`). Sem passo manual.
+2. Após o deploy, opcionalmente rodar `discovery reclassify` uma vez para
+   atualizar o score do acervo atual com a régua nova (o auto-trigger já faz isso
+   no primeiro start pós-deploy — o CLI é só para forçar/verificar).
+3. Confirmar no backup que a nova coluna/tabela entram no dump do SQLite (§5.4).
+
+### Validação esperada
+- Tabela de traders ordenada por **SIM NET DESC**; `0x1a5d` em 1º; colunas SIM
+  NET/SIM EXP/SIM DD visíveis; "Cobertura" ausente.
+- `discovery reclassify` loga `trader.reclassified` para todos; pinned mantém
+  status; editar peso + restart dispara reclassify 1x.
+- Posições mostram Margem/Liq. Price/Funding reais e TP/SL "—".
+- `/balance?env=testnet` retorna as 7 chaves; `withdrawable_usd` bate com a HL.
+- Ativo ilíquido gera **um** log de skip e **nenhuma** linha `rejected` nova.
+- `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.

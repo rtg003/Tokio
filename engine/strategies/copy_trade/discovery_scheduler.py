@@ -13,6 +13,8 @@ públicos de mainnet).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import time
 from datetime import datetime, timedelta
@@ -20,7 +22,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from engine.core.config import get_settings
-from engine.core.db import Database
+from engine.core.db import Database, utcnow
 from engine.core.logger import EventLogger
 
 SCAN_TZ = ZoneInfo("America/Sao_Paulo")
@@ -50,6 +52,49 @@ def logic_outdated(db: Database) -> bool:
     rows = db.query("SELECT MAX(logic_version) AS v FROM traders")
     populated_with = rows[0]["v"] or 0
     return 0 < populated_with < current
+
+
+def _score_weights_hash(cfg: dict[str, Any]) -> str:
+    """Hash estável da config que decide o score (pesos + ajustes). Muda quando
+    a régua muda → dispara reclassify (Parte 2 — AJUSTES 2026-07-11)."""
+    payload = {
+        "score_weights": cfg.get("score_weights", {}),
+        "score_adjustments": cfg.get("score_adjustments", {}),
+    }
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def reclassify_on_weight_change(db: Database, logger: EventLogger) -> bool:
+    """Se o hash dos pesos/ajustes mudou desde o último startup, reclassifica
+    TODOS os traders 1x e grava o novo hash em `discovery_meta`. True = rodou."""
+    from engine.strategies.copy_trade.funnel import load_config, reclassify_all
+
+    try:
+        cfg = load_config()
+        current = _score_weights_hash(cfg)
+        rows = db.query(
+            "SELECT value FROM discovery_meta WHERE key = 'score_weights_hash'")
+        stored = rows[0]["value"] if rows else None
+        if stored == current:
+            return False
+        if traders_table_empty(db):
+            # nada a reclassificar ainda; só registra o hash p/ o próximo start.
+            db.upsert("discovery_meta",
+                      {"key": "score_weights_hash", "value": current,
+                       "updated_at": utcnow()}, ("key",))
+            return False
+        summary = reclassify_all(db, cfg, logger=logger)
+        db.upsert("discovery_meta",
+                  {"key": "score_weights_hash", "value": current,
+                   "updated_at": utcnow()}, ("key",))
+        logger.info("discovery.reclassified_on_weight_change",
+                    {"old_hash": stored, "new_hash": current, **summary})
+        return True
+    except Exception as exc:  # noqa: BLE001 — nunca derruba o scheduler
+        logger.error("discovery.reclassify_on_weight_change_failed",
+                     {"error": str(exc)[:300]})
+        return False
 
 
 def run_scan(db: Database, logger: EventLogger, *, reason: str) -> bool:
@@ -131,6 +176,9 @@ class DiscoveryScheduler:
         settings = get_settings()
         self.logger.info("health.discovery_scheduler_start",
                          {"scan_hour_sp": SCAN_HOUR, "top": SCAN_TOP})
+        # Parte 2: se a régua de score mudou desde o último start, reclassifica
+        # todos os traders 1x (barato — sem tocar na corretora).
+        reclassify_on_weight_change(self.db, self.logger)
         self.bootstrap_if_empty()
         # bootstrap falhou (ex.: 429)? re-tenta a cada 15 min enquanto vazia,
         # em vez de esperar até as 05:00 do dia seguinte

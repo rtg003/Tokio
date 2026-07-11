@@ -48,11 +48,15 @@ export default function KpiRow({
     <div className="kpis">
       <div className="kpi">
         <div className="lab">Saldo</div>
-        <div className="val">{balance === null ? "—" : `$${fmtNum(balance.equity_usd)}`}</div>
+        <div className="val">
+          {balance === null ? "—" : `$${fmtNum(balance.withdrawable_usd)}`}
+        </div>
         <div className="sub">
           {balance === null
             ? "gateway indisponível"
-            : `USDC · ${balance.network === "mainnet" ? "mainnet" : "testnet"}`}
+            : `disponível · equity $${fmtNum(balance.equity_usd)} · ${
+                balance.network === "mainnet" ? "mainnet" : "testnet"
+              }`}
         </div>
       </div>
       <div className="kpi">

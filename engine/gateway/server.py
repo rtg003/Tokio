@@ -25,6 +25,7 @@ from engine.core.db import Database, utcnow
 from engine.core.logger import EventLogger
 from engine.core.notifier import Notifier
 from engine.exchanges.base import ExchangeAdapter, OrderRequest
+from engine.exchanges.hyperliquid.adapter import _is_ioc_no_match
 from engine.gateway.ledger import Ledger, make_cloid
 from engine.gateway.risk_enforcer import RiskEnforcer
 
@@ -464,6 +465,19 @@ class GatewayState:
             subaccount_address=intent.subaccount_address,
         ))
         latency_ms = (time.perf_counter() - t0) * 1000
+        # Ativo sem liquidez: o IOC agressivo não cruzou o book mesmo após todos
+        # os passos de slippage. NÃO é falha operacional — é ausência de mercado.
+        # Deletamos a linha `created` (evita poluir `orders` com `rejected` a cada
+        # reconcile ~60s) e devolvemos status "skipped" para o executor cachear.
+        # INVARIANTE: nenhum gate novo no caminho de ordem — só limpeza de DB.
+        if not result.ok and _is_ioc_no_match(result.error):
+            self.db.execute("DELETE FROM orders WHERE cloid = ?", (cloid,))
+            self.logger.info("order.skipped_no_liquidity",
+                             {**decision_payload, "error": result.error},
+                             strategy_id=intent.strategy_id, latency_ms=latency_ms)
+            return {"ok": False, "cloid": cloid, "status": "skipped",
+                    "reason": "no_liquidity", "error": result.error,
+                    "latency_ms": latency_ms}
         status = result.status if result.ok else (result.status or "error")
         self.db.update_order_status(
             cloid, status, sent_at=utcnow(),
@@ -562,10 +576,21 @@ def build_app(state: GatewayState) -> FastAPI:
                         "network": adapter.network}
             state._balance_cache[cache_key] = {"data": balances, "ts": now}
         data = state._balance_cache[cache_key]["data"]
+        # dict rico (HL) com fallback p/ chaves legadas (ex.: PaperAdapter).
+        spot = float(data.get("spot_usdc", 0.0) or 0.0)
+        account_value = float(data.get("accountValue", data.get("USDC", 0.0)) or 0.0)
+        available = float(
+            data.get("withdrawable_perp", data.get("withdrawable", 0.0)) or 0.0)
         return {
             "ok": True,
-            "equity_usd": float(data.get("USDC", 0.0)),
-            "withdrawable_usd": float(data.get("withdrawable", 0.0)),
+            # equity = valor da conta perp (com PnL não-realizado) + spot
+            "equity_usd": account_value + spot,
+            # withdrawable = o que casa com a UI da HL (sem PnL aberto travado)
+            "withdrawable_usd": available + spot,
+            "available_usd": available,
+            "spot_usdc": spot,
+            "unrealized_pnl": float(data.get("unrealized_pnl", 0.0) or 0.0),
+            "margin_used": float(data.get("margin_used", 0.0) or 0.0),
             "network": adapter.network,
         }
 
@@ -751,12 +776,13 @@ def build_app(state: GatewayState) -> FastAPI:
                         f"Valores aceitos: {sorted(_TRADER_STATUSES)}",
                     )
                 rows = state.db.query(
-                    "SELECT * FROM traders WHERE status = ? ORDER BY score DESC",
+                    "SELECT * FROM traders WHERE status = ? "
+                    "ORDER BY sim_net_pnl_usd DESC",
                     (status_up,),
                 )
             else:
                 rows = state.db.query(
-                    "SELECT * FROM traders ORDER BY score DESC"
+                    "SELECT * FROM traders ORDER BY sim_net_pnl_usd DESC"
                 )
             from engine.strategies.copy_trade.traders_store import (
                 environment_for_status,

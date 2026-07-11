@@ -134,12 +134,13 @@ copy_simulation:
   factor_cap: 1.2                 # fator máximo (informativo desde a v9)
 
 score_weights:                    # somam 1.0
-  consistency: 0.25
-  profit_factor: 0.20
-  roi_log: 0.15
-  drawdown_quality: 0.15
-  copyability: 0.15
-  net_expectancy: 0.10
+  sim_net: 0.30                   # NOVO — cópia simulada líquida 30d (métrica decisiva)
+  consistency: 0.20               # janelas positivas + estabilidade
+  profit_factor: 0.15             # PF normalizado
+  net_expectancy: 0.15            # expectância/trade líquida
+  drawdown_quality: 0.10
+  roi_log: 0.05                   # reduzido — enviesado por tamanho da banca
+  copyability: 0.05               # reduzido — menos decisivo
 
 score_adjustments:
   full_consistency_bonus: 5       # 4/4 janelas positivas
@@ -151,8 +152,10 @@ score_adjustments:
   # cópia (mal supera componentes isolados); a régua decisiva é F16-F19.
   # Score segue calculado e exibido como informação.
   min_score_for_suggestion: 0.0
-  pf_absurd_penalty: -5           # v5: PF > 10 é suspeito (ausência de perdas realizadas)
-  pf_absurd_threshold: 10.0       # v5: threshold para penalização de PF absurdo
+  # (removido em 2026-07-11) pf_absurd_penalty/pf_absurd_threshold: penalizavam PF
+  # > 10, mas isso rebaixava traders excelentes (ex.: 0x1a5d, PF 10.13 e melhor
+  # cópia simulada da tabela). PF já é capado em 10.0 na exibição e o peso de
+  # sim_net (0.30) é a régua decisiva agora.
 
 copyability:
   hold_sweet_spot_hours: [4, 72]  # 4h – 3 dias

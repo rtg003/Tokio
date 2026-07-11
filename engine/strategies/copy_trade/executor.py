@@ -161,6 +161,12 @@ class CopyTradeExecutor:
         self._reconcile_attempts: dict[tuple[str, str], int] = {}
         # symbol -> szDecimals (static venue metadata; cached to avoid per-fill RTT)
         self._sz_decimals: dict[str, int] = {}
+        # símbolo ilíquido -> monotonic ts do último no-match. Enquanto fresco
+        # (< ILLIQUID_TTL_S), pulamos o espelhamento sem reenviar a cada reconcile
+        # ~60s (fonte da poluição de `rejected` na testnet). `_illiquid_logged`
+        # garante UM log por símbolo até o cache expirar.
+        self._illiquid: dict[str, float] = {}
+        self._illiquid_logged: set[str] = set()
         self.reload_traders()
 
     # cooldown after a reconcile intent — MUST exceed the reconcile interval
@@ -173,6 +179,30 @@ class CopyTradeExecutor:
     # correcting and log `reconcile.stuck` — a persistently-rejected order must not
     # loop forever.
     RECONCILE_MAX_ATTEMPTS = 3
+
+    # TTL do cache de ativos ilíquidos (1h). Após expirar, re-tentamos o símbolo
+    # uma vez — a liquidez pode ter voltado.
+    ILLIQUID_TTL_S = 3600.0
+
+    def _is_illiquid(self, symbol: str) -> bool:
+        """True se o símbolo caiu como ilíquido e o cache ainda está fresco."""
+        ts = self._illiquid.get(symbol)
+        if ts is None:
+            return False
+        if time.monotonic() - ts > self.ILLIQUID_TTL_S:
+            self._illiquid.pop(symbol, None)
+            self._illiquid_logged.discard(symbol)
+            return False
+        return True
+
+    def _mark_illiquid(self, symbol: str, strategy_id: str,
+                       latency_ms: float | None = None) -> None:
+        """Cacheia o símbolo como ilíquido e loga UMA vez até o cache expirar."""
+        self._illiquid[symbol] = time.monotonic()
+        if symbol not in self._illiquid_logged:
+            self._illiquid_logged.add(symbol)
+            self.logger.info("decision.skipped_no_liquidity", {"symbol": symbol},
+                             strategy_id=strategy_id, latency_ms=latency_ms)
 
     # -- setup ---------------------------------------------------------------
     def reload_traders(self) -> None:
@@ -236,6 +266,11 @@ class CopyTradeExecutor:
             return None
         if symbol in cfg.blocked_assets:
             self.logger.info("decision.skipped_blocked_asset", {"symbol": symbol},
+                             strategy_id=strategy_id)
+            return None
+        # Ativo ilíquido recente: pula sem reenviar (log 1x já feito ao cachear).
+        if self._is_illiquid(symbol):
+            self.logger.info("decision.skipped_illiquid_asset", {"symbol": symbol},
                              strategy_id=strategy_id)
             return None
 
@@ -302,6 +337,11 @@ class CopyTradeExecutor:
         )
         if result.get("ok"):
             self._my_pos[key] = my_new
+        elif result.get("reason") == "no_liquidity":
+            # o gateway não achou book mesmo após todos os passos de slippage —
+            # cacheia p/ não reenviar a cada reconcile (log 1x).
+            self._mark_illiquid(symbol, strategy_id, latency_ms=latency_ms)
+            return result
         self.logger.info("decision.mirrored", {**decision, "result": result},
                          strategy_id=strategy_id, latency_ms=latency_ms)
         return result
@@ -401,6 +441,11 @@ class CopyTradeExecutor:
             for symbol in symbols:
                 if symbol in cfg.blocked_assets:
                     continue
+                # ilíquido recente: não reenvia a cada ciclo de reconcile (fonte
+                # da poluição de `rejected` — log 1x já feito ao cachear).
+                if self._is_illiquid(symbol):
+                    self._reconcile_attempts.pop((sid, symbol), None)
+                    continue
                 key = (sid, symbol)
                 target_now = float(target_pos.get(symbol, 0.0))
                 px = self._mid_price(symbol, environment)
@@ -472,6 +517,10 @@ class CopyTradeExecutor:
                     self._my_pos[key] = desired
                     self._target_pos[key] = target_now
                     self._reconcile_cooldown[key] = now
+                elif result.get("reason") == "no_liquidity":
+                    # cacheia p/ parar de reenviar nos próximos ciclos (log 1x).
+                    self._mark_illiquid(symbol, sid)
+                    self._reconcile_attempts.pop(key, None)
                 corrections.append({"strategy_id": sid, **info, "result": result})
         # venue cross-check (observability only — never corrects across strategies)
         self._venue_cross_check(ledger)

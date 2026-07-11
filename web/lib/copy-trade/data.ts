@@ -33,7 +33,15 @@ export type Metrics = {
   max_drawdown: number | null;
 };
 
-export type Balance = { equity_usd: number; network: string } | null;
+export type Balance = {
+  equity_usd: number;
+  withdrawable_usd: number;
+  available_usd?: number;
+  spot_usdc?: number;
+  unrealized_pnl?: number;
+  margin_used?: number;
+  network: string;
+} | null;
 
 export type Exchange = {
   id?: number;
@@ -103,6 +111,8 @@ export type Position = Record<string, any> & {
   leverage?: number | null;
   liquidation_px?: number | null;
   position_value?: number | null;
+  margin_used?: number | null;
+  cum_funding?: number | null;
   network?: string;
 };
 
@@ -114,11 +124,26 @@ export async function getBalance(
   if (env && env !== "all") q.set("env", env);
   if (wallet && wallet !== "all") q.set("wallet", wallet);
   const qs = q.toString();
-  const data = await gatewayGet<{ ok?: boolean; equity_usd: number; network: string }>(
-    `/balance${qs ? `?${qs}` : ""}`,
-  );
+  const data = await gatewayGet<{
+    ok?: boolean;
+    equity_usd: number;
+    withdrawable_usd?: number;
+    available_usd?: number;
+    spot_usdc?: number;
+    unrealized_pnl?: number;
+    margin_used?: number;
+    network: string;
+  }>(`/balance${qs ? `?${qs}` : ""}`);
   if (!data?.ok) return null;
-  return { equity_usd: data.equity_usd, network: data.network };
+  return {
+    equity_usd: data.equity_usd,
+    withdrawable_usd: data.withdrawable_usd ?? data.equity_usd,
+    available_usd: data.available_usd,
+    spot_usdc: data.spot_usdc,
+    unrealized_pnl: data.unrealized_pnl,
+    margin_used: data.margin_used,
+    network: data.network,
+  };
 }
 
 export async function getStrategies(): Promise<Strategy[] | null> {
