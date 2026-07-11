@@ -166,8 +166,7 @@ class GatewayState:
                         old.close()
                     except Exception:  # noqa: BLE001
                         pass
-            self._balance_cache.pop(env, None)
-            self._positions_cache.pop(env, None)
+            self._invalidate_env_caches(env)
             self.logger.warning("adapter.removed", {"env": env})
             return False
         self.adapters[env] = adapter
@@ -182,11 +181,19 @@ class GatewayState:
             except Exception:  # noqa: BLE001
                 pass
         self._seed_exchanges()
-        self._balance_cache.pop(env, None)
-        self._positions_cache.pop(env, None)
+        self._invalidate_env_caches(env)
         self.logger.info("adapter.reloaded",
                          {"env": env, "account": adapter.account_address})
         return True
+
+    def _invalidate_env_caches(self, env: str) -> None:
+        """Limpa os caches read-only do ambiente. As chaves são compostas
+        (`network:address` — migration 0015 trouxe filtro por wallet), então
+        removemos todas as entradas do prefixo do env, não só a chave crua."""
+        prefix = f"{env}:"
+        for cache in (self._balance_cache, self._positions_cache):
+            for key in [k for k in cache if k == env or k.startswith(prefix)]:
+                cache.pop(key, None)
 
     def _seed_exchanges(self) -> None:
         for network, adapter in self.adapters.items():
@@ -290,6 +297,9 @@ class GatewayState:
                 if self.adapter.network in ("testnet", "mainnet")
                 else "testnet"
             )
+        # Atribuição real de wallet (migration 0015): conta de trading do
+        # adapter do `network` resolvido — só metadado p/ o filtro por Wallet.
+        fill_adapter = self.adapters.get(network) or self.adapter
         self.db.insert("fills", {
             "order_id": order_rows[0]["id"] if order_rows else None,
             "cloid": cloid,
@@ -302,6 +312,7 @@ class GatewayState:
             "fee_asset": fill.get("feeToken", "USDC"),
             "realized_pnl": realized,
             "network": network,
+            "master_address": getattr(fill_adapter, "account_address", None),
             "ts": utcnow(),
         })
         if cloid:
@@ -432,6 +443,10 @@ class GatewayState:
             "status": "dry_run" if intent.dry_run else "created",
             "created_at": utcnow(),
             "exchange_id": exchange_id,
+            # Atribuição real de wallet (migration 0015): a conta de trading do
+            # ambiente que executou a ordem. Só metadado p/ o filtro por Wallet
+            # da UI — não altera o caminho de ordem (INVARIANTE Hermes).
+            "master_address": getattr(adapter, "account_address", None),
         }
         self.db.insert("orders", order_row)
 
@@ -527,22 +542,26 @@ def build_app(state: GatewayState) -> FastAPI:
         return [vars(p) for p in state.adapter.positions()]
 
     @app.get("/balance")
-    def balance(env: str | None = None) -> dict[str, Any]:
+    def balance(env: str | None = None, wallet: str | None = None) -> dict[str, Any]:
         # 30s cache: balance queries hit the venue's rate-limited info API.
+        # ?wallet=0x… consulta a conta daquele master (info API aceita qualquer
+        # endereço); sem wallet = conta ativa do adapter (comportamento anterior).
         try:
             adapter = state._adapter_for(env)
         except ValueError as exc:
             return {"ok": False, "error": str(exc), "network": env}
+        address = wallet or getattr(adapter, "account_address", None)
+        cache_key = f"{adapter.network}:{address}"
         now = time.time()
-        cached = state._balance_cache.get(adapter.network)
+        cached = state._balance_cache.get(cache_key)
         if cached is None or now - cached["ts"] > 30:
             try:
-                balances = adapter.balances()
+                balances = adapter.balances(address=address)
             except Exception as exc:  # noqa: BLE001 — venue hiccup must not 500 the UI
                 return {"ok": False, "error": str(exc)[:200],
                         "network": adapter.network}
-            state._balance_cache[adapter.network] = {"data": balances, "ts": now}
-        data = state._balance_cache[adapter.network]["data"]
+            state._balance_cache[cache_key] = {"data": balances, "ts": now}
+        data = state._balance_cache[cache_key]["data"]
         return {
             "ok": True,
             "equity_usd": float(data.get("USDC", 0.0)),
@@ -825,6 +844,7 @@ def build_app(state: GatewayState) -> FastAPI:
         since: str | None = None,
         until: str | None = None,
         network: str | None = None,
+        wallet: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Fills ordenados por id DESC.
@@ -833,6 +853,8 @@ def build_app(state: GatewayState) -> FastAPI:
         vê fills do módulo copy_trade (strategy_id começa com 'ct_').
         Sem filtro = 400 (não expor dados cross-módulo).
         ?network=testnet|mainnet filtra pela coluna fills.network.
+        ?wallet=0x… filtra pela conta de trading (fills.master_address,
+        migration 0015); histórico sem atribuição (NULL) só aparece sem filtro.
         """
         try:
             strategy_ids = _strategy_ids_csv(strategy_id)
@@ -843,6 +865,9 @@ def build_app(state: GatewayState) -> FastAPI:
             if network_filter:
                 where.append("network = ?")
                 params.append(network_filter)
+            if wallet:
+                where.append("master_address = ?")
+                params.append(wallet)
             if since:
                 where.append("ts >= ?")
                 params.append(since)
@@ -972,6 +997,7 @@ def build_app(state: GatewayState) -> FastAPI:
         since: str | None = None,
         until: str | None = None,
         network: str | None = None,
+        wallet: str | None = None,
         limit: int = 50,
     ):
         try:
@@ -983,6 +1009,9 @@ def build_app(state: GatewayState) -> FastAPI:
             if network_filter:
                 where.append("e.network = ?")
                 params.append(network_filter)
+            if wallet:
+                where.append("o.master_address = ?")
+                params.append(wallet)
             if since:
                 where.append("o.created_at >= ?")
                 params.append(since)
@@ -1008,35 +1037,53 @@ def build_app(state: GatewayState) -> FastAPI:
 
     def _scoped_positions(
         strategy_ids: list[str], network_filter: str | None,
+        wallet: str | None = None,
     ) -> list[dict[str, Any]]:
         """Posições da venue ESCOPADAS aos símbolos que o(s) strategy_id(s)
         negocia(m) (ADR 0010 §5.1). A venue não atribui posição por strategy_id,
         então aproximamos o isolamento pelos símbolos com ordens/fills daquele(s)
         strategy_id(s). 15s de cache (info API é rate-limited). Falha da venue ou
-        ambiente não configurado devolve [] (não derruba a UI)."""
+        ambiente não configurado devolve [] (não derruba a UI).
+
+        ?wallet=0x… consulta a conta viva daquele master (info API aceita
+        qualquer endereço) e escopa os símbolos por fills/orders.master_address
+        (migration 0015). Sem wallet = conta ativa do adapter (comportamento
+        anterior)."""
         try:
             adapter = state._adapter_for(network_filter)
         except ValueError:
             return []   # ambiente não configurado → sem posições
         placeholders = _in_clause(strategy_ids)
-        sym_rows = state.db.query(
-            f"SELECT DISTINCT symbol FROM orders WHERE strategy_id IN ({placeholders}) "
-            f"UNION "
-            f"SELECT DISTINCT symbol FROM fills WHERE strategy_id IN ({placeholders})",
-            [*strategy_ids, *strategy_ids],
-        )
+        if wallet:
+            sym_rows = state.db.query(
+                f"SELECT DISTINCT symbol FROM orders "
+                f"WHERE strategy_id IN ({placeholders}) AND master_address = ? "
+                f"UNION "
+                f"SELECT DISTINCT symbol FROM fills "
+                f"WHERE strategy_id IN ({placeholders}) AND master_address = ?",
+                [*strategy_ids, wallet, *strategy_ids, wallet],
+            )
+        else:
+            sym_rows = state.db.query(
+                f"SELECT DISTINCT symbol FROM orders WHERE strategy_id IN ({placeholders}) "
+                f"UNION "
+                f"SELECT DISTINCT symbol FROM fills WHERE strategy_id IN ({placeholders})",
+                [*strategy_ids, *strategy_ids],
+            )
         symbols = {r["symbol"] for r in sym_rows}
         if not symbols:
             return []
+        address = wallet or getattr(adapter, "account_address", None)
+        cache_key = f"{adapter.network}:{address}"
         now = time.time()
-        cached = state._positions_cache.get(adapter.network)
+        cached = state._positions_cache.get(cache_key)
         if cached is None or now - cached["ts"] > 15:
             try:
-                fetched = [vars(p) for p in adapter.positions()]
+                fetched = [vars(p) for p in adapter.positions(address=address)]
             except Exception:  # noqa: BLE001 — venue hiccup não pode 500 a UI
                 return []
-            state._positions_cache[adapter.network] = {"data": fetched, "ts": now}
-        data = state._positions_cache[adapter.network]["data"]
+            state._positions_cache[cache_key] = {"data": fetched, "ts": now}
+        data = state._positions_cache[cache_key]["data"]
         return [{**p, "network": adapter.network}
                 for p in data if p.get("symbol") in symbols]
 
@@ -1044,17 +1091,18 @@ def build_app(state: GatewayState) -> FastAPI:
     def api_positions(
         strategy_id: str | None = None,
         network: str | None = None,
+        wallet: str | None = None,
     ) -> list[dict[str, Any]]:
         """Posições abertas no clearinghouse do ambiente, ESCOPADAS aos símbolos
         que o módulo negocia (ADR 0010 §5.1).
 
         ?strategy_id é OBRIGATÓRIO; ?network=testnet|mainnet escolhe o adapter
-        (default = ambiente configurado). Falha da venue devolve [] (não derruba
-        a UI)."""
+        (default = ambiente configurado); ?wallet=0x… consulta a conta daquele
+        master. Falha da venue devolve [] (não derruba a UI)."""
         try:
             strategy_ids = _strategy_ids_csv(strategy_id)
             network_filter = _parse_network(network)
-            return _scoped_positions(strategy_ids, network_filter)
+            return _scoped_positions(strategy_ids, network_filter, wallet)
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001

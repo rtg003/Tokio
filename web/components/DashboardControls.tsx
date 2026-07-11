@@ -10,6 +10,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 export type AccountOption = { value: string; label: string };
 export type TraderOption = { value: string; label: string };
+export type WalletOption = { value: string; label: string };
 
 const PRESETS: { key: string; label: string }[] = [
   { key: "today", label: "Hoje" },
@@ -26,6 +27,8 @@ function maskDate(raw: string): string {
 }
 
 export default function DashboardControls({
+  wallets,
+  wallet,
   accounts,
   account,
   period,
@@ -34,6 +37,8 @@ export default function DashboardControls({
   trader,
   traders,
 }: {
+  wallets: WalletOption[];
+  wallet: string;
   accounts: AccountOption[];
   account: string;
   period: string;
@@ -66,6 +71,21 @@ export default function DashboardControls({
 
   return (
     <div className="controls">
+      {wallets.length > 1 && (
+        <select
+          className="select filter-select filter-select-wallet"
+          aria-label="Wallet (master de trading)"
+          value={wallet}
+          onChange={(e) => push({ wallet: e.target.value === "all" ? null : e.target.value })}
+        >
+          {wallets.map((w) => (
+            <option key={w.value} value={w.value}>
+              {w.label}
+            </option>
+          ))}
+        </select>
+      )}
+
       <select
         className="select filter-select filter-select-account"
         aria-label="Corretora e conta"

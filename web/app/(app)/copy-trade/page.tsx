@@ -17,6 +17,7 @@ import {
   getPnlSummary,
   getPositions,
   getTraders,
+  getWallets,
   traderOptions,
 } from "@/lib/copy-trade/data";
 
@@ -42,7 +43,7 @@ export default async function CopyTradeDashboard({
   searchParams,
 }: {
   searchParams: Promise<{
-    period?: string; from?: string; to?: string; account?: string; trader?: string; cols?: string;
+    period?: string; from?: string; to?: string; account?: string; trader?: string; wallet?: string; cols?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -82,14 +83,17 @@ export default async function CopyTradeDashboard({
   const sinceTs = `${sinceDay}T00:00:00-03:00`;
   const untilTs = `${untilDay}T23:59:59-03:00`;
 
-  const [exchanges, traders] = await Promise.all([
+  const [exchanges, traders, wallets] = await Promise.all([
     getExchanges(),
     getTraders(),
+    getWallets(),
   ]);
   const accounts = accountOptions(exchanges);
   const account = params.account ?? "all";
   const selectedEnv = environmentFromAccount(account);
   const selectedTrader = params.trader ?? "all";
+  const selectedWallet = params.wallet ?? "all";
+  const walletFilter = selectedWallet === "all" ? null : selectedWallet;
   const allTraders = traders ?? [];
   const filteredTraders = allTraders.filter((t) => {
     const envOk = selectedEnv === "all" || t.environment === selectedEnv;
@@ -108,14 +112,14 @@ export default async function CopyTradeDashboard({
           .filter((id): id is string => Boolean(id));
   const network = selectedEnv === "all" ? null : selectedEnv;
   const balanceEnv = selectedEnv === "all" ? null : selectedEnv;
-  const balance = await getBalance(balanceEnv);
+  const balance = await getBalance(balanceEnv, walletFilter);
   const [metrics, fillsSummary, pnlSummary, orders, fills, positions] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
     getFillsSummary(ledgerStrategyIds, sinceTs, untilTs, network),
     getPnlSummary(ledgerStrategyIds, sinceTs, untilTs, network),
-    getOrders(ledgerStrategyIds, sinceTs, untilTs, network),
-    getFills(ledgerStrategyIds, sinceTs, untilTs, network),
-    getPositions(ledgerStrategyIds, network),
+    getOrders(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
+    getFills(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
+    getPositions(ledgerStrategyIds, network, walletFilter),
   ]);
   const traderFilterOptions = traderOptions(allTraders);
 
@@ -128,6 +132,8 @@ export default async function CopyTradeDashboard({
           <h1>Copy Trade</h1>
         </div>
         <DashboardControls
+          wallets={wallets}
+          wallet={selectedWallet}
           accounts={accounts}
           account={account}
           period={period}

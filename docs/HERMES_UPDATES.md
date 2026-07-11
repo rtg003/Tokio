@@ -1581,3 +1581,37 @@ repo, dormente — se um dia quiser ligar login por carteira, basta preencher
 - Aba **Sistema → Hyperliquid** carrega e provisiona na testnet usando só o
   `TOKIO_KEYRING_SECRET`.
 - Sem `logic_version` novo.
+
+## UPDATE-0027 · 2026-07-11 · Status: PENDENTE
+
+**Origem**: pedido rtg003 (AJUSTES DASHBOARD 2026-07-09, item 2) + push na main
+
+**Tipo**: schema (migration 0015) + infra (engine grava metadado; UI ganha filtro)
+
+**Contexto**: a dashboard de Copy Trade ganhou um **filtro por Wallet** (a conta
+de trading / master de cada ambiente). Para filtrar com **atribuição real**, o
+engine passa a gravar o `master_address` (= `account_address` do adapter do
+ambiente que executou) em cada ordem e fill, numa coluna nova. É **só
+metadado** — **NÃO** toca o caminho de ordem (`/intent` e `/cancel` seguem sem
+gate novo; INVARIANTE Hermes preservada).
+
+- **Migration `0015_orders_fills_master.sql`**: adiciona coluna nullable
+  `master_address TEXT` em `orders` e `fills` (+ índices). O autodeploy aplica
+  via `python -m engine.cli db migrate` no ciclo normal. Idempotente (o
+  `schema_migrations` roda cada versão uma vez).
+- **Sem secret novo.** Nada a configurar no `.env`.
+- Ordens/fills **históricos** ficam com `master_address = NULL` e só aparecem
+  sob **"Todas as wallets"** na UI (esperado). Trades novos já gravam a wallet.
+
+### Ações do Hermes
+
+1. **Nenhuma ação manual.** O autodeploy aplica a migration 0015 e sobe o
+   engine + web no ciclo normal (git pull → migrate → restart).
+2. Confirmar no log do deploy que a migration 0015 aplicou sem erro.
+
+### Validação esperada
+- Um trade **novo** grava `master_address` (checável em
+  `/api/fills?strategy_id=…&wallet=0x…`).
+- O combo **Wallet** aparece na dashboard de Copy Trade quando há ≥1 agent
+  provisionado; "Todas as wallets" mostra tudo (inclusive histórico NULL).
+- `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.

@@ -10,6 +10,11 @@ export type TraderOption = {
   label: string;
 };
 
+export type WalletOption = {
+  value: string;
+  label: string;
+};
+
 export type Strategy = {
   id: string;
   module: string;
@@ -101,9 +106,17 @@ export type Position = Record<string, any> & {
   network?: string;
 };
 
-export async function getBalance(env?: string | null): Promise<Balance> {
-  const q = env && env !== "all" ? `?env=${encodeURIComponent(env)}` : "";
-  const data = await gatewayGet<{ ok?: boolean; equity_usd: number; network: string }>(`/balance${q}`);
+export async function getBalance(
+  env?: string | null,
+  wallet?: string | null,
+): Promise<Balance> {
+  const q = new URLSearchParams();
+  if (env && env !== "all") q.set("env", env);
+  if (wallet && wallet !== "all") q.set("wallet", wallet);
+  const qs = q.toString();
+  const data = await gatewayGet<{ ok?: boolean; equity_usd: number; network: string }>(
+    `/balance${qs ? `?${qs}` : ""}`,
+  );
   if (!data?.ok) return null;
   return { equity_usd: data.equity_usd, network: data.network };
 }
@@ -141,6 +154,23 @@ export function accountOptions(exchanges: Exchange[] | null): AccountOption[] {
 export async function getTraders(): Promise<Trader[] | null> {
   const rows = await gatewayGet<Trader[]>("/api/traders");
   return rows?.filter((t) => t.status !== "REJEITADO") ?? rows;
+}
+
+// Wallets = masters de trading dos agents provisionados (hl-auth v2.0). O
+// filtro por Wallet cruza com orders/fills.master_address (migration 0015).
+export async function getWallets(): Promise<WalletOption[]> {
+  const snap = await gatewayGet<{ agents?: { master_address?: string }[] }>(
+    "/hl/agents",
+  );
+  const seen = new Set<string>();
+  const options: WalletOption[] = [];
+  for (const a of snap?.agents ?? []) {
+    const addr = a.master_address;
+    if (!addr || seen.has(addr)) continue;
+    seen.add(addr);
+    options.push({ value: addr, label: `${addr.slice(0, 6)}…${addr.slice(-4)}` });
+  }
+  return [{ value: "all", label: "Todas as wallets" }, ...options];
 }
 
 export function environmentFromAccount(account: string | undefined): "testnet" | "mainnet" | "all" {
@@ -182,6 +212,11 @@ function withNetwork(
   network?: "testnet" | "mainnet" | null,
 ): URLSearchParams {
   if (network) q.set("network", network);
+  return q;
+}
+
+function withWallet(q: URLSearchParams, wallet?: string | null): URLSearchParams {
+  if (wallet && wallet !== "all") q.set("wallet", wallet);
   return q;
 }
 
@@ -237,16 +272,20 @@ export async function getOrders(
   since: string,
   until: string,
   network?: "testnet" | "mainnet" | null,
+  wallet?: string | null,
 ): Promise<Order[] | null> {
   if (strategyIds.length === 0) return [];
-  const q = withNetwork(
-    new URLSearchParams({
-      strategy_id: strategyIds.join(","),
-      since,
-      until,
-      limit: "15",
-    }),
-    network,
+  const q = withWallet(
+    withNetwork(
+      new URLSearchParams({
+        strategy_id: strategyIds.join(","),
+        since,
+        until,
+        limit: "15",
+      }),
+      network,
+    ),
+    wallet,
   );
   return gatewayGet<Order[]>(`/api/orders?${q.toString()}`);
 }
@@ -256,16 +295,20 @@ export async function getFills(
   since: string,
   until: string,
   network?: "testnet" | "mainnet" | null,
+  wallet?: string | null,
 ): Promise<Fill[] | null> {
   if (strategyIds.length === 0) return [];
-  const q = withNetwork(
-    new URLSearchParams({
-      strategy_id: strategyIds.join(","),
-      since,
-      until,
-      limit: "15",
-    }),
-    network,
+  const q = withWallet(
+    withNetwork(
+      new URLSearchParams({
+        strategy_id: strategyIds.join(","),
+        since,
+        until,
+        limit: "15",
+      }),
+      network,
+    ),
+    wallet,
   );
   return gatewayGet<Fill[]>(`/api/fills?${q.toString()}`);
 }
@@ -273,12 +316,16 @@ export async function getFills(
 export async function getPositions(
   strategyIds: string[],
   network?: "testnet" | "mainnet" | null,
+  wallet?: string | null,
 ): Promise<Position[] | null> {
   // Posições da venue são escopadas no gateway aos símbolos do módulo (§5.1).
   if (strategyIds.length === 0) return [];
-  const q = withNetwork(
-    new URLSearchParams({ strategy_id: strategyIds.join(",") }),
-    network,
+  const q = withWallet(
+    withNetwork(
+      new URLSearchParams({ strategy_id: strategyIds.join(",") }),
+      network,
+    ),
+    wallet,
   );
   return gatewayGet<Position[]>(`/api/positions?${q.toString()}`);
 }
