@@ -1582,7 +1582,7 @@ repo, dormente — se um dia quiser ligar login por carteira, basta preencher
   `TOKIO_KEYRING_SECRET`.
 - Sem `logic_version` novo.
 
-## UPDATE-0027 · 2026-07-11 · Status: PENDENTE
+## UPDATE-0027 · 2026-07-11 · Status: APLICADO em 2026-07-11
 
 **Origem**: pedido rtg003 (AJUSTES DASHBOARD 2026-07-09, item 2) + push na main
 
