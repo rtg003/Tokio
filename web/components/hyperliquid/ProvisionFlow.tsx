@@ -48,6 +48,17 @@ export function ProvisionFlow({ env }: { env: Env }) {
   const [error, setError] = useState<string | null>(null);
 
   async function provision() {
+    // Mainnet = fundos reais: exige confirmação explícita antes de qualquer
+    // ação (o gate humano de status de trader MAINNET é separado e intocado).
+    if (env === "mainnet") {
+      const ok = window.confirm(
+        "ATENÇÃO — MAINNET (fundos reais).\n\n" +
+          "Ao ativar este agent, a engine passa a operar na conta da carteira " +
+          "conectada, com DINHEIRO REAL. Confirme que esta é a wallet correta e " +
+          "que você quer trocar a conta de trading mainnet para ela.\n\nProsseguir?",
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     setError(null);
     setStep(null);
@@ -156,8 +167,15 @@ export function ProvisionFlow({ env }: { env: Env }) {
   return (
     <div className="provision">
       <div className="provision-actions">
-        <button className="btn btn-amber" type="button" onClick={provision} disabled={busy}>
-          {busy ? "Processando…" : isConnected ? "Provisionar agent" : "Conectar carteira e provisionar"}
+        <button
+          className={`btn ${env === "mainnet" ? "btn-danger" : "btn-amber"}`}
+          type="button"
+          onClick={provision}
+          disabled={busy}
+        >
+          {busy
+            ? "Processando…"
+            : `${isConnected ? "Provisionar agent" : "Conectar carteira e provisionar"}${env === "mainnet" ? " · MAINNET" : ""}`}
         </button>
         {isConnected && address && (
           <button

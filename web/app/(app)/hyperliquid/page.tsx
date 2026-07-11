@@ -10,9 +10,12 @@ export const dynamic = "force-dynamic";
 
 export default async function HyperliquidPage() {
   const snapshot = await getAgentsSnapshot();
+  // P3: provisionamento habilitado nos DOIS ambientes. Mainnet = fundos reais;
+  // o EnvPanel/ProvisionFlow reforça a UX de segurança (confirmação explícita).
+  // O gate humano de *status* de trader MAINNET segue intocado (server.py:624).
   const envs: { env: Env; provision: boolean }[] = [
     { env: "testnet", provision: true },
-    { env: "mainnet", provision: false },
+    { env: "mainnet", provision: true },
   ];
 
   return (

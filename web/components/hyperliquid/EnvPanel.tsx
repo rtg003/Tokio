@@ -7,8 +7,8 @@ import { ProvisionFlow } from "./ProvisionFlow";
 import { activeAgent, type Agent, type Env } from "@/lib/hyperliquid/data";
 
 // Painel de um ambiente HL (testnet | mainnet). Mostra o adapter vivo, o agent
-// ativo (do keyring) e o histórico. Provisionamento habilitado só na TESTNET
-// no P2 — mainnet fica bloqueada (gate humano preservado; entra no P3).
+// ativo (do keyring) e o histórico. Provisionamento habilitado nos dois
+// ambientes (P3); mainnet ganha um aviso de fundos reais + confirmação no fluxo.
 export function EnvPanel({
   env,
   agents,
@@ -72,13 +72,24 @@ export function EnvPanel({
 
       {provisionEnabled ? (
         keyringConfigured ? (
-          <ProvisionFlow env={env} />
+          <>
+            {env === "mainnet" && (
+              <div className="walletbar walletbar-warn">
+                <span className="t">
+                  <b>MAINNET · fundos reais.</b> Ativar um agent aqui troca a conta
+                  de trading mainnet para a carteira conectada — a engine passa a
+                  operar com dinheiro real nessa conta. Confirme a wallet antes de
+                  assinar.
+                </span>
+              </div>
+            )}
+            <ProvisionFlow env={env} />
+          </>
         ) : null
       ) : (
         <div className="walletbar">
           <span className="t">
-            Provisionamento de <b>MAINNET</b> é gate humano — habilita no P3, após
-            resolver o <code>signatureChainId</code> e coordenar credenciais.
+            Provisionamento deste ambiente está desabilitado.
           </span>
         </div>
       )}

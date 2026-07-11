@@ -277,6 +277,9 @@ th.num { text-align: right; }
 .envtoggle .on-main { background: var(--neg-soft); color: var(--neg); }
 .walletbar { display: flex; justify-content: space-between; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--line); gap: 10px; flex-wrap: wrap; }
 .walletbar .t { font: 600 12px var(--sans); color: var(--muted); }
+/* Aviso de fundos reais (provisão mainnet, P3): tom neg p/ chamar atenção. */
+.walletbar-warn { background: var(--neg-soft); border-bottom-color: var(--neg); border-radius: var(--r-ctl); }
+.walletbar-warn .t { color: var(--neg); }
 
 /* ============ LOGS ============ */
 .logfilters { display: flex; gap: 10px; padding: 13px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }

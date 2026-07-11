@@ -1615,3 +1615,69 @@ gate novo; INVARIANTE Hermes preservada).
 - O combo **Wallet** aparece na dashboard de Copy Trade quando há ≥1 agent
   provisionado; "Todas as wallets" mostra tudo (inclusive histórico NULL).
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
+
+## UPDATE-0028 · 2026-07-11 · Status: PENDENTE
+
+**Origem**: pedido rtg003 (implementar P3 do plano hl-auth v2.0) + push na main
+
+**Tipo**: infra (habilita provisão mainnet na UI) + operacional (migração
+`.env`→keyring, coordenada com você) — **sem schema, sem secret novo**
+
+**Contexto**: o **P3** liga o provisionamento de agent wallets **MAINNET** pela
+UI (`Sistema → Hyperliquid`). Todo o backend já existia desde o P2 (typed data
+`approveAgent` idêntico ao SDK p/ os dois ambientes — V2 opção (a),
+`signatureChainId=0x66eee` fixo, só `hyperliquidChain` muda; precedência
+**keyring > `.env`** já resolvida no `_build_env_adapter`). Esta entrega é
+essencialmente **web** (flag de UI + UX de segurança) + a **migração operacional**
+que depende de você.
+
+⚠️ **Mainnet = fundos reais.** Ativar um agent mainnet **troca a conta de
+trading mainnet** para a wallet que assinou o `approveAgent` — a engine passa a
+operar com dinheiro real nessa conta. A UI agora exige **confirmação explícita**
+antes de provisionar mainnet. O **gate humano de *status* de trader MAINNET**
+(promover trader p/ MAINNET exige `mainnet` in adapters + ato humano na
+dashboard) **segue intocado**.
+
+### Migração `.env` → keyring (ordem OBRIGATÓRIA — não inverter)
+
+1. **Pré-requisito**: `TOKIO_KEYRING_SECRET` já setado (UPDATE-0025) e E2E
+   testnet validado (agent testnet provisionado e operando pelo keyring).
+2. **Provisionar pela UI** um agent para cada ambiente que hoje usa chave no
+   `.env` (testnet e/ou mainnet). Ao ativar, o keyring passa a ter um agent
+   `active` e o `_build_env_adapter` **prefere o keyring** automaticamente — a
+   chave do `.env` deixa de ser usada (fica só como fallback).
+3. **Verificar** no `/hl/agents` que o adapter do ambiente está `ONLINE` com o
+   `master_address` esperado, e que ordens executam na conta certa
+   (`/positions`, `/balance`).
+4. **Só então** remover do `/home/tokio/Tokio/.env` as chaves legadas:
+   `HL_AGENT_PRIVATE_KEY` e/ou `HL_MAINNET_AGENT_PRIVATE_KEY`
+   (as `*_ACCOUNT_ADDRESS` podem sair junto — com keyring ativo o
+   `account_address` vem do `master_address` do agent). `systemctl restart
+   tokio-engine.service`. Se o keyring falhar, o fallback `.env` some junto —
+   por isso remover **só após** o passo 3.
+
+### Backup (§5.4) — MUDANÇA IMPORTANTE
+
+- Com as chaves fora do `.env`, o **material sensível de assinatura vive
+  cifrado na tabela `hl_agents` (`privkey_enc`, AES-256-GCM)** do SQLite. O
+  **backup offsite DEVE incluir o SQLite** (já é a regra) — confirme que a
+  tabela `hl_agents` está no dump. **Sem o `TOKIO_KEYRING_SECRET` o backup é
+  inútil p/ recuperar as chaves** — guarde o segredo separadamente (não no mesmo
+  lugar do backup).
+
+### Ações do Hermes
+
+1. A parte de **UI** entra sozinha no autodeploy (build da web). Sem restart
+   extra além do ciclo normal.
+2. A **migração `.env`→keyring** (passos acima) é um ato **coordenado** —
+   execute só quando o rtg003 confirmar que quer aposentar as chaves do `.env`.
+   Não remova nada do `.env` proativamente.
+3. Confirmar que o backup do SQLite inclui `hl_agents`.
+
+### Validação esperada
+- Painel **Mainnet** em `Sistema → Hyperliquid` mostra o botão de provisionar
+  (com aviso de fundos reais + confirmação). Provisão mainnet segue o mesmo
+  fluxo do testnet (assinatura MetaMask → gateway submete → hot-reload).
+- Se a HL mainnet rejeitar o `approveAgent` (ressalva V2), o agent fica
+  `pending` e o **motivo real** aparece na UI — nada é ativado (fail-safe).
+- `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
