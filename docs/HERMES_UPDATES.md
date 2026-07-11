@@ -1682,7 +1682,7 @@ dashboard) **segue intocado**.
   `pending` e o **motivo real** aparece na UI — nada é ativado (fail-safe).
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
 
-## UPDATE-0029 · 2026-07-11 · Status: PENDENTE
+## UPDATE-0029 · 2026-07-11 · Status: APLICADO em 2026-07-11
 
 **Origem**: pedido rtg003 (5 blocos de ajuste do copy-trade após validação E2E) +
 push na main
