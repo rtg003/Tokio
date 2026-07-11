@@ -1754,7 +1754,7 @@ o banco com rejeições repetidas a cada ~60s.
 - Ativo ilíquido gera **um** log de skip e **nenhuma** linha `rejected` nova.
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
 
-## UPDATE-0030 · 2026-07-11 · Status: PENDENTE
+## UPDATE-0030 · 2026-07-11 · Status: APLICADO em 2026-07-11
 
 **Origem**: pedido rtg003 (correções da dashboard de Copy Trade pós-validação) +
 push na main
