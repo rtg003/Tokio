@@ -162,6 +162,7 @@ export default function Shell({
         </div>
         <div className="navlabel">Estratégias</div>
         <nav className="nav">
+          {nav("/trading-view", "Trading View", "TV")}
           {nav("/copy-trade", "Copy Trade", "CT")}
           <a href="#" className="ghost" onClick={(e) => e.preventDefault()}>
             + nova estratégia
