@@ -2429,7 +2429,22 @@ guard (validator check 9) ficava `skipped` ao vivo mesmo com a F1 no ar, porque 
   verde, incluindo `test_spread_guard_enforced_live_when_book_available` e
   `test_spread_guard_blocks_wide_book_live`.
 
-## UPDATE-0042 · 2026-07-12 · Status: APLICADO em 2026-07-12
+## UPDATE-0042 · 2026-07-12 · Status: APLICADO em 2026-07-12 (repo 8f08a82) — ver nota: confirmar processo no ar
+
+> **Nota (2026-07-12, pós-canário):** o operador reportou que na VPS
+> `{"env":"mainnet"}` ainda ia para testnet, enquanto `{"environment":"mainnet"}`
+> funcionava. Isso foi **verificado como NÃO sendo bug de código**: com o
+> pydantic/fastapi instalados (2.13.4 / 0.139.0), `IntentRequest.model_validate({"env":"mainnet"})`
+> resolve `environment="mainnet"` e os testes HTTP passam. O padrão observado
+> (`env` ignorado → default testnet) é **idêntico ao código pré-0042** → o engine
+> em execução ainda era o binário antigo (processo não reiniciado com `8f08a82`).
+> Raiz provável: `autodeploy.sh` aborta no build do web (`set -euo pipefail`)
+> ANTES do `systemctl restart` da última linha → engine NÃO reinicia **e** web
+> não é reconstruído (mesma causa do menu "Trading View" sumido).
+> **Árbitro definitivo:** enviar `{"env":"mainnet"}` e checar o log — se o evento
+> `intent.received` NÃO aparecer, o processo é pré-0042 (esse log não existia).
+> Fix operacional: refazer `npm run build` no web e
+> `systemctl restart tokio-engine.service tokio.service`.
 
 **Origem**: operador reportou que ordens manuais enviadas com `"env":"mainnet"`
 executavam e eram gravadas em **testnet** (ordem 538 → `exchange_id=1`, fill 182 →
