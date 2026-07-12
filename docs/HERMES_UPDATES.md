@@ -2163,7 +2163,7 @@ Hyperliquid, então o filtro de exchange perdeu sentido.
 - **INVARIANTE**: `/intent`/`/cancel` e o gate humano de status inalterados —
   a restrição do combo é apenas de UI.
 
-## UPDATE-0036 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0036 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: novo módulo **TV-Executor (Trading View)** — `PROMPT-TV-EXECUTOR-v1.4.2.md`
 + `DESIGN-TV-DASHBOARD-v1.0.md`. Esta entrada anuncia o `EXECUTION_PLAN.md`
@@ -2210,7 +2210,7 @@ não cria sistema paralelo, reusa `strategies` (`module='tradingview'`), o gatew
 - **INVARIANTE**: nada de gates/caps é afetado; `/intent`/`/cancel` intocados;
   isolamento de observabilidade (§5.1) preservado no design do módulo.
 
-## UPDATE-0037 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0037 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: F0 do TV-Executor — **Contrato e recepção, SEM execução** (mapa em
 `EXECUTION_PLAN.md`, anunciado no UPDATE-0036). Este commit traz o código do
