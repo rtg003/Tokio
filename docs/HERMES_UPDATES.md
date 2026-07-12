@@ -2104,7 +2104,7 @@ Dois acertos de dashboard pedidos pelo rtg003, no mesmo commit do bugfix:
   size), agora com o equity certo; o guard só *segura* a posição, não rejeita
   ordem nem toca no caminho de ordem. Sem `logic_version` novo.
 
-## UPDATE-0035 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0035 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: diretiva do rtg003 — **separar totalmente TESTNET e MAINNET** na
 dashboard. Não há motivo para misturar saldos/dados dos dois ambientes.
