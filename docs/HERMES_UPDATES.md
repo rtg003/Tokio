@@ -1817,7 +1817,7 @@ obsoleta.
 
 ---
 
-## UPDATE-0031 · 2026-07-11 · Status: PENDENTE
+## UPDATE-0031 · 2026-07-11 · Status: APLICADO em 2026-07-12
 
 **Origem**: pedido rtg003 (validação do copy-trade) + push na main
 
