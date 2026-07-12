@@ -1872,3 +1872,77 @@ vermelho (mainnet).
 - `.venv/bin/pytest tests/test_copy_trade.py -q` verde (inclui o teste novo);
   `cd web && npm run build` verde.
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
+
+## UPDATE-0032 · 2026-07-11 · Status: PENDENTE
+
+**Origem**: pedido rtg003 (unificar modais do copy-trade + corrigir design UI)
+
+**Tipo**: novo endpoint de controle (token-gated) + UI unificada —
+**sem migration, sem secret novo, sem schema novo, sem `logic_version` novo**
+
+**Contexto**: o modal de ativação (UPDATE-0031) foi reescrito como um único modal
+unificado com 3 seções e, na troca de ambiente de um trader que já opera
+(TESTNET↔MAINNET), passou a oferecer o fechamento das posições abertas do
+ambiente antigo antes de ativar no novo. Também foram corrigidos problemas de
+layout/overflow do modal.
+
+### 1. Novo endpoint `POST /control/trader/{addr}/close_positions`
+
+Endpoint de controle **token-gated** (`Depends(_control_auth)`, X-Control-Token),
+com dois modos:
+- **preview** (`execute:false`): retorna as posições abertas do trader no
+  ambiente operante (escopadas por `strategy_id` via `_scoped_positions`, §5.1).
+  Usado pela Seção A do modal para mostrar a tabela.
+- **execute** (`execute:true`): fecha as posições `reduce_only` (best-effort),
+  emitindo intents **server-side** via `handle_intent`. O navegador **nunca**
+  toca no caminho de ordem cru (`/intent`) — ele chama só este endpoint de
+  controle. Cada fechamento é um ato humano autenticado (dashboard).
+
+O `env` do request é validado (`^(testnet|mainnet)$`); ausente → derivado do
+status do trader. **Autorizado pelo operador para testnet e mainnet.**
+
+### 2. Modal unificado + correção de design
+
+Um único `CopyConfigModal` com 3 seções verticais scrolláveis (max-height 85vh):
+- **A — Posições abertas** (só se houver, na troca de ambiente): tabela compacta
+  com PnL não-realizado e PnL líquido estimado de fechamento
+  (`unrealized_pnl − notional × 0,045%`), total consolidado, aviso de perda/lucro
+  e checkbox de confirmação do fechamento.
+- **B — Configuração**: sizing (modo/fração/valor/alavancagem) + avançado
+  (notional mínimo read-only $10, ativos bloqueados CSV).
+- **C — Resumo**: card amarelo `equity × alavancagem`, flag de exposição elevada
+  (>5x) e, só em mainnet, checkbox de dinheiro real.
+
+Botões: "Cancelar"; com posições "Fechar e ativar" (âmbar); sem posições
+"Ativar cópia" (verde testnet / vermelho mainnet). Correções de overflow:
+`box-sizing`, larguras/alturas fixas de inputs, ellipsis em labels,
+`table-layout: fixed`, `min-width` do modal com fallback mobile.
+
+### Fluxo unificado
+- **Fechar e ativar** (com posições): fecha via `close_positions` (execute) com
+  progresso → `POST /config` → `POST /status` → toast de conclusão.
+- **Ativar cópia** (sem posições): `POST /config` → `POST /status` → toast.
+
+### Arquivos
+- **EDIT engine**: `engine/gateway/server.py` (`ClosePositionsRequest` +
+  `trader_close_positions`).
+- **EDIT web**: `web/app/api/control/[...path]/route.ts` (allowlist POST +
+  `close_positions`), `web/lib/copy-trade/data.ts` (`getTraderOpenPositions`,
+  `closeAllPositions`), `web/components/copy-trade/CopyConfigModal.tsx` (reescrito),
+  `StatusSelect.tsx` (fluxo unificado + toast), `web/app/globals.css` (estilos).
+
+### Ações do Hermes
+1. Ciclo normal (autodeploy web + restart do gateway/runner). **Sem migration,
+   sem passo manual, sem secret novo.**
+
+### Validação esperada
+- Combobox de um trader TESTNET→MAINNET (ou vice-versa) abre o modal com a Seção A
+  listando as posições do ambiente antigo; "Fechar e ativar" fecha (reduce_only)
+  e ativa; sem posições, "Ativar cópia" grava config + status direto.
+- `.venv/bin/pytest -q` sem regressão nova (baseline: `test_discovery_funnel.py::`
+  `test_scan_approves_swing_rejects_traps` já falha no HEAD, pré-existente);
+  `cd web && npm run build` verde.
+- `/intent` e `/cancel` inalterados (INVARIANTE): o fechamento é chamada
+  server-side de `handle_intent` a partir de um endpoint de controle token-gated,
+  não expõe o caminho de ordem ao navegador nem adiciona gate a ele. Sem
+  `logic_version` novo.

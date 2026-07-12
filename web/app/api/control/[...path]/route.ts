@@ -18,6 +18,9 @@ const ALLOWED_POST_PATTERNS = [
   /^strategy\/[\w-]+\/(pause|activate)$/,
   // trader status/config: status changes are explicit authenticated human acts
   /^trader\/0x[0-9a-fA-F]{40}\/(status|config)$/,
+  // close_positions: preview (execute=false) + fechamento reduce_only
+  // (execute=true) das posições do trader — ato humano autenticado.
+  /^trader\/0x[0-9a-fA-F]{40}\/close_positions$/,
   // HL agent wallets: prepare/activate provisioning + revoke (gateway gates
   // the control token; MAINNET still needs credentials configured server-side)
   /^hl\/agents\/(prepare|activate)$/,

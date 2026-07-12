@@ -75,6 +75,15 @@ class CancelRequest(BaseModel):
     exchange_order_id: str | None = None
 
 
+class ClosePositionsRequest(BaseModel):
+    # env: ambiente onde fechar (default = ambiente operante atual do trader).
+    # execute=False → preview (só lista posições; NÃO envia ordem). execute=True →
+    # fecha cada posição com reduce_only (best-effort). Ato humano autenticado
+    # (dashboard) via control token — NÃO adiciona gate ao caminho de ordem.
+    env: str | None = Field(default=None, pattern="^(testnet|mainnet)$")
+    execute: bool = False
+
+
 class AgentPrepareRequest(BaseModel):
     env: str = Field(pattern="^(testnet|mainnet)$")
     master_address: str
@@ -1182,6 +1191,62 @@ def build_app(state: GatewayState) -> FastAPI:
             raise
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"positions: {str(exc)[:200]}")
+
+    @app.post("/control/trader/{address}/close_positions",
+              dependencies=[Depends(_control_auth)])
+    def trader_close_positions(
+        address: str, req: ClosePositionsRequest,
+    ) -> dict[str, Any]:
+        """Fecha (ou previsualiza) as posições abertas de UM trader no ambiente
+        indicado. `execute=False` só lista (preview p/ o modal); `execute=True`
+        emite um intent `reduce_only` por posição (best-effort — uma falha não
+        aborta as demais). Ato humano autenticado; reusa o caminho de ordem
+        (`handle_intent`) sem adicionar gate a ele (INVARIANTE)."""
+        from engine.strategies.copy_trade.traders_store import (
+            environment_for_status, strategy_id_for,
+        )
+
+        address = address.lower()
+        rows = state.db.query(
+            "SELECT name, status FROM traders WHERE address = ?", (address,))
+        if not rows:
+            return {"ok": False, "reason": "trader_desconhecido"}
+        sid = strategy_id_for(address, rows[0].get("name"))
+        env = req.env or environment_for_status(rows[0]["status"])
+        if env not in ("testnet", "mainnet"):
+            # trader não está operando em nenhum ambiente → nada a fechar
+            return {"ok": True, "preview": True, "env": None, "positions": []}
+        try:
+            scoped = _scoped_positions([sid], env, None)
+        except Exception as exc:  # noqa: BLE001 — venue hiccup não pode 500
+            return {"ok": False, "reason": f"positions_indisponiveis: {str(exc)[:120]}"}
+        open_pos = [p for p in scoped if abs(float(p.get("size") or 0)) > 0]
+        if not req.execute:
+            return {"ok": True, "preview": True, "env": env, "positions": open_pos}
+
+        results: list[dict[str, Any]] = []
+        for p in open_pos:
+            size = float(p.get("size") or 0)
+            if abs(size) <= 0:
+                continue
+            side = "sell" if size > 0 else "buy"
+            try:
+                r = state.handle_intent(IntentRequest(
+                    strategy_id=sid, symbol=p["symbol"], side=side,
+                    size=abs(size), reduce_only=True, environment=env,
+                    dry_run=False,
+                ))
+            except Exception as exc:  # noqa: BLE001 — best-effort por símbolo
+                r = {"ok": False, "reason": str(exc)[:200]}
+            results.append({"symbol": p["symbol"], "ok": bool(r.get("ok")),
+                            "reason": r.get("reason")})
+        state.logger.info(
+            "trader.close_positions",
+            {"address": address, "env": env, "n": len(results),
+             "ok": sum(1 for r in results if r["ok"]), "by": "dashboard_humano"},
+            strategy_id=sid)
+        return {"ok": all(r["ok"] for r in results) if results else True,
+                "env": env, "results": results}
 
     @app.get("/api/pnl/summary")
     def api_pnl_summary(

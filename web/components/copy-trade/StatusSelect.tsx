@@ -3,9 +3,19 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import CopyConfigModal from "@/components/copy-trade/CopyConfigModal";
-import { saveTraderConfigAndActivate, TraderExecConfig } from "@/lib/copy-trade/data";
+import {
+  closeAllPositions,
+  saveTraderConfigAndActivate,
+  TraderExecConfig,
+} from "@/lib/copy-trade/data";
 
 const STATUSES = ["SUGERIDO", "SALVO", "TESTNET", "MAINNET", "REJEITADO"] as const;
+
+function envForStatus(status: string): "testnet" | "mainnet" | null {
+  if (status === "TESTNET") return "testnet";
+  if (status === "MAINNET") return "mainnet";
+  return null;
+}
 
 export default function StatusSelect({
   address,
@@ -29,7 +39,12 @@ export default function StatusSelect({
   const [value, setValue] = useState(status);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const [modalTarget, setModalTarget] = useState<"testnet" | "mainnet" | null>(null);
+
+  // Ambiente operante atual (de onde partem as posições a fechar na troca).
+  const currentEnv = envForStatus(value);
 
   async function postStatus(next: string) {
     const previous = value;
@@ -66,19 +81,51 @@ export default function StatusSelect({
     postStatus(next);
   }
 
-  async function onModalConfirm(cfg: TraderExecConfig) {
+  async function onModalConfirm(cfg: TraderExecConfig, closePositions: boolean) {
     const next = modalTarget === "mainnet" ? "MAINNET" : "TESTNET";
     setBusy(true);
     setError(null);
+    setProgress(null);
+
+    // Fluxo unificado: (1) fecha posições no ambiente antigo se pedido, com
+    // progresso; (2) salva o sizing; (3) muda o status; (4) toast de conclusão.
+    let closedCount = 0;
+    if (closePositions && currentEnv) {
+      setProgress(`Fechando posições em ${currentEnv}…`);
+      const closeRes = await closeAllPositions(address, currentEnv);
+      if (!closeRes.ok) {
+        setBusy(false);
+        setProgress(null);
+        const failed = closeRes.results.filter((r) => !r.ok).map((r) => r.symbol);
+        setError(
+          closeRes.reason ??
+            (failed.length ? `falha ao fechar: ${failed.join(", ")}` : "erro_fechamento"),
+        );
+        return;
+      }
+      closedCount = closeRes.results.filter((r) => r.ok).length;
+    }
+
+    setProgress("Salvando configuração e ativando…");
     const result = await saveTraderConfigAndActivate(address, cfg, next);
     setBusy(false);
+    setProgress(null);
     if (!result.ok) {
       setError(result.reason ?? "erro_ativacao");
       return;
     }
+
+    const who = name ?? address;
+    const env = next === "MAINNET" ? "mainnet" : "testnet";
+    setToast(
+      closePositions
+        ? `Transição completa — ${closedCount} posição(ões) fechada(s), ${who} ativo em ${env}`
+        : `Cópia ativada — ${who} em ${env}`,
+    );
     setValue(next);
     setModalTarget(null);
     router.refresh();
+    window.setTimeout(() => setToast(null), 6000);
   }
 
   return (
@@ -97,19 +144,23 @@ export default function StatusSelect({
         ))}
       </select>
       {error && <span className="status-error">{error}</span>}
+      {toast && <span className="toast">{toast}</span>}
       {modalTarget && (
         <CopyConfigModal
           address={address}
           name={name ?? address}
           targetEnv={modalTarget}
+          currentEnv={currentEnv}
           currentConfig={config}
           equity={equity}
           busy={busy}
           error={error}
+          progress={progress}
           onClose={() => {
             if (busy) return;
             setModalTarget(null);
             setError(null);
+            setProgress(null);
           }}
           onConfirm={onModalConfirm}
         />

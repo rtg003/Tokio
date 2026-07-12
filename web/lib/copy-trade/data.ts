@@ -392,6 +392,61 @@ export async function saveTraderConfigAndActivate(
   }
 }
 
+export type ClosePosition = {
+  symbol: string;
+  size: number;
+  entry_price?: number | null;
+  unrealized_pnl?: number | null;
+  position_value?: number | null;
+  network?: string;
+};
+
+export type CloseResult = { symbol: string; ok: boolean; reason?: string | null };
+
+// Client-side: preview das posições abertas do trader no ambiente operante atual
+// (execute=false — não envia ordem). Usado pela Seção A do modal.
+export async function getTraderOpenPositions(
+  address: string,
+  env?: "testnet" | "mainnet" | null,
+): Promise<{ ok: boolean; env: string | null; positions: ClosePosition[]; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/trader/${address}/close_positions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ env: env ?? undefined, execute: false }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, env: null, positions: [], reason: data.reason ?? "erro_preview" };
+    }
+    return { ok: true, env: data.env ?? null, positions: data.positions ?? [] };
+  } catch {
+    return { ok: false, env: null, positions: [], reason: "gateway_indisponivel" };
+  }
+}
+
+// Client-side: fecha (reduce_only, best-effort) todas as posições abertas do
+// trader no ambiente indicado (execute=true).
+export async function closeAllPositions(
+  address: string,
+  env?: "testnet" | "mainnet" | null,
+): Promise<{ ok: boolean; results: CloseResult[]; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/trader/${address}/close_positions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ env: env ?? undefined, execute: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, results: data.results ?? [], reason: data.reason ?? "erro_fechamento" };
+    }
+    return { ok: true, results: data.results ?? [] };
+  } catch {
+    return { ok: false, results: [], reason: "gateway_indisponivel" };
+  }
+}
+
 export async function getPositions(
   strategyIds: string[],
   network?: "testnet" | "mainnet" | null,
