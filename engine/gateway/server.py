@@ -1079,6 +1079,49 @@ def build_app(state: GatewayState) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"events: {str(exc)[:200]}")
 
+    @app.get("/api/tv/strategies")
+    def api_tv_strategies(environment: str | None = None) -> list[dict[str, Any]]:
+        """Estratégias TradingView (view tv_strategies = strategies ⋈ meta),
+        isoladas ao módulo (§5.1). NÃO expõe secret_hash/url_secret_hash. Filtro
+        opcional ?environment=testnet|mainnet."""
+        try:
+            cols = ("strategy_id, name, status, config_snapshot, thresholds, "
+                    "created_at, archived_at, environment, version, meta_updated_at")
+            if environment in ("testnet", "mainnet"):
+                rows = state.db.query(
+                    f"SELECT {cols} FROM tv_strategies WHERE environment = ? "
+                    "ORDER BY strategy_id", (environment,))
+            else:
+                rows = state.db.query(
+                    f"SELECT {cols} FROM tv_strategies ORDER BY strategy_id")
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"tv_strategies: {str(exc)[:200]}")
+
+    @app.get("/api/tv/events")
+    def api_tv_events(kind: str | None = None, limit: int = 50,
+                      before: str | None = None) -> list[dict[str, Any]]:
+        """Logs unificados do módulo TV (view tv_events), já isolados ao módulo.
+        Ordena por ts DESC; cursor opcional ?before=<ts>; filtro opcional ?kind=."""
+        try:
+            limit = max(1, min(int(limit), 200))
+            where: list[str] = []
+            args: list[Any] = []
+            if kind:
+                where.append("kind = ?")
+                args.append(kind)
+            if before:
+                where.append("ts < ?")
+                args.append(before)
+            clause = (" WHERE " + " AND ".join(where)) if where else ""
+            args.append(limit)
+            rows = state.db.query(
+                "SELECT ts, kind, severity, summary, ref_id, detail FROM tv_events"
+                f"{clause} ORDER BY ts DESC LIMIT ?", tuple(args))
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"tv_events: {str(exc)[:200]}")
+
     @app.get("/api/stats")
     def api_stats() -> dict[str, Any]:
         """Estatísticas do discovery: último scan, aprovados, reprovados, funil.
