@@ -181,6 +181,13 @@ export default function TradersTable({
                           value: t.value,
                           max_leverage: t.max_leverage,
                           blocked_assets: t.blocked_assets,
+                          thresholds: t.thresholds,
+                        }}
+                        stats={{
+                          equity: t.equity,
+                          avg_leverage: t.avg_leverage,
+                          max_current_leverage: t.max_current_leverage,
+                          sim_max_dd_pct: t.sim_max_dd_pct,
                         }}
                         equity={t.equity}
                       />

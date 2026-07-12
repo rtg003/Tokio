@@ -57,6 +57,7 @@ export type Trader = Record<string, any> & {
   strategy_id: string;
   environment?: "testnet" | "mainnet" | null;
   copy_pinned?: number | null;
+  n_copy_fills?: number;
 };
 
 export type Order = Record<string, any> & {
@@ -209,7 +210,7 @@ export function environmentFromAccount(account: string | undefined): "testnet" |
 
 export function traderOptions(traders: Trader[] | null): TraderOption[] {
   const rows = (traders ?? []).filter((t) =>
-    t.copy_pinned === 1 || ["SALVO", "TESTNET", "MAINNET"].includes(t.status),
+    (t.n_copy_fills ?? 0) > 0 || ["TESTNET", "MAINNET"].includes(t.status),
   );
   return [
     { value: "all", label: "Todos Traders" },
@@ -353,6 +354,7 @@ export type TraderExecConfig = {
   value: number;
   max_leverage: number;
   blocked_assets: string[];
+  thresholds?: Record<string, number>;
 };
 
 // Client-side: salva o sizing (endpoint /config já existente) e, se ok, ativa a
@@ -372,6 +374,7 @@ export async function saveTraderConfigAndActivate(
         value: config.value,
         max_leverage: config.max_leverage,
         blocked_assets: config.blocked_assets,
+        ...(config.thresholds ? { thresholds: config.thresholds } : {}),
       }),
     });
     const cfgData = await cfgRes.json().catch(() => ({}));

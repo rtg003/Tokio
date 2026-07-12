@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import CopyConfigModal from "@/components/copy-trade/CopyConfigModal";
+import CopyConfigModal, { TraderStats } from "@/components/copy-trade/CopyConfigModal";
 import {
   closeAllPositions,
   saveTraderConfigAndActivate,
@@ -22,6 +22,7 @@ export default function StatusSelect({
   status,
   name,
   config,
+  stats,
   equity,
 }: {
   address: string;
@@ -32,7 +33,9 @@ export default function StatusSelect({
     value?: number;
     max_leverage?: number;
     blocked_assets?: string[] | string;
+    thresholds?: Record<string, number> | string;
   };
+  stats?: TraderStats;
   equity?: number | null;
 }) {
   const router = useRouter();
@@ -152,6 +155,7 @@ export default function StatusSelect({
           targetEnv={modalTarget}
           currentEnv={currentEnv}
           currentConfig={config}
+          stats={stats}
           equity={equity}
           busy={busy}
           error={error}

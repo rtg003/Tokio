@@ -11,6 +11,15 @@ import {
 const MIN_NOTIONAL_USD = 10; // mínimo global da Hyperliquid (settings.risk)
 const CLOSE_FEE_RATE = 0.00045; // 0,045% taxa estimada de fechamento (taker)
 
+// Estatísticas reais do trader (linha de /api/traders) usadas para sugerir
+// fração e alavancagem sensatas por trader.
+export type TraderStats = {
+  equity?: number | null;
+  avg_leverage?: number | null;
+  max_current_leverage?: number | null;
+  sim_max_dd_pct?: number | null;
+};
+
 type Props = {
   address: string;
   name: string;
@@ -21,7 +30,9 @@ type Props = {
     value?: number;
     max_leverage?: number;
     blocked_assets?: string[] | string;
+    thresholds?: Record<string, number> | string;
   };
+  stats?: TraderStats;
   equity?: number | null;
   busy?: boolean;
   error?: string | null;
@@ -41,6 +52,38 @@ function initialBlocked(raw: string[] | string | undefined): string {
   }
 }
 
+function parseThresholds(raw: Record<string, number> | string | undefined): Record<string, number> {
+  if (!raw) return {};
+  if (typeof raw === "object") return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Alavancagem sugerida: acompanha a alavancagem que o trader realmente usa
+// (posição aberta agora → média histórica → 3), travada em [1, 10].
+function suggestLeverage(s?: TraderStats): number {
+  const lev = s?.max_current_leverage ?? s?.avg_leverage ?? 3;
+  return Math.min(10, Math.max(1, Math.round(lev || 3)));
+}
+
+// Fração sugerida: reduz a proporção quando a cópia simulada foi muito volátil,
+// mirando ~25% de drawdown. Sem sim_max_dd_pct → 1,0 (proporção cheia).
+function suggestFraction(s?: TraderStats): number {
+  const dd = s?.sim_max_dd_pct;
+  if (dd == null || dd <= 0) return 1.0;
+  const f = Math.min(1.0, Math.max(0.1, 0.25 / (dd / 100)));
+  return Math.round(f * 100) / 100;
+}
+
+function initialMinNotional(cfg: Props["currentConfig"]): number {
+  const v = parseThresholds(cfg?.thresholds).min_notional_usd;
+  return typeof v === "number" && v >= MIN_NOTIONAL_USD ? v : MIN_NOTIONAL_USD;
+}
+
 function netClose(p: ClosePosition): number {
   const notional =
     p.position_value != null
@@ -56,6 +99,7 @@ export default function CopyConfigModal({
   targetEnv,
   currentEnv,
   currentConfig,
+  stats,
   equity,
   busy = false,
   error = null,
@@ -64,6 +108,10 @@ export default function CopyConfigModal({
   onConfirm,
 }: Props) {
   const isMainnet = targetEnv === "mainnet";
+
+  // Sugestões calculadas a partir da realidade do trader.
+  const sugFraction = suggestFraction(stats);
+  const sugLeverage = suggestLeverage(stats);
 
   // -- Seção A: posições abertas no ambiente antigo -------------------------
   const [loadingPos, setLoadingPos] = useState(currentEnv !== null);
@@ -93,16 +141,20 @@ export default function CopyConfigModal({
   );
 
   // -- Seção B: configuração de sizing --------------------------------------
-  const [mode, setMode] = useState<"percent" | "fixed_usdc">(
-    currentConfig?.mode === "fixed_usdc" ? "fixed_usdc" : "percent",
-  );
+  // Modo padrão = percentual. Só uma config percent já salva é respeitada; os
+  // defaults de seed (fixed_usdc/3x) dão lugar às sugestões por trader.
+  const savedPercent = currentConfig?.mode === "percent";
+  const [mode, setMode] = useState<"percent" | "fixed_usdc">("percent");
   const [fraction, setFraction] = useState<number>(
-    currentConfig?.mode === "percent" && currentConfig?.value ? currentConfig.value : 1.0,
+    savedPercent && currentConfig?.value ? currentConfig.value : sugFraction,
   );
   const [fixedValue, setFixedValue] = useState<number>(
     currentConfig?.mode === "fixed_usdc" && currentConfig?.value ? currentConfig.value : 50,
   );
-  const [maxLeverage, setMaxLeverage] = useState<number>(currentConfig?.max_leverage ?? 3);
+  const [maxLeverage, setMaxLeverage] = useState<number>(
+    savedPercent && currentConfig?.max_leverage ? currentConfig.max_leverage : sugLeverage,
+  );
+  const [minNotional, setMinNotional] = useState<number>(initialMinNotional(currentConfig));
   const [blocked, setBlocked] = useState<string>(initialBlocked(currentConfig?.blocked_assets));
   const [confirmedReal, setConfirmedReal] = useState(false);
 
@@ -128,6 +180,10 @@ export default function CopyConfigModal({
         value: mode === "percent" ? fraction : fixedValue,
         max_leverage: maxLeverage,
         blocked_assets,
+        thresholds: {
+          ...parseThresholds(currentConfig?.thresholds),
+          min_notional_usd: minNotional,
+        },
       },
       hasPositions,
     );
@@ -280,13 +336,25 @@ export default function CopyConfigModal({
                 />
                 <span className="field-hint">1x – 10x</span>
               </label>
+
+              <div className="suggest-hint">
+                sugerido para este trader: {fmtNum(sugFraction, 2)}× / {sugLeverage}x
+              </div>
             </div>
 
             <div className="modal-col">
               <label className="field">
                 <span className="field-lab">Notional mínimo</span>
-                <input className="input" type="text" value={`$${MIN_NOTIONAL_USD}`} readOnly disabled />
-                <span className="field-hint">mínimo Hyperliquid (global)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={MIN_NOTIONAL_USD}
+                  step={1}
+                  value={minNotional}
+                  onChange={(e) => setMinNotional(Number(e.target.value))}
+                  disabled={busy}
+                />
+                <span className="field-hint">≥ ${MIN_NOTIONAL_USD} (mínimo Hyperliquid)</span>
               </label>
 
               <label className="field">
@@ -320,13 +388,17 @@ export default function CopyConfigModal({
           </div>
 
           {isMainnet && (
-            <label className="confirm-check">
-              <input
-                type="checkbox"
-                checked={confirmedReal}
-                onChange={(e) => setConfirmedReal(e.target.checked)}
-                disabled={busy}
-              />
+            <label className="switch-field">
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={confirmedReal}
+                  onChange={(e) => setConfirmedReal(e.target.checked)}
+                  disabled={busy}
+                />
+                <span className="switch-track" />
+                <span className="switch-thumb" />
+              </span>
               <span>Confirmo operação com dinheiro real</span>
             </label>
           )}

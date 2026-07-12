@@ -819,11 +819,23 @@ def build_app(state: GatewayState) -> FastAPI:
                 strategy_id_for,
             )
 
+            # Sinal de atividade de cópia: quantas fills existem por strategy_id.
+            # Uma única query agrupada; campo aditivo (n_copy_fills) que o
+            # combobox usa para filtrar traders realmente copiados.
+            copy_fills = {
+                cr["strategy_id"]: int(cr["n"])
+                for cr in state.db.query(
+                    "SELECT strategy_id, COUNT(*) AS n FROM fills "
+                    "WHERE strategy_id IS NOT NULL GROUP BY strategy_id"
+                )
+            }
+
             enriched = []
             for r in rows:
                 row = dict(r)
                 row["strategy_id"] = strategy_id_for(row["address"], row.get("name"))
                 row["environment"] = environment_for_status(row["status"])
+                row["n_copy_fills"] = copy_fills.get(row["strategy_id"], 0)
                 enriched.append(row)
             return enriched
         except HTTPException:

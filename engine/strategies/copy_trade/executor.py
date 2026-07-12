@@ -316,7 +316,7 @@ class CopyTradeExecutor:
                              strategy_id=strategy_id, latency_ms=latency_ms)
             return None
 
-        if abs(delta) * px < self.settings.risk.min_order_notional_usd:
+        if abs(delta) * px < self._min_notional_for(cfg):
             if abs(delta) > 0:
                 self.logger.info("decision.skipped_min_notional",
                                  {**decision, "notional": abs(delta) * px},
@@ -345,6 +345,17 @@ class CopyTradeExecutor:
         self.logger.info("decision.mirrored", {**decision, "result": result},
                          strategy_id=strategy_id, latency_ms=latency_ms)
         return result
+
+    def _min_notional_for(self, cfg: TraderConfig) -> float:
+        """Piso de notional efetivo para este trader.
+
+        `max(global, per_trader)`: o teto per-trader (thresholds.min_notional_usd)
+        só pode SUBIR o mínimo; nunca cai abaixo do piso global da Hyperliquid.
+        Mesma semântica do guard global (só *skip* de ordens pequenas) — não
+        adiciona gate novo ao caminho de ordem (INVARIANTE).
+        """
+        per_trader = float(cfg.thresholds.get("min_notional_usd", 0.0) or 0.0)
+        return max(self.settings.risk.min_order_notional_usd, per_trader)
 
     def _sz_decimals_for(self, symbol: str, environment: str | None) -> int | None:
         """szDecimals of the asset (cached). None if the gateway can't provide it
@@ -479,7 +490,7 @@ class CopyTradeExecutor:
                 if sz_decimals is not None and abs(delta) < 10 ** (-sz_decimals):
                     self._reconcile_attempts.pop(key, None)
                     continue
-                if abs(delta) * px < self.settings.risk.min_order_notional_usd:
+                if abs(delta) * px < self._min_notional_for(cfg):
                     self._reconcile_attempts.pop(key, None)
                     continue
                 # drift tolerance: don't chase sub-5% differences (cents).

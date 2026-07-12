@@ -1946,3 +1946,84 @@ Botões: "Cancelar"; com posições "Fechar e ativar" (âmbar); sem posições
   server-side de `handle_intent` a partir de um endpoint de controle token-gated,
   não expõe o caminho de ordem ao navegador nem adiciona gate a ele. Sem
   `logic_version` novo.
+
+---
+
+## UPDATE-0033 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: pedido rtg003 (6 ajustes no modal de ativação do copy-trade + filtro
+do combobox de traders)
+
+**Tipo**: correção de UI (CSS/React) + sizing sugerido por trader + notional
+mínimo per-trader via `thresholds` JSON já existente + sinal de atividade de
+cópia no `/api/traders` — **sem migration, sem secret novo, sem schema novo,
+sem `logic_version` novo**.
+
+**Contexto**: ao testar a ativação de cópia (UPDATE-0032), o operador apontou
+que o modal "estourava" a tela (scroll horizontal, desktop e mobile) e pediu
+5 melhorias funcionais. Todas implementadas nesta frente.
+
+### 1. Overflow do modal (CSS)
+`.modal` perdeu `min-width: 480px`; agora `width: min(600px, calc(100vw - 2rem));
+max-width: 100%; overflow-x: hidden` (mantendo `max-height: 90vh; overflow-y:
+auto`). `.modal-grid` usa `grid-template-columns: minmax(0, 1.1fr) minmax(0,
+0.9fr)` — o `minmax(0,…)` é a correção central do transbordo. `.risk-card` com
+`overflow-wrap: anywhere`. Nova media query `@media (max-width: 520px)` reduz o
+padding. Sem barra horizontal em 375/768/1440px.
+
+### 2. Toggle ON/OFF (mainnet)
+O checkbox "Confirmo operação com dinheiro real" virou um toggle deslizante
+(`.switch`, novo CSS). Estado `confirmedReal` inalterado; `canActivate` continua
+exigindo confirmação em mainnet.
+
+### 3. Sizing padrão = percentual, com sugestões por trader
+O modo abre em **percentual**. Fração e alavancagem máxima são **sugeridas por
+trader** a partir da linha do `/api/traders` (heurística aprovada pelo operador):
+- **Alavancagem** = `clamp(round(max_current_leverage ?? avg_leverage ?? 3), 1, 10)`.
+- **Fração** = `clamp(0.25 / (sim_max_dd_pct/100), 0.1, 1.0)`; sem
+  `sim_max_dd_pct` → `1.0`.
+Uma config `percent` já salva é respeitada; os defaults de seed (fixed/3x) dão
+lugar às sugestões. Dica discreta na UI mostra a sugestão de origem.
+
+### 4. Notional mínimo editável (≥ $10, sem migration)
+O campo passou de read-only para editável (`number`, min $10). O valor é
+carregado em `thresholds.min_notional_usd` (o `update_exec_config` já aceita
+`thresholds` e o executor já carrega `cfg.thresholds`). O executor usa
+`max(global, per_trader)` nos dois guards de notional mínimo — o teto per-trader
+só *sobe* o piso, nunca abaixo do mínimo global da Hyperliquid. **Mesma semântica
+de skip do guard global (INVARIANTE): não adiciona gate novo ao caminho de
+ordem.**
+
+### 5. Filtro do combobox
+O `/api/traders` ganhou o campo aditivo `n_copy_fills` (contagem de fills por
+`strategy_id`, query agrupada única sobre `fills`). O combobox passou a listar
+APENAS traders com `n_copy_fills > 0` OU em TESTNET/MAINNET (antes usava
+`copy_pinned`/`SALVO`).
+
+### Arquivos
+- **EDIT web**: `web/app/globals.css` (overflow + `.switch` + `.suggest-hint`),
+  `web/components/copy-trade/CopyConfigModal.tsx` (toggle, percent default,
+  sugestões, notional editável), `StatusSelect.tsx` (repasse `stats`),
+  `TradersTable.tsx` (props `stats`+`thresholds`), `web/lib/copy-trade/data.ts`
+  (`TraderExecConfig.thresholds`, `Trader.n_copy_fills`, filtro do combobox).
+- **EDIT engine**: `engine/gateway/server.py` (`n_copy_fills` no `/api/traders`),
+  `engine/strategies/copy_trade/executor.py` (`_min_notional_for`, usado nos 2
+  guards).
+- **EDIT tests**: `tests/test_copy_trade.py`
+  (`test_per_trader_min_notional_raises_floor`).
+
+### Ações do Hermes
+1. Ciclo normal (autodeploy web + restart do gateway/runner). **Sem migration,
+   sem passo manual, sem secret novo.**
+
+### Validação esperada
+- `cd web && npm run build` verde; sem scroll horizontal em 375/768/1440px;
+  toggle desliza e bloqueia "Ativar" até ON (mainnet); modo abre em percent com
+  fração/alavancagem sugeridas por trader.
+- `.venv/bin/pytest -q` sem regressão nova — 215 passam, incluindo o teste novo;
+  baseline conhecido `test_discovery_funnel.py::test_scan_approves_swing_rejects_traps`
+  segue falhando (pré-existente, fora de escopo).
+- Combobox lista só traders com fills de cópia OU TESTNET/MAINNET.
+- `/intent` e `/cancel` inalterados (INVARIANTE): notional mínimo per-trader é
+  `max(global, per_trader)`, só *skip* de ordens pequenas, nunca abaixo do piso
+  global. Nenhum gate novo, sem `logic_version` novo.

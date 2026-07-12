@@ -208,6 +208,27 @@ def test_below_min_notional_skipped_and_logged(settings, db) -> None:
     assert logs
 
 
+def test_per_trader_min_notional_raises_floor(settings, db) -> None:
+    # Notional mínimo per-trader (thresholds.min_notional_usd) só pode SUBIR o
+    # piso global — ordens entre $10 (global) e $200 (per-trader) são *skipadas*;
+    # acima de $200 passam. Mesma semântica de skip, sem gate novo (INVARIANTE).
+    ex, watcher, gw = make_executor(settings, db, mode="percent", value=1.0,
+                                    thresholds={"min_notional_usd": 200.0})
+    # whale abre 0.2 BTC @50k ($10k) -> nosso notional 10k*(1000/100000) = $100.
+    # $100 > global $10 mas < per-trader $200 -> skipado.
+    watcher.emit(TARGET, fill("BTC", "B", 0.2, 50_000.0, start_pos=0.0))
+    assert gw.intents == []
+    logs = db.query(
+        "SELECT event_type FROM events WHERE event_type = 'decision.skipped_min_notional'"
+    )
+    assert logs
+    # whale soma +0.6 BTC (total 0.8 @50k) -> nosso alvo 0.8*(1000/100000) =
+    # 0.008 BTC ($400 notional) > $200 -> passa.
+    watcher.emit(TARGET, fill("BTC", "B", 0.6, 50_000.0, start_pos=0.2))
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["size"] == pytest.approx(0.008)
+
+
 def test_blocked_asset_skipped(settings, db) -> None:
     ex, watcher, gw = make_executor(settings, db, blocked_assets=["DOGE"])
     watcher.emit(TARGET, fill("DOGE", "B", 1000.0, 0.5, start_pos=0.0))
