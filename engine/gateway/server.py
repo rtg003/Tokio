@@ -724,6 +724,108 @@ def build_app(state: GatewayState) -> FastAPI:
         state.logger.info("strategy.activated", {"by": "control_api"}, strategy_id=strategy_id)
         return {"ok": True}
 
+    # -- TV-Executor F3: cadastro/ativação de estratégias TradingView. Escrita
+    # via control API autenticada (ato humano na dashboard). Nasce 'draft'
+    # (disabled-first, §4): sinal de teste bate STRATEGY_DISABLED antes da
+    # ativação. Segredos gerados no servidor e devolvidos UMA vez (só o hash
+    # persiste). Não tocam o hot path de /intent nem o gate humano existente.
+    def _tv_defaults(body: dict[str, Any]) -> dict[str, Any]:
+        def num(key: str, default: float) -> float:
+            v = body.get(key)
+            return float(v) if isinstance(v, (int, float)) else default
+        return {
+            "strategy_id": body["strategy_id"],
+            "symbols_allowed": body.get("symbols_allowed") or [],
+            "timeframes_allowed": body.get("timeframes_allowed") or [],
+            "position_policy": {"on_opposite_signal": "reject",
+                                "on_same_direction_signal": "ignore", "max_adds": 0},
+            "sizing": {"method": body.get("sizing_method", "fixed_fractional"),
+                       "allocation_usd": num("allocation_usd", 0.0),
+                       "risk_per_trade_pct": num("risk_per_trade_pct", 0.75),
+                       "min_trade_usd": num("min_trade_usd", 12.0),
+                       "max_position_usd": num("max_position_usd", 200.0)},
+            "risk_rules": {"max_trades_per_day": int(num("max_trades_per_day", 5)),
+                           "max_daily_loss_usd": num("max_daily_loss_usd", 100.0),
+                           "cooldown_minutes_after_loss": num("cooldown_minutes_after_loss", 30.0),
+                           "max_leverage": num("max_leverage", 3.0)},
+            "exit_rules": {"stop_loss_pct": num("stop_loss_pct", 1.2),
+                           "take_profit_pct": num("take_profit_pct", 2.4)},
+            "execution_guards": {"max_signal_age_seconds": num("max_signal_age_seconds", 90.0),
+                                 "max_price_deviation_pct": num("max_price_deviation_pct", 0.5),
+                                 "max_spread_bps": num("max_spread_bps", 10.0)},
+        }
+
+    @app.post("/control/tv/strategies", dependencies=[Depends(_control_auth)])
+    def tv_create_strategy(body: dict[str, Any]) -> dict[str, Any]:
+        import re
+        import secrets as _secrets
+
+        from engine.tv import store as tv_store
+
+        sid = str(body.get("strategy_id", "")).strip()
+        name = str(body.get("name", "")).strip() or sid
+        env = str(body.get("environment", "testnet")).strip()
+        if not re.fullmatch(r"[a-z0-9_]{3,48}", sid):
+            return {"ok": False, "reason": "strategy_id_invalido"}
+        if env not in ("testnet", "mainnet"):
+            return {"ok": False, "reason": "environment_invalido"}
+        if state.db.query("SELECT 1 FROM strategies WHERE id = ?", (sid,)):
+            return {"ok": False, "reason": "strategy_id_em_uso"}
+        # segredos gerados no servidor; só o hash é persistido (§8.1).
+        url_secret = _secrets.token_urlsafe(24)
+        secret = _secrets.token_urlsafe(24)
+        config = _tv_defaults({**body, "strategy_id": sid})
+        tv_store.create_strategy(
+            state.db, strategy_id=sid, name=name, environment=env, config=config,
+            secret_hash=tv_store.sha256_hex(secret),
+            url_secret_hash=tv_store.sha256_hex(url_secret),
+            changed_by="dashboard_humano")
+        state.logger.log("tv.strategy.created",
+                         {"environment": env, "by": "dashboard_humano"},
+                         level="info", strategy_id=sid)
+        base = os.environ.get("TV_PUBLIC_BASE", "https://tokio.bz").rstrip("/")
+        return {
+            "ok": True, "strategy_id": sid, "environment": env, "status": "draft",
+            "webhook_url": f"{base}/tv/{url_secret}",
+            "secret": secret,
+            "alert_json": {"strategy_id": sid, "secret": secret,
+                           "ticker": "{{ticker}}", "action": "{{strategy.order.action}}",
+                           "market_position": "{{strategy.market_position}}",
+                           "price": "{{close}}", "timeframe": "{{interval}}",
+                           "bar_time": "{{timenow}}", "alert_id": "{{timenow}}"},
+        }
+
+    @app.post("/control/tv/strategies/{strategy_id}/activate",
+              dependencies=[Depends(_control_auth)])
+    def tv_activate_strategy(strategy_id: str) -> dict[str, Any]:
+        rows = state.db.query(
+            "SELECT status, environment FROM tv_strategies WHERE strategy_id = ?",
+            (strategy_id,))
+        if not rows:
+            raise HTTPException(404, "unknown strategy")
+        status, env = rows[0]["status"], rows[0]["environment"]
+        if status == "active":
+            return {"ok": True, "status": "active"}
+        if status not in ("draft", "paused", "auto_paused"):
+            return {"ok": False, "reason": f"nao_ativavel_de_{status}"}
+        # MAINNET só ativa com adapter configurado (paridade com o gate de traders).
+        if env == "mainnet" and "mainnet" not in state.adapters:
+            return {"ok": False, "reason": "mainnet_nao_configurado"}
+        from engine.tv import store as tv_store
+        tv_store.set_strategy_status(state.db, strategy_id, "active")
+        state.logger.log("tv.strategy.activated",
+                         {"environment": env, "by": "dashboard_humano"},
+                         level="info", strategy_id=strategy_id)
+        return {"ok": True, "status": "active"}
+
+    @app.get("/api/tv/strategies/{strategy_id}/handshake")
+    def api_tv_handshake(strategy_id: str) -> dict[str, Any]:
+        """Polling do wizard (§4 passo 4): o último sinal recebido pela
+        estratégia. Read-only, sem segredos."""
+        from engine.tv import store as tv_store
+        sig = tv_store.latest_signal(state.db, strategy_id)
+        return {"received": sig is not None, "signal": sig}
+
     # -- traders (fonte única = tabela; ADR 0008). A dashboard autenticada é
     # caminho humano: cada mudança no combobox passa por confirmação no web.
     @app.get("/traders")

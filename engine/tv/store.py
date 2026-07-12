@@ -120,6 +120,45 @@ def get_strategy(db: Database, strategy_id: str) -> StrategyConfig | None:
     return StrategyConfig.from_row(rows[0]) if rows else None
 
 
+def create_strategy(db: Database, *, strategy_id: str, name: str, environment: str,
+                    config: dict[str, Any], secret_hash: str, url_secret_hash: str,
+                    changed_by: str, change_summary: str = "criação") -> None:
+    """Cria a estratégia TV NASCENDO 'draft' (§4 passo 4: disabled-first ⇒ o
+    sinal de teste bate STRATEGY_DISABLED, provando o pipeline com risco zero).
+    Escreve `strategies` (módulo tradingview), a satélite `tv_strategy_meta` e a
+    versão 1 na auditoria `tv_strategy_versions`. NÃO grava segredos em claro."""
+    db.upsert("strategies", {
+        "id": strategy_id, "module": "tradingview", "name": name, "status": "draft",
+        "config_snapshot": json.dumps(config, ensure_ascii=False), "thresholds": "{}",
+    }, ("id",))
+    db.upsert("tv_strategy_meta", {
+        "strategy_id": strategy_id, "environment": environment,
+        "secret_hash": secret_hash, "url_secret_hash": url_secret_hash, "version": 1,
+    }, ("strategy_id",))
+    db.insert("tv_strategy_versions", {
+        "strategy_id": strategy_id, "version": 1,
+        "config": json.dumps(config, ensure_ascii=False),
+        "changed_by": changed_by, "change_summary": change_summary,
+        "created_at": utcnow(),
+    })
+
+
+def set_strategy_status(db: Database, strategy_id: str, status: str) -> None:
+    db.execute("UPDATE strategies SET status = ? WHERE id = ? AND module = 'tradingview'",
+               (status, strategy_id))
+
+
+def latest_signal(db: Database, strategy_id: str) -> dict[str, Any] | None:
+    """Último sinal (com desfecho da decisão) de uma estratégia — base do
+    polling de handshake do wizard (§4 passo 4)."""
+    rows = db.query(
+        "SELECT s.id, s.source, s.state, s.received_at, d.outcome, d.block_code "
+        "FROM tv_signals s LEFT JOIN tv_signal_decisions d ON d.signal_id = s.id "
+        "WHERE s.strategy_id = ? ORDER BY s.received_at DESC, s.id DESC LIMIT 1",
+        (strategy_id,))
+    return dict(rows[0]) if rows else None
+
+
 def lookup_symbol(db: Database, tv_ticker: str) -> tuple[str, bool] | None:
     rows = db.query("SELECT hl_coin, enabled FROM tv_symbol_map WHERE tv_ticker = ?",
                     (tv_ticker,))
