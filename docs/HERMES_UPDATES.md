@@ -1949,7 +1949,7 @@ Botões: "Cancelar"; com posições "Fechar e ativar" (âmbar); sem posições
 
 ---
 
-## UPDATE-0033 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0033 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: pedido rtg003 (6 ajustes no modal de ativação do copy-trade + filtro
 do combobox de traders)
