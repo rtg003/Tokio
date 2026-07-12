@@ -2368,3 +2368,33 @@ dispara evento `tv.notify.mainnet_change`** no Logs (fallback §12.4.1; canal re
 ### Validação esperada
 - `pytest tests/gateway/test_tv_control.py tests/gateway/test_tv_hermes.py
   tests/gateway/test_tv_api.py -q` verde. `npx tsc --noEmit` verde no `web/`.
+
+## UPDATE-0040 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: bug de atribuição de `network` em fills (Copy Trade core), achado na
+revisão do canário. Uma ordem enviada com `env=mainnet` executava na mainnet, mas
+o fill era gravado com `network=testnet`.
+
+**Tipo**: gateway core (`on_own_fill`). **Não toca `/intent`/`/cancel`** — sem gate
+novo, sem migração. Regressão §8.4.1 verde antes e depois.
+
+### O que mudou
+- `engine/gateway/server.py` — `on_own_fill`: o `network` do fill agora vem
+  PRIMÁRIO do `exchange_id` da ordem (join `orders→exchanges` por `cloid`), que é
+  fixado em `handle_intent` a partir do adapter que EXECUTOU — fonte determinística.
+  O `_network` do callback do websocket virou fallback; `self.adapter.network`
+  segue como último recurso. Motivo: em bordas (adapter não re-registrado, reload)
+  o `_network` podia vir ausente/errado e derrubava um fill de mainnet em testnet.
+- Novo log `fill.network_mismatch` (warning) quando o network do exchange_id
+  diverge do `_network` do callback — diagnóstico para rastrear a origem em produção.
+
+### Ação do Hermes
+- Deploy do código (engine) + reiniciar `tokio-engine.service` quando autorizado.
+- **Atenção operacional**: fills antigos gravados com network errado NÃO são
+  corrigidos retroativamente por este fix (só corrige daqui pra frente). Se houver
+  fills mainnet marcados testnet no histórico, me avise para avaliarmos um reparo
+  pontual (não automático — mexer em dado histórico exige tua confirmação).
+
+### Validação esperada
+- `pytest tests/gateway/test_intent_regression.py tests/test_gateway.py -q` verde,
+  incluindo `test_fill_network_matches_order_exchange_id`.

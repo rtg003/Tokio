@@ -326,6 +326,54 @@ def test_api_fills_and_orders_filter_by_network(settings, db) -> None:
         assert summary_mainnet["n_trades"] == 2
 
 
+def test_fill_network_matches_order_exchange_id(settings, db) -> None:
+    """O network do fill vem do exchange_id da ordem (fonte determinística),
+    não do `_network` do callback do websocket. Regressão do bug: fill de
+    ordem mainnet gravado como testnet quando o callback vem com env errado."""
+    from engine.core.logger import EventLogger
+    from engine.exchanges.paper import PaperAdapter
+    from engine.gateway.server import GatewayState
+
+    testnet = PaperAdapter(prices={"BTC": 100_000.0})
+    testnet.name = "hyperliquid"
+    testnet.network = "testnet"
+    mainnet = PaperAdapter(prices={"BTC": 200_000.0})
+    mainnet.name = "hyperliquid"
+    mainnet.network = "mainnet"
+    state = GatewayState(
+        settings, testnet, db,
+        adapters={"testnet": testnet, "mainnet": mainnet},
+        logger=EventLogger("gateway-fill-net", settings.logs_dir, db=db),
+    )
+    register_strategy(db, "ct_fillnet", module="copy_trade")
+
+    mainnet_ex = db.query(
+        "SELECT id FROM exchanges WHERE name = 'hyperliquid' AND network = 'mainnet'"
+    )[0]["id"]
+    db.insert("orders", {
+        "cloid": "0xmainfill", "strategy_id": "ct_fillnet",
+        "exchange_id": mainnet_ex, "symbol": "BTC", "side": "buy",
+        "type": "market", "size": 0.001, "price": 200_000.0, "status": "created",
+    })
+
+    # Callback do adapter mainnet chega com `_network` ERRADO (simula bug de
+    # borda: adapter não re-registrado / reload). A fonte da verdade é a ordem.
+    state.on_own_fill({
+        "cloid": "0xmainfill", "coin": "BTC", "side": "B",
+        "px": 200_000.0, "sz": 0.001, "fee": 0.02, "_network": "testnet",
+    })
+
+    fills = db.query("SELECT network FROM fills WHERE cloid = '0xmainfill'")
+    assert len(fills) == 1
+    assert fills[0]["network"] == "mainnet"  # não "testnet" do callback
+
+    # O divergência é auditada como diagnóstico.
+    mismatch = db.query(
+        "SELECT COUNT(*) AS n FROM events WHERE event_type = 'fill.network_mismatch'"
+    )[0]["n"]
+    assert mismatch >= 1
+
+
 def test_network_filter_backfills_legacy_orders_without_exchange_id(
     settings, db,
 ) -> None:

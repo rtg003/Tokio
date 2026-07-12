@@ -315,8 +315,13 @@ class GatewayState:
         strategy_id = self.ledger.strategy_for_cloid(cloid) or (
             order_rows[0]["strategy_id"] if order_rows else None
         )
-        network = fill.get("_network")
-        if network not in ("testnet", "mainnet") and cloid:
+        # Fonte de verdade do network é o `exchange_id` da ordem (fixado em
+        # handle_intent a partir do adapter que EXECUTOU), não o `_network` do
+        # callback do websocket — este pode vir ausente/errado em bordas (adapter
+        # não re-registrado, reload) e derrubaria um fill de mainnet em testnet.
+        callback_network = fill.get("_network")
+        network = None
+        if cloid:
             ex_rows = self.db.query(
                 "SELECT e.network FROM orders o "
                 "JOIN exchanges e ON o.exchange_id = e.id WHERE o.cloid = ?",
@@ -324,6 +329,16 @@ class GatewayState:
             )
             if ex_rows:
                 network = ex_rows[0]["network"]
+        # Diagnóstico: registrar quando o callback discorda da fonte autoritativa.
+        if (network in ("testnet", "mainnet")
+                and callback_network in ("testnet", "mainnet")
+                and callback_network != network):
+            self.logger.warning("fill.network_mismatch", {
+                "cloid": cloid, "exchange_network": network,
+                "callback_network": callback_network,
+            }, strategy_id=strategy_id)
+        if network not in ("testnet", "mainnet"):
+            network = callback_network
         if network not in ("testnet", "mainnet"):
             network = (
                 self.adapter.network
