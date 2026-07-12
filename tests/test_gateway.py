@@ -326,6 +326,29 @@ def test_api_fills_and_orders_filter_by_network(settings, db) -> None:
         assert summary_mainnet["n_trades"] == 2
 
 
+def test_market_meta_exposes_bbo(settings, db) -> None:
+    """/api/market-meta devolve bid/ask (l2Book) além do mid — habilita o spread
+    guard do TV-Executor no caminho ao vivo (UPDATE-0039)."""
+    from fastapi.testclient import TestClient
+
+    from engine.core.logger import EventLogger
+    from engine.exchanges.paper import PaperAdapter
+    from engine.gateway.server import GatewayState, build_app
+
+    adapter = PaperAdapter(prices={"BTC": 100_000.0})
+    adapter.name = "hyperliquid"
+    adapter.network = "testnet"
+    state = GatewayState(
+        settings, adapter, db, adapters={"testnet": adapter},
+        logger=EventLogger("gateway-bbo", settings.logs_dir, db=db),
+    )
+    with TestClient(build_app(state)) as c:
+        meta = c.get("/api/market-meta?symbol=BTC").json()
+    assert meta["ok"] is True
+    assert meta["mid"] == 100_000.0
+    assert meta["bid"] == 100_000.0 and meta["ask"] == 100_000.0  # PaperAdapter bbo
+
+
 def test_fill_network_matches_order_exchange_id(settings, db) -> None:
     """O network do fill vem do exchange_id da ordem (fonte determinística),
     não do `_network` do callback do websocket. Regressão do bug: fill de

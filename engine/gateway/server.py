@@ -717,7 +717,18 @@ def build_app(state: GatewayState) -> FastAPI:
             mid = float(adapter.mid_price(symbol))
         except Exception:  # noqa: BLE001 — meta is still useful without a price
             mid = 0.0
-        return {"ok": True, "mid": mid, **meta}
+        # best bid/offer (l2Book) — habilita o spread guard do TV-Executor
+        # (validator check 9) no caminho ao vivo; best-effort, campos só entram
+        # se o venue devolver os dois lados (UPDATE-0039/spread).
+        resp = {"ok": True, "mid": mid, **meta}
+        try:
+            book = adapter.bbo(symbol)
+            bid, ask = float(book.get("bid", 0.0)), float(book.get("ask", 0.0))
+            if bid > 0 and ask > 0:
+                resp["bid"], resp["ask"] = bid, ask
+        except Exception:  # noqa: BLE001 — meta/mid ainda úteis sem book
+            pass
+        return resp
 
     # -- control API (internal network only; web is the only client) -------
     @app.post("/control/strategy/{strategy_id}/pause", dependencies=[Depends(_control_auth)])

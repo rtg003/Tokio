@@ -26,9 +26,12 @@ def _sha(v: str) -> str:
 class FakeGateway:
     """GatewayClient de teste: só health + market_meta (read-only, F0)."""
 
-    def __init__(self, *, mid: float | None = 100_000.0, kill: bool = False) -> None:
+    def __init__(self, *, mid: float | None = 100_000.0, kill: bool = False,
+                 bid: float | None = None, ask: float | None = None) -> None:
         self._mid = mid
         self._kill = kill
+        self._bid = bid
+        self._ask = ask
 
     def health(self) -> dict[str, Any]:
         return {"ok": True, "kill_switch": self._kill}
@@ -36,7 +39,11 @@ class FakeGateway:
     def market_meta(self, symbol: str, environment: str | None = None) -> dict[str, Any]:
         if self._mid is None:
             return {"ok": True, "mid": 0.0}
-        return {"ok": True, "mid": self._mid, "szDecimals": 3, "maxLeverage": 50}
+        meta = {"ok": True, "mid": self._mid, "szDecimals": 3, "maxLeverage": 50}
+        # bbo best-effort (como o gateway real): só entra com os dois lados.
+        if self._bid is not None and self._ask is not None:
+            meta["bid"], meta["ask"] = self._bid, self._ask
+        return meta
 
 
 def register_tv_strategy(db: Database, sid: str, *, environment: str = "testnet",
@@ -260,6 +267,28 @@ def test_t16_environment_from_strategy_not_payload(db: Database) -> None:
     sid, _ = run_signal(db, gw, make_payload("tv_bt"))
     row = db.query("SELECT environment FROM tv_signals WHERE id = ?", (sid,))[0]
     assert row["environment"] == "mainnet"
+
+
+def test_spread_guard_enforced_live_when_book_available(db: Database) -> None:
+    """Com bbo do market-meta (F1 ao vivo), o check 9 RODA — não fica skipped.
+    Book estreito ⇒ spread dentro do limite ⇒ APPROVED com spread=pass."""
+    register_tv_strategy(db, "tv_bt")
+    add_symbol_map(db)
+    gw = FakeGateway(mid=100_000.0, bid=99_995.0, ask=100_005.0)  # ~1 bps
+    _, d = run_signal(db, gw, make_payload("tv_bt"))
+    assert d.outcome == "APPROVED", d.block_code
+    spread = [c for c in d.checks if c["check"] == "spread"][0]
+    assert spread["result"] == "pass", spread  # não mais "skipped"
+
+
+def test_spread_guard_blocks_wide_book_live(db: Database) -> None:
+    """Book largo (50 bps > 10) ⇒ BLOCKED · SPREAD_TOO_WIDE pelo caminho do worker
+    (build_context fia ctx.bbo a partir do market-meta)."""
+    register_tv_strategy(db, "tv_bt")
+    add_symbol_map(db)
+    gw = FakeGateway(mid=100_000.0, bid=99_750.0, ask=100_250.0)  # 50 bps
+    _, d = run_signal(db, gw, make_payload("tv_bt"))
+    assert d.outcome == "BLOCKED" and d.block_code == "SPREAD_TOO_WIDE", d.checks
 
 
 # ---------------------------------------------------------------------------

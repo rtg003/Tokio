@@ -26,23 +26,38 @@ from engine.tv.validator import Decision, ValidatorContext, validate
 POLL_INTERVAL_S = 0.5
 
 
-def _mid_price(gw: GatewayClient, coin: str, environment: str,
-               logger: EventLogger | None) -> float | None:
-    """mid do ambiente da estratégia. Falha/0.0 ⇒ None (MARKET_DATA_UNAVAILABLE)."""
+def _market_meta(gw: GatewayClient, coin: str, environment: str,
+                 logger: EventLogger | None) -> dict[str, Any] | None:
+    """market-meta do ambiente da estratégia (mid + bbo). Falha ⇒ None."""
     try:
         meta = gw.market_meta(coin, environment=environment)
     except Exception as exc:  # noqa: BLE001 — hiccup do venue não pode matar o worker
         if logger:
             logger.warning("tv.market_data_error", {"coin": coin, "error": str(exc)[:200]})
         return None
-    if not meta.get("ok"):
+    return meta if meta.get("ok") else None
+
+
+def _mid_from(meta: dict[str, Any] | None) -> float | None:
+    """mid > 0 ⇒ float, senão None (MARKET_DATA_UNAVAILABLE)."""
+    if meta is None:
         return None
-    mid = meta.get("mid")
     try:
-        mid = float(mid)
+        mid = float(meta.get("mid"))
     except (TypeError, ValueError):
         return None
     return mid if mid > 0 else None
+
+
+def _bbo_from(meta: dict[str, Any] | None) -> tuple[float, float] | None:
+    """(bid, ask) só quando ambos > 0; senão None ⇒ check 9 (spread) skipped."""
+    if meta is None:
+        return None
+    try:
+        bid, ask = float(meta.get("bid", 0.0)), float(meta.get("ask", 0.0))
+    except (TypeError, ValueError):
+        return None
+    return (bid, ask) if bid > 0 and ask > 0 else None
 
 
 def _kill_switch(gw: GatewayClient, settings: Settings) -> bool:
@@ -70,8 +85,9 @@ def build_context(db: Database, gw: GatewayClient, settings: Settings,
     if cfg is None or coin is None:
         return ctx
     env = cfg.environment
-    ctx.mid = _mid_price(gw, coin, env, logger)
-    ctx.bbo = None  # F1: novo método bbo(symbol) no adapter (§8.4.1). F0 ⇒ skipped.
+    meta = _market_meta(gw, coin, env, logger)
+    ctx.mid = _mid_from(meta)
+    ctx.bbo = _bbo_from(meta)  # (bid, ask) do venue ⇒ check 9 (spread) ao vivo.
     ctx.trades_today = store.trades_today(db, cfg.strategy_id)
     ctx.daily_loss_usd = store.module_daily_loss(db, env)
     cooldown = float(cfg.risk_rules.get("cooldown_minutes_after_loss", 0) or 0)

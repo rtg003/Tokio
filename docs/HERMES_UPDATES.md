@@ -2398,3 +2398,33 @@ novo, sem migração. Regressão §8.4.1 verde antes e depois.
 ### Validação esperada
 - `pytest tests/gateway/test_intent_regression.py tests/test_gateway.py -q` verde,
   incluindo `test_fill_network_matches_order_exchange_id`.
+
+## UPDATE-0041 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: fecha o gap achado na revisão do canário do UPDATE-0039 — o spread
+guard (validator check 9) ficava `skipped` ao vivo mesmo com a F1 no ar, porque o
+`bbo` do adapter nunca era exposto pelo gateway e o worker hardcodava `ctx.bbo=None`.
+
+**Tipo**: gateway (endpoint read-only `/api/market-meta`) + worker do TV-Executor.
+**Não toca `/intent`/`/cancel`**, sem migração. Regressão §8.4.1 verde antes/depois.
+
+### O que mudou
+- `engine/gateway/server.py` — `/api/market-meta` agora inclui `bid`/`ask` (via
+  `adapter.bbo`, best-effort; só entram com os dois lados do book). Aditivo — o
+  Copy Trade que só lia `mid` segue igual.
+- `engine/tv/worker.py` — `build_context` passa a derivar `ctx.bbo` da MESMA
+  resposta de market-meta (sem RTT extra). Removido o hardcode `ctx.bbo=None`.
+  Resultado: o check 9 (`SPREAD_TOO_WIDE`, default `max_spread_bps=10`) roda no
+  caminho ao vivo. Venue quieto/sem book ⇒ `bbo=None` ⇒ check 9 `skipped` (mesmo
+  fail-safe de antes, agora só quando o book realmente falta).
+
+### Ação do Hermes
+- Deploy do código (engine) + reiniciar `tokio-engine.service` quando autorizado.
+- Ao re-rodar o canário: confirmar que um sinal limpo conta o check 9 como `pass`
+  (não mais `skipped`) e que um sinal em book largo dá `BLOCKED · SPREAD_TOO_WIDE`.
+  Só ativar a 1ª estratégia real ao vivo depois disso. Mainnet segue gated.
+
+### Validação esperada
+- `pytest tests/test_tv_executor.py tests/test_gateway.py::test_market_meta_exposes_bbo -q`
+  verde, incluindo `test_spread_guard_enforced_live_when_book_available` e
+  `test_spread_guard_blocks_wide_book_live`.
