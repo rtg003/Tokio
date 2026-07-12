@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { ENV_COOKIE, Environment, WALLET_COOKIE } from "@/lib/prefs";
+import { WalletOption } from "@/lib/copy-trade/data";
 
 type Health = {
   ok: boolean;
@@ -36,9 +38,15 @@ function fmtUptime(s?: number): string {
 
 export default function Shell({
   email,
+  env,
+  wallet,
+  wallets,
   children,
 }: {
   email: string;
+  env: Environment;
+  wallet: string;
+  wallets: WalletOption[];
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -46,6 +54,14 @@ export default function Shell({
   const [drawer, setDrawer] = useState(false);
   const [light, setLight] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
+
+  // Controle GLOBAL: grava o cookie (não-httpOnly) e recarrega os server
+  // components. O valor exibido vem do servidor (props), então não lemos cookie
+  // no cliente. Vale para TODAS as telas.
+  function setPref(name: string, value: string) {
+    document.cookie = `${name}=${value};path=/;max-age=31536000;samesite=lax`;
+    router.refresh();
+  }
 
   useEffect(() => {
     setLight(document.documentElement.classList.contains("light"));
@@ -107,6 +123,29 @@ export default function Shell({
           <span className={`dot ${online ? "on" : "off"}`} /> ENGINE{" "}
           <strong>{online ? "ONLINE" : "OFFLINE"}</strong>
         </span>
+        {wallets.length > 1 && (
+          <select
+            className="statusbar-sel wallet-sel"
+            aria-label="Wallet (master de trading)"
+            value={wallet}
+            onChange={(e) => setPref(WALLET_COOKIE, e.target.value)}
+          >
+            {wallets.map((w) => (
+              <option key={w.value} value={w.value}>
+                {w.label}
+              </option>
+            ))}
+          </select>
+        )}
+        <select
+          className={`statusbar-sel env-sel env-${env}`}
+          aria-label="Ambiente"
+          value={env}
+          onChange={(e) => setPref(ENV_COOKIE, e.target.value)}
+        >
+          <option value="testnet">TESTNET</option>
+          <option value="mainnet">MAINNET</option>
+        </select>
         <span className="spacer" />
         <span className="seg">
           SP <Clock />

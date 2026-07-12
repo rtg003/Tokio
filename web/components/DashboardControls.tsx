@@ -3,14 +3,12 @@
 import { useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-// Fiel ao mockup aprovado: select nativo (seta em CSS puro) com value no
-// formato exchange:conta:ambiente + segmented Hoje/7D/30D/Personalizado com
-// par de datas dd/mm/aa (máscara leve de digitação). O estado vive na URL
-// (?account&period&from&to) — o server component refaz as queries a partir dela.
+// Filtros específicos do Copy Trade: trader + período (segmented Hoje/7D/30D/
+// Personalizado com par de datas dd/mm/aa). Wallet e AMBIENTE são controles
+// GLOBAIS e vivem no topo (Shell). O estado destes filtros vive na URL
+// (?trader&period&from&to) — o server component refaz as queries a partir dela.
 
-export type AccountOption = { value: string; label: string };
 export type TraderOption = { value: string; label: string };
-export type WalletOption = { value: string; label: string };
 
 const PRESETS: { key: string; label: string }[] = [
   { key: "today", label: "Hoje" },
@@ -27,20 +25,12 @@ function maskDate(raw: string): string {
 }
 
 export default function DashboardControls({
-  wallets,
-  wallet,
-  accounts,
-  account,
   period,
   from,
   to,
   trader,
   traders,
 }: {
-  wallets: WalletOption[];
-  wallet: string;
-  accounts: AccountOption[];
-  account: string;
   period: string;
   from: string;
   to: string;
@@ -71,34 +61,6 @@ export default function DashboardControls({
 
   return (
     <div className="controls">
-      {wallets.length > 1 && (
-        <select
-          className="select filter-select filter-select-wallet"
-          aria-label="Wallet (master de trading)"
-          value={wallet}
-          onChange={(e) => push({ wallet: e.target.value === "all" ? null : e.target.value })}
-        >
-          {wallets.map((w) => (
-            <option key={w.value} value={w.value}>
-              {w.label}
-            </option>
-          ))}
-        </select>
-      )}
-
-      <select
-        className="select filter-select filter-select-account"
-        aria-label="Corretora e conta"
-        value={account}
-        onChange={(e) => push({ account: e.target.value })}
-      >
-        {accounts.map((a) => (
-          <option key={a.value} value={a.value}>
-            {a.label}
-          </option>
-        ))}
-      </select>
-
       <select
         className="select filter-select filter-select-trader"
         aria-label="Trader acompanhado"

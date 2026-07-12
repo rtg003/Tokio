@@ -1,10 +1,5 @@
 import { gatewayGet } from "@/lib/gateway";
 
-export type AccountOption = {
-  value: string;
-  label: string;
-};
-
 export type TraderOption = {
   value: string;
   label: string;
@@ -123,26 +118,8 @@ export async function getBalance(
   env?: string | null,
   wallet?: string | null,
 ): Promise<Balance> {
-  // "Todas Exchanges" (env ausente/"all") = soma dos ambientes (testnet +
-  // mainnet). Sem env, o gateway retornaria só o adapter padrão (testnet), por
-  // isso agregamos explicitamente cada ambiente e somamos.
-  if (!env || env === "all") {
-    const [tn, mn] = await Promise.all([
-      getBalance("testnet", wallet),
-      getBalance("mainnet", wallet),
-    ]);
-    if (!tn && !mn) return null;
-    const sum = (a?: number | null, b?: number | null) => (a ?? 0) + (b ?? 0);
-    return {
-      equity_usd: sum(tn?.equity_usd, mn?.equity_usd),
-      withdrawable_usd: sum(tn?.withdrawable_usd, mn?.withdrawable_usd),
-      available_usd: sum(tn?.available_usd, mn?.available_usd),
-      spot_usdc: sum(tn?.spot_usdc, mn?.spot_usdc),
-      unrealized_pnl: sum(tn?.unrealized_pnl, mn?.unrealized_pnl),
-      margin_used: sum(tn?.margin_used, mn?.margin_used),
-      network: "all",
-    };
-  }
+  // Ambientes isolados: o cliente sempre envia testnet|mainnet (o controle
+  // global nunca é "all"). Sem agregação — cada saldo é de um único ambiente.
   const q = new URLSearchParams();
   if (env && env !== "all") q.set("env", env);
   if (wallet && wallet !== "all") q.set("wallet", wallet);
@@ -185,20 +162,6 @@ export async function getExchanges(): Promise<Exchange[] | null> {
   return gatewayGet<Exchange[]>("/api/exchanges");
 }
 
-export function accountOptions(exchanges: Exchange[] | null): AccountOption[] {
-  const live = (exchanges ?? []).filter((e) => e.network === "testnet" || e.network === "mainnet");
-  const options = live.length
-    ? live.map((e) => ({
-        value: `${e.name === "hyperliquid" ? "hl" : e.name}:master:${e.network}`,
-        label: `${e.name === "hyperliquid" ? "Hyperliquid" : e.name} - ${e.network === "mainnet" ? "Mainnet" : "Testnet"}`,
-      }))
-    : [
-        { value: "hl:master:testnet", label: "Hyperliquid - Testnet" },
-        { value: "hl:master:mainnet", label: "Hyperliquid - Mainnet" },
-      ];
-  return [{ value: "all", label: "Todas Exchanges" }, ...options];
-}
-
 export async function getTraders(): Promise<Trader[] | null> {
   const rows = await gatewayGet<Trader[]>("/api/traders");
   return rows?.filter((t) => t.status !== "REJEITADO") ?? rows;
@@ -219,13 +182,6 @@ export async function getWallets(): Promise<WalletOption[]> {
     options.push({ value: addr, label: `${addr.slice(0, 6)}…${addr.slice(-4)}` });
   }
   return [{ value: "all", label: "Todas Wallets" }, ...options];
-}
-
-export function environmentFromAccount(account: string | undefined): "testnet" | "mainnet" | "all" {
-  if (!account || account === "all") return "all";
-  if (account.endsWith(":mainnet")) return "mainnet";
-  if (account.endsWith(":testnet")) return "testnet";
-  return "all";
 }
 
 export function traderOptions(traders: Trader[] | null): TraderOption[] {

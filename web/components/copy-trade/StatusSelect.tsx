@@ -9,17 +9,28 @@ import {
   TraderExecConfig,
 } from "@/lib/copy-trade/data";
 
-const STATUSES = ["SUGERIDO", "SALVO", "TESTNET", "MAINNET", "REJEITADO"] as const;
-
 function envForStatus(status: string): "testnet" | "mainnet" | null {
   if (status === "TESTNET") return "testnet";
   if (status === "MAINNET") return "mainnet";
   return null;
 }
 
+// Ambientes isolados: o combo só oferece o status operante do ambiente ativo
+// (TESTNET no testnet, MAINNET no mainnet). Os demais (sem ambiente) sempre
+// aparecem. Promoção cross-env é fluxo de 2 passos (SALVO → troca ambiente →
+// promove). Isto é só UI: o gate humano do backend segue validando igual.
+function statusesForEnv(env: "testnet" | "mainnet", current: string): string[] {
+  const operating = env === "mainnet" ? "MAINNET" : "TESTNET";
+  const base = ["SUGERIDO", "SALVO", operating, "REJEITADO"];
+  // Defensivo: se o status atual não estiver na lista (não deve ocorrer, pois a
+  // tabela filtra o outro ambiente), inclui-o para o <select> nativo não quebrar.
+  return base.includes(current) ? base : [current, ...base];
+}
+
 export default function StatusSelect({
   address,
   status,
+  env,
   name,
   config,
   stats,
@@ -27,6 +38,7 @@ export default function StatusSelect({
 }: {
   address: string;
   status: string;
+  env: "testnet" | "mainnet";
   name?: string;
   config?: {
     mode?: string;
@@ -140,7 +152,7 @@ export default function StatusSelect({
         onChange={(e) => onChange(e.target.value)}
         aria-label={`Status do trader ${address}`}
       >
-        {STATUSES.map((s) => (
+        {statusesForEnv(env, value).map((s) => (
           <option key={s} value={s}>
             {s}
           </option>

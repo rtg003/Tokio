@@ -67,10 +67,12 @@ function parseTopAssets(value: unknown): string[] {
 
 export default function TradersTable({
   traders,
+  env,
   expanded,
   toggleHref,
 }: {
   traders: Trader[] | null;
+  env: "testnet" | "mainnet";
   expanded: boolean;
   toggleHref: string;
 }) {
@@ -175,6 +177,7 @@ export default function TradersTable({
                       <StatusSelect
                         address={t.address}
                         status={t.status}
+                        env={env}
                         name={t.name ?? undefined}
                         config={{
                           mode: t.mode,

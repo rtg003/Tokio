@@ -2103,3 +2103,62 @@ Dois acertos de dashboard pedidos pelo rtg003, no mesmo commit do bugfix:
 - `/intent` e `/cancel` inalterados (INVARIANTE): o teto só *dimensiona* (reduz
   size), agora com o equity certo; o guard só *segura* a posição, não rejeita
   ordem nem toca no caminho de ordem. Sem `logic_version` novo.
+
+## UPDATE-0035 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: diretiva do rtg003 — **separar totalmente TESTNET e MAINNET** na
+dashboard. Não há motivo para misturar saldos/dados dos dois ambientes.
+
+**Tipo**: mudança de UI/UX (dashboard web) — **sem migration, sem secret, sem
+schema, sem `logic_version`**. Nenhuma mudança no engine.
+
+**Contexto**: o Copy Trade combinava exchange+ambiente num filtro (`account`,
+formato `hl:master:testnet`) com opção "Todas" que agregava testnet+mainnet
+(inclusive o saldo total introduzido no UPDATE-0034). A exchange é sempre
+Hyperliquid, então o filtro de exchange perdeu sentido.
+
+### Correção
+- **Controle GLOBAL no topo** (statusbar do Shell), aplicável a TODAS as telas,
+  na ordem **Wallet → Ambiente**:
+  - **Wallet**: mantém "Todas Wallets" (default `all`).
+  - **Ambiente**: TESTNET (laranja) / MAINNET (verde), **sem "all"**. 1º acesso =
+    TESTNET. Persistido em cookies simples (`tokio_env`/`tokio_wallet`,
+    não-httpOnly); o seletor grava via `document.cookie` + `router.refresh()`, e
+    os server components leem via `cookies()` de `next/headers`.
+- **Saldo/PnL/posições/fills** passam a refletir só o ambiente ativo (removida a
+  agregação "all" do `getBalance` do UPDATE-0034; o bugfix `my_equity_fn` do 0034
+  **permanece válido**).
+- **Tabela de traders**: num ambiente, mostra os operantes daquele ambiente +
+  candidatos sem ambiente (SUGERIDO/SALVO); esconde os do outro ambiente.
+- **Combo de STATUS** restrito ao ambiente ativo (testnet oferece
+  SUGERIDO/SALVO/TESTNET/REJEITADO; mainnet troca TESTNET↔MAINNET). Promoção
+  testnet→mainnet vira fluxo de 2 passos (SALVO → troca ambiente → MAINNET).
+  **Só UI**: o gate humano do backend (`trader_status`: MAINNET exige
+  credenciais + `human_gate=True`) segue intocado.
+- **Hyperliquid** mostra só o painel do ambiente ativo. **Config** permanece
+  system-view (mostra ambos).
+- Removido o filtro de exchange/wallet do `DashboardControls` (migrou para o
+  topo) e o segmento de ambiente reintroduzido no statusbar como seletor
+  (GATEWAY/RISCO seguem removidos do UPDATE-0034).
+
+### Arquivos
+- **NEW web**: `web/lib/prefs.ts` (cookies + readers).
+- **EDIT web**: `web/app/(app)/layout.tsx`, `web/components/Shell.tsx`,
+  `web/app/(app)/copy-trade/page.tsx`, `web/components/DashboardControls.tsx`,
+  `web/lib/copy-trade/data.ts`, `web/components/copy-trade/StatusSelect.tsx`,
+  `web/components/copy-trade/TradersTable.tsx`,
+  `web/components/copy-trade/KpiRow.tsx`,
+  `web/app/(app)/hyperliquid/page.tsx`, `web/app/globals.css`.
+
+### Ações do Hermes
+1. Rebuild/deploy da dashboard web. **Sem migration, sem passo manual, sem
+   secret novo.**
+
+### Validação esperada
+- `cd web && npm run build` verde.
+- Topo com Wallet + Ambiente; 1º acesso TESTNET (laranja); trocar p/ MAINNET
+  (verde) recarrega toda a página e persiste ao navegar entre telas.
+- Saldo/PnL/posições/fills nunca somam ambientes. Tabela em testnet mostra
+  TESTNET + candidatos; combo oferece só o status do ambiente ativo.
+- **INVARIANTE**: `/intent`/`/cancel` e o gate humano de status inalterados —
+  a restrição do combo é apenas de UI.

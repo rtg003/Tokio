@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import { WalletProvider } from "@/components/wallet/WalletProvider";
 import { EnvPanel } from "@/components/hyperliquid/EnvPanel";
 import {
@@ -5,17 +6,18 @@ import {
   getAgentsSnapshot,
   type Env,
 } from "@/lib/hyperliquid/data";
+import { readEnv } from "@/lib/prefs";
 
 export const dynamic = "force-dynamic";
 
 export default async function HyperliquidPage() {
   const snapshot = await getAgentsSnapshot();
-  // P3: provisionamento habilitado nos DOIS ambientes. Mainnet = fundos reais;
-  // o EnvPanel/ProvisionFlow reforça a UX de segurança (confirmação explícita).
-  // O gate humano de *status* de trader MAINNET segue intocado (server.py:624).
+  // Ambientes isolados: mostra só o painel do ambiente ativo (controle global no
+  // topo). Provisionamento habilitado; mainnet = fundos reais (o EnvPanel reforça
+  // a confirmação). O gate humano de *status* de trader MAINNET segue intocado.
+  const activeEnv = readEnv(await cookies());
   const envs: { env: Env; provision: boolean }[] = [
-    { env: "testnet", provision: true },
-    { env: "mainnet", provision: true },
+    { env: activeEnv as Env, provision: true },
   ];
 
   return (

@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import AutoRefresh from "@/components/AutoRefresh";
 import DashboardControls from "@/components/DashboardControls";
 import KpiRow from "@/components/copy-trade/KpiRow";
@@ -5,11 +6,8 @@ import PositionsTable from "@/components/copy-trade/PositionsTable";
 import TradersTable from "@/components/copy-trade/TradersTable";
 import TradesOrdersTable from "@/components/copy-trade/TradesOrdersTable";
 import {
-  accountOptions,
-  environmentFromAccount,
   getBalance,
   getCopyStrategyIds,
-  getExchanges,
   getFills,
   getFillsSummary,
   getMetrics,
@@ -17,9 +15,9 @@ import {
   getPnlSummary,
   getPositions,
   getTraders,
-  getWallets,
   traderOptions,
 } from "@/lib/copy-trade/data";
+import { readEnv, readWallet } from "@/lib/prefs";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +41,7 @@ export default async function CopyTradeDashboard({
   searchParams,
 }: {
   searchParams: Promise<{
-    period?: string; from?: string; to?: string; account?: string; trader?: string; wallet?: string; cols?: string;
+    period?: string; from?: string; to?: string; trader?: string; cols?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -83,20 +81,20 @@ export default async function CopyTradeDashboard({
   const sinceTs = `${sinceDay}T00:00:00-03:00`;
   const untilTs = `${untilDay}T23:59:59-03:00`;
 
-  const [exchanges, traders, wallets] = await Promise.all([
-    getExchanges(),
-    getTraders(),
-    getWallets(),
-  ]);
-  const accounts = accountOptions(exchanges);
-  const account = params.account ?? "all";
-  const selectedEnv = environmentFromAccount(account);
-  const selectedTrader = params.trader ?? "all";
-  const selectedWallet = params.wallet ?? "all";
+  // Controle GLOBAL (topo): ambiente (testnet|mainnet, nunca "all") + wallet.
+  const cookieStore = await cookies();
+  const selectedEnv = readEnv(cookieStore);
+  const selectedWallet = readWallet(cookieStore);
   const walletFilter = selectedWallet === "all" ? null : selectedWallet;
+  const selectedTrader = params.trader ?? "all";
+
+  const traders = await getTraders();
   const allTraders = traders ?? [];
+  // Ambiente isolado: mostra os operantes do ambiente ativo (environment ===
+  // selectedEnv) + os candidatos sem ambiente (SUGERIDO/SALVO, environment null),
+  // para preservar o funil descoberta→promoção. Esconde o outro ambiente.
   const filteredTraders = allTraders.filter((t) => {
-    const envOk = selectedEnv === "all" || t.environment === selectedEnv;
+    const envOk = t.environment === selectedEnv || t.environment == null;
     const traderOk = selectedTrader === "all" || t.address === selectedTrader;
     return envOk && traderOk;
   });
@@ -110,8 +108,7 @@ export default async function CopyTradeDashboard({
           .filter((t) => t.address === selectedTrader)
           .map((t) => t.strategy_id)
           .filter((id): id is string => Boolean(id));
-  const network = selectedEnv === "all" ? null : selectedEnv;
-  // "all" mantém-se: getBalance soma testnet + mainnet (saldo total).
+  const network = selectedEnv;
   const balance = await getBalance(selectedEnv, walletFilter);
   const [metrics, fillsSummary, pnlSummary, orders, fills, positions] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
@@ -132,10 +129,6 @@ export default async function CopyTradeDashboard({
           <h1>Copy Trade</h1>
         </div>
         <DashboardControls
-          wallets={wallets}
-          wallet={selectedWallet}
-          accounts={accounts}
-          account={account}
           period={period}
           from={params.from ?? ""}
           to={params.to ?? ""}
@@ -150,11 +143,16 @@ export default async function CopyTradeDashboard({
         fillsSummary={fillsSummary}
         pnlSummary={pnlSummary}
         periodLabel={PERIOD_LABEL[period]}
-        envFiltered={selectedEnv !== "all"}
+        envFiltered={true}
       />
       <PositionsTable positions={positions} />
       <TradesOrdersTable orders={orders} fills={fills} />
-      <TradersTable traders={filteredTraders} expanded={expanded} toggleHref={toggleHref} />
+      <TradersTable
+        traders={filteredTraders}
+        env={selectedEnv}
+        expanded={expanded}
+        toggleHref={toggleHref}
+      />
     </section>
   );
 }
