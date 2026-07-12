@@ -251,7 +251,25 @@ Contrato completo em `AGENTS.md` na raiz do repo.
 - Sugestões manuais (Hermes ou humano via Copin/HyperX) entram por
   `discovery inspect` e passam pela MESMA régua F1–F20 + simulação.
 
+## Módulo Trading View (TV-Executor) — autonomia total sobre estratégias
+
+Estratégias que executam alertas do TradingView na HL via receiver próprio
+(`127.0.0.1:8702`, rota pública `tokio.bz/tv/*`) → validator determinístico →
+gateway existente. Você tem **poder de escrita completo sobre as estratégias TV**
+(nunca no hot path), pela MESMA API de controle da dashboard, identificando-se
+com `"actor":"hermes"` (vira evento HERMES nos Logs — controle compensatório).
+
+As 5 skills e o contrato completo estão em `references/tv/`
+([README](references/tv/README.md)): `tv_strategy_import`, `tv_strategy_manage`,
+`tv_trade_command`, `tv_explain_decision`, `tv_daily_report`.
+
+**Perímetro fora do seu alcance** (config de sistema, não estratégia): kill
+switch global (DESLIGAR é exclusivo de Eduardo), caps globais, wallets/
+credenciais. MAINNET (ativar/promover) mantém o gate humano: falha sem
+credenciais no servidor e toda mudança mainnet notifica Eduardo. Ambiente é a
+fonte de verdade em `tv_strategy_meta` — só muda por `promote`, nunca por payload.
+
 Referências: `references/strategy_md_template.md` (template obrigatório de
-`strategy.md`), `references/lessons.md` (lições agregadas de post-mortems) e
+`strategy.md`), `references/lessons.md` (lições agregadas de post-mortems),
 `references/hyperliquid_ops.md` (receitas de operação da HL: saldo, agent
-wallet, ordens de teste).
+wallet, ordens de teste) e `references/tv/` (skills do módulo Trading View).

@@ -2316,3 +2316,55 @@ guard clause. Sem `logic_version` novo, sem migração, sem tocar UI/Hermes.
 - Aceite funcional na **testnet real** (T10–T13 ao vivo: entrada+SL+TP visíveis,
   short, flip, stop rejeitado ⇒ incidente) fica como passo de operador, após o
   canário e o OK do Eduardo.
+
+## UPDATE-0039 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: F3 (Dashboard) + F2 (camada Hermes) do TV-Executor. Fecha o módulo:
+tela própria em `/trading-view` + as 5 skills que te dão autonomia total sobre
+estratégias TV (nunca no hot path).
+
+**Tipo**: web (rota/componentes próprios, isolados do Copy Trade) + gateway
+(superfície de CONTROLE das estratégias TV) + skill (`references/tv/`). Sem
+migração. **Não toca `/intent`/`/cancel`** — nenhum gate novo no hot path.
+
+### F3 — Dashboard (isolamento §5.3)
+- Menu "Trading View" ACIMA de "Copy Trade"; rota `web/app/(app)/trading-view`.
+- Read-only via endpoints dedicados `/api/tv/strategies` e `/api/tv/events`
+  (view `tv_events`, cursor por `before`) + compartilhados escopados aos ids TV.
+- Wizard §4 (4 passos, handshake fim-a-fim): estratégia nasce `draft`, o sinal de
+  teste bate `STRATEGY_DISABLED` (risco zero) e só então "Concluir" ativa na
+  testnet. Botão "+ nova estratégia" só na rota `/trading-view`.
+
+### F2 — Camada Hermes (§9): superfície de controle NOVA no gateway
+Todos exigem `X-Control-Token` e aceitam `"actor":"hermes"` (→ `changed_by:hermes`
+→ evento HERMES nos Logs). Contrato e comandos em `skill/references/tv/`:
+- `POST /control/tv/strategies` (criar, nasce draft, secret 1×)
+- `POST /control/tv/strategies/{id}/config` (edição versionada + diff auditado)
+- `POST /control/tv/strategies/{id}/activate` · `/pause`
+- `POST /control/tv/strategies/{id}/promote` (muda ambiente — fonte de verdade)
+- `POST /control/tv/strategies/{id}/rotate_secret` (novo webhook+secret 1×)
+- Sinal natural do Hermes: `POST 127.0.0.1:8702/signals/internal` (`X-Internal-Token`,
+  `source:"hermes"`) — MESMO validator, sem furar guardrail.
+
+### Perímetro do Hermes (recusa por construção — sem endpoint no módulo)
+Kill switch global (DESLIGAR é exclusivo do Eduardo), caps globais, wallets/
+credenciais. MAINNET (activate/promote) mantém o gate humano: falha com
+`mainnet_nao_configurado` sem credenciais no servidor, e **toda mudança mainnet
+dispara evento `tv.notify.mainnet_change`** no Logs (fallback §12.4.1; canal real
+§12.6 pluga depois).
+
+### Nota de infra
+- `engine/core/logger.py` passou a persistir eventos com prefixo `tv.` no sink de
+  `events` (antes ficavam só no JSONL) — necessário para os eventos operacionais
+  TV aparecerem no Logs do módulo. Não muda o comportamento de outros prefixos.
+- **Env já esperado**: `TV_INTERNAL_TOKEN` (receiver) e `GATEWAY_CONTROL_TOKEN`
+  (gateway) no `.env`. `TV_PUBLIC_BASE` define o domínio do webhook.
+
+### Ações do Hermes
+1. **Sem migração, sem infra/Caddy nova.** Deploy do código (engine + web) e
+   reiniciar `tokio-engine.service` + `tokio.service` quando autorizado.
+2. As skills TV estão em `references/tv/` — leia o `README.md` antes de operar.
+
+### Validação esperada
+- `pytest tests/gateway/test_tv_control.py tests/gateway/test_tv_hermes.py
+  tests/gateway/test_tv_api.py -q` verde. `npx tsc --noEmit` verde no `web/`.

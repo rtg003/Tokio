@@ -194,6 +194,20 @@ def strategy_environment(db: Database, strategy_id: str) -> str | None:
     return rows[0]["environment"] if rows else None
 
 
+def set_environment(db: Database, strategy_id: str, environment: str) -> None:
+    """Promoção de ambiente (§9.2). O ambiente é a FONTE DE VERDADE da execução e
+    vive só em tv_strategy_meta — nunca vem do payload nem do seletor de UI."""
+    db.execute("UPDATE tv_strategy_meta SET environment = ?, updated_at = ? "
+               "WHERE strategy_id = ?", (environment, utcnow(), strategy_id))
+
+
+def rotate_secrets(db: Database, strategy_id: str, *, secret_hash: str,
+                   url_secret_hash: str) -> None:
+    db.execute("UPDATE tv_strategy_meta SET secret_hash = ?, url_secret_hash = ?, "
+               "updated_at = ? WHERE strategy_id = ?",
+               (secret_hash, url_secret_hash, utcnow(), strategy_id))
+
+
 def latest_signal(db: Database, strategy_id: str) -> dict[str, Any] | None:
     """Último sinal (com desfecho da decisão) de uma estratégia — base do
     polling de handshake do wizard (§4 passo 4)."""

@@ -79,6 +79,29 @@ def test_management_requires_control_token(client) -> None:
     assert client.post("/control/tv/strategies/x/pause", json={}).status_code == 401
 
 
+def test_promote_to_mainnet_without_adapter_is_refused(client, gateway_state) -> None:
+    _create(client, sid="tv_prom")
+    r = client.post("/control/tv/strategies/tv_prom/promote", headers=HDR,
+                    json={"actor": "hermes", "environment": "mainnet"}).json()
+    assert r["ok"] is False and r["reason"] == "mainnet_nao_configurado"
+    env = gateway_state.db.query(
+        "SELECT environment FROM tv_strategy_meta WHERE strategy_id='tv_prom'")[0]
+    assert env["environment"] == "testnet"  # inalterado
+
+
+def test_rotate_secret_returns_new_secret_and_updates_hash(client, gateway_state) -> None:
+    created = _create(client, sid="tv_rot").json()
+    old_hash = gateway_state.db.query(
+        "SELECT secret_hash FROM tv_strategy_meta WHERE strategy_id='tv_rot'")[0]["secret_hash"]
+    r = client.post("/control/tv/strategies/tv_rot/rotate_secret", headers=HDR,
+                    json={"actor": "hermes"}).json()
+    assert r["ok"] is True and r["secret"] and r["secret"] != created["secret"]
+    from engine.tv.store import sha256_hex
+    new_hash = gateway_state.db.query(
+        "SELECT secret_hash FROM tv_strategy_meta WHERE strategy_id='tv_rot'")[0]["secret_hash"]
+    assert new_hash == sha256_hex(r["secret"]) and new_hash != old_hash
+
+
 def test_mainnet_change_emits_notification_event(client, gateway_state) -> None:
     # cria mainnet (draft não ativa sem adapter, mas edição de config é permitida).
     _create(client, sid="tv_mn", env="mainnet")

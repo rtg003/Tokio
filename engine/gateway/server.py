@@ -884,6 +884,69 @@ def build_app(state: GatewayState) -> FastAPI:
             _tv_notify_mainnet(strategy_id, f"config v{version} por {actor}: {summary}")
         return {"ok": True, "version": version}
 
+    @app.post("/control/tv/strategies/{strategy_id}/promote",
+              dependencies=[Depends(_control_auth)])
+    def tv_promote_strategy(strategy_id: str,
+                            body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        """Promoção de ambiente (§9.2). MAINNET só é alcançável com adapter
+        configurado (gate humano preservado); a promoção em si é auditada e, se
+        alvo mainnet, notifica. Ambiente é a fonte de verdade da execução."""
+        from engine.tv import store as tv_store
+
+        actor = _tv_actor(body)
+        target = str(body.get("environment", "")).strip()
+        if target not in ("testnet", "mainnet"):
+            return {"ok": False, "reason": "environment_invalido"}
+        current = tv_store.strategy_environment(state.db, strategy_id)
+        if current is None:
+            raise HTTPException(404, "unknown strategy")
+        if target == "mainnet" and "mainnet" not in state.adapters:
+            return {"ok": False, "reason": "mainnet_nao_configurado"}
+        tv_store.set_environment(state.db, strategy_id, target)
+        version = tv_store.update_strategy_config(
+            state.db, strategy_id, patch={}, changed_by=actor,
+            change_summary=f"promoção {current}→{target}")
+        state.logger.log("tv.strategy.promoted",
+                         {"from": current, "to": target, "by": actor},
+                         level="warning" if target == "mainnet" else "info",
+                         strategy_id=strategy_id)
+        if target == "mainnet":
+            _tv_notify_mainnet(strategy_id, f"promovida testnet→mainnet por {actor}")
+        return {"ok": True, "environment": target, "version": version}
+
+    @app.post("/control/tv/strategies/{strategy_id}/rotate_secret",
+              dependencies=[Depends(_control_auth)])
+    def tv_rotate_secret(strategy_id: str,
+                         body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        """Regenera os segredos (payload + URL). Devolve UMA vez; só os hashes
+        persistem. O webhook antigo para de valer imediatamente (§9.2)."""
+        import secrets as _secrets
+
+        from engine.tv import store as tv_store
+
+        actor = _tv_actor(body)
+        env = tv_store.strategy_environment(state.db, strategy_id)
+        if env is None:
+            raise HTTPException(404, "unknown strategy")
+        url_secret = _secrets.token_urlsafe(24)
+        secret = _secrets.token_urlsafe(24)
+        tv_store.rotate_secrets(
+            state.db, strategy_id, secret_hash=tv_store.sha256_hex(secret),
+            url_secret_hash=tv_store.sha256_hex(url_secret))
+        state.logger.log("tv.strategy.secret_rotated", {"by": actor},
+                         level="warning", strategy_id=strategy_id)
+        if env == "mainnet":
+            _tv_notify_mainnet(strategy_id, f"secret rotacionado por {actor}")
+        base = os.environ.get("TV_PUBLIC_BASE", "https://tokio.bz").rstrip("/")
+        return {
+            "ok": True, "webhook_url": f"{base}/tv/{url_secret}", "secret": secret,
+            "alert_json": {"strategy_id": strategy_id, "secret": secret,
+                           "ticker": "{{ticker}}", "action": "{{strategy.order.action}}",
+                           "market_position": "{{strategy.market_position}}",
+                           "price": "{{close}}", "timeframe": "{{interval}}",
+                           "bar_time": "{{timenow}}", "alert_id": "{{timenow}}"},
+        }
+
     @app.get("/api/tv/strategies/{strategy_id}/handshake")
     def api_tv_handshake(strategy_id: str) -> dict[str, Any]:
         """Polling do wizard (§4 passo 4): o último sinal recebido pela
