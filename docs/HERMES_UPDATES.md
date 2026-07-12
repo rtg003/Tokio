@@ -2317,7 +2317,7 @@ guard clause. Sem `logic_version` novo, sem migração, sem tocar UI/Hermes.
   short, flip, stop rejeitado ⇒ incidente) fica como passo de operador, após o
   canário e o OK do Eduardo.
 
-## UPDATE-0039 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0039 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: F3 (Dashboard) + F2 (camada Hermes) do TV-Executor. Fecha o módulo:
 tela própria em `/trading-view` + as 5 skills que te dão autonomia total sobre
