@@ -1814,3 +1814,61 @@ obsoleta.
 - Nenhuma linha `rejected` de "could not immediately match" na tabela de Trades.
 - `orders`/`fills` da master `0xd2c7…` removidos.
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
+
+---
+
+## UPDATE-0031 · 2026-07-11 · Status: PENDENTE
+
+**Origem**: pedido rtg003 (validação do copy-trade) + push na main
+
+**Tipo**: correção de dimensionamento no executor + nova UI (modal de config) —
+**sem migration, sem secret novo, sem schema novo, sem `logic_version` novo**
+
+**Contexto**: dois ajustes no copy-trade.
+
+### 1. Executor respeita o teto de alavancagem da simulação
+
+A simulação (`metrics.simulate_copy`) limita o notional copiado a
+`mirror_capital × max_copy_leverage` e escala o PnL quando estoura. O executor,
+em modo **`percent`**, calculava o notional espelhado proporcional ao trader
+**sem** aplicar esse teto — então copiava ~$3.840 quando a simulação limitou a
+$3.000, e a exposição real com várias posições divergia da prevista. Corrigido em
+`engine/strategies/copy_trade/executor.py` (`_desired_mirror`, ramo `percent`):
+aplica `notional_max = my_equity × cfg.max_leverage` e reduz o size quando o
+notional proporcional estoura. **Só dimensiona (reduz tamanho) — nunca rejeita
+ordem**, então **não** adiciona gate no caminho de ordem (INVARIANTE preservada).
+Modo `fixed_usdc` inalterado. Teste novo:
+`tests/test_copy_trade.py::test_percent_respects_max_leverage_ceiling`.
+
+### 2. Modal de configuração ao ativar a cópia (web)
+
+Ao mudar o status de um trader para **TESTNET/MAINNET** pelo combobox, agora abre
+um modal de configuração de sizing antes de ativar. Campos: modo
+(percent/fixed_usdc), fração ou valor fixo, alavancagem máxima, notional mínimo
+(**read-only**, exibe o mínimo global $10 da HL — não é per-trader), ativos
+bloqueados (CSV), resumo de risco (`equity × alavancagem = máx por posição`) e,
+só em mainnet, checkbox de confirmação de dinheiro real. Botão verde (testnet) /
+vermelho (mainnet).
+
+- **Fluxo**: o modal salva o sizing via `POST /control/trader/{addr}/config`
+  (endpoint **já existente**) e, se ok, ativa via
+  `POST /control/trader/{addr}/status`. **Backend inalterado** — nenhuma mudança
+  no gateway/traders_store; reuso dos endpoints e do proxy `/api/control`.
+- **Arquivos web**: `web/components/copy-trade/CopyConfigModal.tsx` (novo),
+  `StatusSelect.tsx`, `TradersTable.tsx`, `web/lib/copy-trade/data.ts`
+  (`saveTraderConfigAndActivate`), `web/app/globals.css` (estilos do modal).
+
+### Ações do Hermes
+
+1. Tudo entra no **ciclo normal** (autodeploy da web + restart do runner que
+   recarrega o executor). **Sem migration, sem passo manual.**
+
+### Validação esperada
+- Combobox → TESTNET/MAINNET abre o modal; "Ativar cópia" grava config + status;
+  mainnet exige o checkbox e mostra botão vermelho.
+- Em `percent`, uma posição-baleia cujo notional proporcional estouraria
+  `equity × max_leverage` é dimensionada pra baixo até o teto (bate com a
+  simulação); `fixed_usdc` inalterado.
+- `.venv/bin/pytest tests/test_copy_trade.py -q` verde (inclui o teste novo);
+  `cd web && npm run build` verde.
+- `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.

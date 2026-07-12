@@ -172,7 +172,18 @@ export default function TradersTable({
                         : `−${fmtNum(t.max_drawdown, 1)}%`}
                     </td>
                     <td>
-                      <StatusSelect address={t.address} status={t.status} />
+                      <StatusSelect
+                        address={t.address}
+                        status={t.status}
+                        name={t.name ?? undefined}
+                        config={{
+                          mode: t.mode,
+                          value: t.value,
+                          max_leverage: t.max_leverage,
+                          blocked_assets: t.blocked_assets,
+                        }}
+                        equity={t.equity}
+                      />
                     </td>
                     <td className="num">{t.n_trades_30d ?? "—"}</td>
                     <td className="num">

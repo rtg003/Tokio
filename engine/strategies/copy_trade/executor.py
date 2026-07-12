@@ -398,7 +398,15 @@ class CopyTradeExecutor:
             self.logger.warning("decision.no_target_equity", {"address": cfg.address},
                                 strategy_id=cfg.strategy_id)
             return self._my_pos.get((cfg.strategy_id, symbol), 0.0)
-        notional = abs(target_now) * px * cfg.value * (self.my_equity_fn() / target_eq)
+        my_eq = self.my_equity_fn()
+        notional = abs(target_now) * px * cfg.value * (my_eq / target_eq)
+        # Teto de alavancagem: espelha o notional_cap da simulação
+        # (metrics.simulate_copy) para manter a exposição ao vivo alinhada com o
+        # que a simulação prometeu. Só dimensiona (reduz size) — nunca rejeita
+        # ordem, então não adiciona gate no caminho de ordem (INVARIANTE).
+        notional_max = my_eq * cfg.max_leverage
+        if notional_max > 0 and notional > notional_max:
+            notional = notional_max
         return (notional / px) * sign
 
     # -- reconcile (corrective, per trader -> per strategy) ---------------------

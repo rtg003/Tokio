@@ -2,38 +2,37 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import CopyConfigModal from "@/components/copy-trade/CopyConfigModal";
+import { saveTraderConfigAndActivate, TraderExecConfig } from "@/lib/copy-trade/data";
 
 const STATUSES = ["SUGERIDO", "SALVO", "TESTNET", "MAINNET", "REJEITADO"] as const;
-
-function confirmation(next: string): string | null {
-  if (next === "TESTNET") {
-    return "Iniciar cópia em TESTNET para este trader agora?";
-  }
-  if (next === "MAINNET") {
-    return "ATENÇÃO: MAINNET usa dinheiro REAL. Confirmar promoção deste trader?";
-  }
-  return null;
-}
 
 export default function StatusSelect({
   address,
   status,
+  name,
+  config,
+  equity,
 }: {
   address: string;
   status: string;
+  name?: string;
+  config?: {
+    mode?: string;
+    value?: number;
+    max_leverage?: number;
+    blocked_assets?: string[] | string;
+  };
+  equity?: number | null;
 }) {
   const router = useRouter();
   const [value, setValue] = useState(status);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [modalTarget, setModalTarget] = useState<"testnet" | "mainnet" | null>(null);
 
-  async function onChange(next: string) {
+  async function postStatus(next: string) {
     const previous = value;
-    const message = confirmation(next);
-    if (message && !window.confirm(message)) {
-      setValue(previous);
-      return;
-    }
     setValue(next);
     setBusy(true);
     setError(null);
@@ -57,6 +56,31 @@ export default function StatusSelect({
     }
   }
 
+  function onChange(next: string) {
+    if (next === "TESTNET" || next === "MAINNET") {
+      // Abre o modal de configuração; o status só muda após "Ativar cópia".
+      setError(null);
+      setModalTarget(next === "MAINNET" ? "mainnet" : "testnet");
+      return;
+    }
+    postStatus(next);
+  }
+
+  async function onModalConfirm(cfg: TraderExecConfig) {
+    const next = modalTarget === "mainnet" ? "MAINNET" : "TESTNET";
+    setBusy(true);
+    setError(null);
+    const result = await saveTraderConfigAndActivate(address, cfg, next);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.reason ?? "erro_ativacao");
+      return;
+    }
+    setValue(next);
+    setModalTarget(null);
+    router.refresh();
+  }
+
   return (
     <span className="status-select-wrap" title={error ?? undefined}>
       <select
@@ -73,6 +97,23 @@ export default function StatusSelect({
         ))}
       </select>
       {error && <span className="status-error">{error}</span>}
+      {modalTarget && (
+        <CopyConfigModal
+          address={address}
+          name={name ?? address}
+          targetEnv={modalTarget}
+          currentConfig={config}
+          equity={equity}
+          busy={busy}
+          error={error}
+          onClose={() => {
+            if (busy) return;
+            setModalTarget(null);
+            setError(null);
+          }}
+          onConfirm={onModalConfirm}
+        />
+      )}
     </span>
   );
 }

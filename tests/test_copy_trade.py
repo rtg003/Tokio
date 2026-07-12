@@ -158,6 +158,21 @@ def test_percent_mode_proportional_to_equity(settings, db) -> None:
     assert gw.intents[0]["size"] == pytest.approx(0.02)
 
 
+def test_percent_respects_max_leverage_ceiling(settings, db) -> None:
+    # Espelha o notional_cap da simulação (metrics.simulate_copy): com equity 1k e
+    # max_leverage 3x, o notional máximo por posição é $3.000. Uma posição-baleia
+    # cujo notional proporcional estouraria esse teto é dimensionada pra baixo, em
+    # vez de copiar a exposição inteira do trader.
+    ex, watcher, gw = make_executor(settings, db,
+                                    mode="percent", value=1.0, max_leverage=3.0)
+    # whale (100k equity) buys 10 BTC @50k (500k notional) -> proporcional seria
+    # 500k * 1.0 * (1000/100000) = 5000 USD, acima do teto 1000*3 = 3000.
+    # Capado a 3000 -> 3000/50000 = 0.06 BTC (sem teto seria 0.1).
+    watcher.emit(TARGET, fill("BTC", "B", 10.0, 50_000.0, start_pos=0.0))
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["size"] == pytest.approx(0.06)
+
+
 def test_partial_reduction_mirrors_proportionally(settings, db) -> None:
     # percent mode still scales with the trader's position (proportional to the
     # equity ratio); a 50% reduction by the trader halves our mirror too.

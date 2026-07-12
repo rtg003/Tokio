@@ -348,6 +348,50 @@ export async function getFills(
   return gatewayGet<Fill[]>(`/api/fills?${q.toString()}`);
 }
 
+export type TraderExecConfig = {
+  mode: "percent" | "fixed_usdc";
+  value: number;
+  max_leverage: number;
+  blocked_assets: string[];
+};
+
+// Client-side: salva o sizing (endpoint /config já existente) e, se ok, ativa a
+// cópia mudando o status. Duas chamadas sequenciais reusando os endpoints de
+// controle — o proxy /api/control já libera ambos os paths.
+export async function saveTraderConfigAndActivate(
+  address: string,
+  config: TraderExecConfig,
+  nextStatus: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    const cfgRes = await fetch(`/api/control/trader/${address}/config`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        mode: config.mode,
+        value: config.value,
+        max_leverage: config.max_leverage,
+        blocked_assets: config.blocked_assets,
+      }),
+    });
+    const cfgData = await cfgRes.json().catch(() => ({}));
+    if (!cfgRes.ok || cfgData.ok === false) {
+      return { ok: false, reason: cfgData.reason ?? cfgData.detail ?? "erro_config" };
+    }
+    const stRes = await fetch(
+      `/api/control/trader/${address}/status?new_status=${encodeURIComponent(nextStatus)}`,
+      { method: "POST" },
+    );
+    const stData = await stRes.json().catch(() => ({}));
+    if (!stRes.ok || stData.ok === false) {
+      return { ok: false, reason: stData.reason ?? stData.detail ?? "erro_status" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
 export async function getPositions(
   strategyIds: string[],
   network?: "testnet" | "mainnet" | null,
