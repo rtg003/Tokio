@@ -2030,7 +2030,7 @@ APENAS traders com `n_copy_fills > 0` OU em TESTNET/MAINNET (antes usava
 
 ---
 
-## UPDATE-0034 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0034 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: bug CRÍTICO de sizing apontado pelo rtg003 (teto de alavancagem
 usava $1.000 fixo em vez do meu equity real)
