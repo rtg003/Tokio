@@ -2428,3 +2428,45 @@ guard (validator check 9) ficava `skipped` ao vivo mesmo com a F1 no ar, porque 
 - `pytest tests/test_tv_executor.py tests/test_gateway.py::test_market_meta_exposes_bbo -q`
   verde, incluindo `test_spread_guard_enforced_live_when_book_available` e
   `test_spread_guard_blocks_wide_book_live`.
+
+## UPDATE-0042 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: operador reportou que ordens manuais enviadas com `"env":"mainnet"`
+executavam e eram gravadas em **testnet** (ordem 538 → `exchange_id=1`, fill 182 →
+`network=testnet`), mesmo com o adapter mainnet ativo.
+
+**Diagnóstico (importante — não é bug de execução; NENHUM capital de mainnet foi
+tocado):** o endpoint `POST /intent` desserializa o corpo no modelo `IntentRequest`,
+cujo campo era `environment` **sem alias `env`**. Enviando `"env":"mainnet"`, o
+Pydantic ignorava a chave desconhecida → `environment=None` → `_adapter_for(None)`
+caía no adapter **default** (testnet). A ordem 538 executou DE FATO na testnet; os
+registros `exchange_id=1`/`network=testnet` estão **corretos** — refletem onde a
+ordem realmente foi. Distingue-se do UPDATE-0040 (que tratava fill de uma ordem que
+executou na mainnet): aqui a ordem nunca chegou à mainnet. O Copy Trade nunca foi
+afetado — ele envia a chave canônica `environment`.
+
+**Tipo**: gateway core (modelo `IntentRequest`). **Não adiciona gate** a
+`/intent`/`/cancel`, sem migração. Regressão §8.4.1 verde antes e depois.
+
+### O que mudou
+- `engine/gateway/server.py` — `IntentRequest` agora aceita **`env`** (alias) E
+  **`environment`** (chave canônica), via `alias="env"` +
+  `model_config = ConfigDict(populate_by_name=True)`. `populate_by_name=True` é o que
+  mantém a chave canônica válida junto ao alias (sem ela o Pydantic v2 aceitaria só
+  o alias e quebraria o Copy Trade). Default segue `None` → runners que não passam
+  ambiente (dummy/DCA) continuam no default testnet, sem mudança.
+- Novo log `intent.received` (`environment` pedido + `adapter_network` resolvido) em
+  `handle_intent` — torna observável em qual ambiente cada intent roteou.
+
+### Ação do Hermes
+- Deploy do código (engine) + reiniciar `tokio-engine.service` quando autorizado.
+- **Reparo histórico**: nenhum necessário. Ordem 538 / fill 182 foram execuções
+  reais de testnet, gravadas corretamente.
+- Regra do Eduardo (testnet primeiro): validar `POST /intent` com `{"env":"testnet"}`
+  (log `intent.received` com `adapter_network=testnet`) e depois `{"env":"mainnet"}`
+  (ordem gravada com `exchange_id=2`/fill `network=mainnet`). Mainnet segue gated.
+
+### Validação esperada
+- `pytest tests/gateway/test_intent_regression.py tests/test_gateway.py -q` verde,
+  incluindo `test_intent_env_alias_routes_mainnet` e
+  `test_intent_environment_key_still_works`.

@@ -209,6 +209,69 @@ def test_intent_routes_by_environment(settings, db) -> None:
     assert mainnet.placed_orders[0].size == 0.001
 
 
+def _two_env_state(settings, db, name):
+    """GatewayState com adapters testnet+mainnet (default=testnet)."""
+    from engine.core.logger import EventLogger
+    from engine.exchanges.paper import PaperAdapter
+    from engine.gateway.server import GatewayState
+
+    testnet = PaperAdapter(prices={"BTC": 100_000.0})
+    testnet.name = "hyperliquid"
+    testnet.network = "testnet"
+    mainnet = PaperAdapter(prices={"BTC": 200_000.0})
+    mainnet.name = "hyperliquid"
+    mainnet.network = "mainnet"
+    state = GatewayState(
+        settings, testnet, db,
+        adapters={"testnet": testnet, "mainnet": mainnet},
+        logger=EventLogger(name, settings.logs_dir, db=db),
+    )
+    return state, testnet, mainnet
+
+
+def test_intent_env_alias_routes_mainnet(settings, db) -> None:
+    """`env` (alias) roteia p/ mainnet — o que o operador enviava e caía em testnet."""
+    from fastapi.testclient import TestClient
+
+    from engine.gateway.server import build_app
+
+    state, testnet, mainnet = _two_env_state(settings, db, "gw-env-alias")
+    register_strategy(db, "ct_alias")
+    with TestClient(build_app(state)) as c:
+        r = c.post("/intent", json={
+            "strategy_id": "ct_alias",
+            "symbol": "BTC",
+            "side": "buy",
+            "notional_usd": 200.0,
+            "env": "mainnet",
+        }).json()
+    assert r["ok"] is True
+    assert len(mainnet.placed_orders) == 1
+    assert len(testnet.placed_orders) == 0
+
+
+def test_intent_environment_key_still_works(settings, db) -> None:
+    """A chave canônica `environment` (Copy Trade, in-process) segue válida
+    com populate_by_name=True — invariante do alias, protege o hot path."""
+    from fastapi.testclient import TestClient
+
+    from engine.gateway.server import build_app
+
+    state, testnet, mainnet = _two_env_state(settings, db, "gw-env-key")
+    register_strategy(db, "ct_canon")
+    with TestClient(build_app(state)) as c:
+        r = c.post("/intent", json={
+            "strategy_id": "ct_canon",
+            "symbol": "BTC",
+            "side": "buy",
+            "notional_usd": 200.0,
+            "environment": "mainnet",
+        }).json()
+    assert r["ok"] is True
+    assert len(mainnet.placed_orders) == 1
+    assert len(testnet.placed_orders) == 0
+
+
 def test_api_fills_and_orders_filter_by_network(settings, db) -> None:
     from fastapi.testclient import TestClient
 

@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from engine.core.config import Settings, get_settings
 from engine.core.db import Database, utcnow
@@ -52,6 +52,12 @@ def _max_drawdown_pct(realized_pnls: list[float]) -> float:
 
 
 class IntentRequest(BaseModel):
+    # Aceita `env` (convenção dos demais endpoints: ClosePositions/AgentPrepare/
+    # /balance) E `environment` (chave canônica usada pelo Copy Trade e pelas
+    # construções in-process). populate_by_name=True é OBRIGATÓRIO p/ manter a
+    # chave canônica funcionando junto com o alias — sem ela o Pydantic v2
+    # aceitaria SÓ o alias e quebraria o hot path do Copy Trade.
+    model_config = ConfigDict(populate_by_name=True)
     strategy_id: str
     symbol: str
     side: str = Field(pattern="^(buy|sell)$")
@@ -64,7 +70,8 @@ class IntentRequest(BaseModel):
     stop_loss: float | None = None       # TV-Executor F1: bracket trigger; None ⇒ caminho atual
     take_profit: float | None = None     # TV-Executor F1: bracket trigger; None ⇒ caminho atual
     dry_run: bool = False
-    environment: str | None = Field(default=None, pattern="^(testnet|mainnet|paper)$")
+    environment: str | None = Field(default=None, alias="env",
+                                     pattern="^(testnet|mainnet|paper)$")
     subaccount_address: str | None = None
     strategy_cap_usd: float | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
@@ -409,6 +416,13 @@ class GatewayState:
             adapter = self._adapter_for(intent.environment)
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
+        # Diagnóstico de roteamento: `environment` pedido vs adapter resolvido.
+        # Se o corpo não trouxe env (nem `env` nem `environment`), `environment`
+        # é None e o adapter cai no default — este log torna isso observável.
+        self.logger.info("intent.received", {
+            "environment": intent.environment,
+            "adapter_network": adapter.network,
+        }, strategy_id=intent.strategy_id)
         price = intent.price or adapter.mid_price(intent.symbol)
         if price <= 0:
             return {"ok": False, "reason": f"no_price_for_{intent.symbol}"}
