@@ -2267,7 +2267,7 @@ completo. Sinais duplicados dentro de 24h ⇒ `DUPLICATE`.
   Trade inalterados; NENHUMA ordem enviada (execução só na F1). Kill switch usa a
   fonte única existente — nenhuma flag DB nova.
 
-## UPDATE-0038 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0038 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: F1 do TV-Executor — **Execução (testnet primeiro)**, código concluído
 sob o protocolo REGRESSÃO-PRIMEIRO §8.4.1. Este é o PRIMEIRO commit que toca o
