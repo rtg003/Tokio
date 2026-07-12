@@ -86,7 +86,6 @@ export default function Shell({
   }
 
   const online = health?.ok === true;
-  const network = (health?.network ?? "testnet").toUpperCase();
 
   const nav = (href: string, label: string, ico: string) => (
     <Link
@@ -107,13 +106,6 @@ export default function Shell({
         <span className="seg">
           <span className={`dot ${online ? "on" : "off"}`} /> ENGINE{" "}
           <strong>{online ? "ONLINE" : "OFFLINE"}</strong>
-        </span>
-        <span className="seg badge-env">{network}</span>
-        <span className="seg hide-m">
-          GATEWAY <strong>{health?.exchange ?? "—"}</strong>
-        </span>
-        <span className="seg hide-m">
-          RISCO <strong>{health?.circuit_breaker ? "PAUSADO" : "OK"}</strong>
         </span>
         <span className="spacer" />
         <span className="seg">

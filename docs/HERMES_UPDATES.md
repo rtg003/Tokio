@@ -2068,9 +2068,29 @@ também ficava ~96× inflada.
   `my_equity_fn`/`target_equity_fn`; `test_teto_respects_real_equity`,
   `test_my_equity_uses_correct_env`, `test_my_equity_zero_holds_position`).
 
+### Ajustes de UI (dashboard Copy Trade) — mesmo commit
+Dois acertos de dashboard pedidos pelo rtg003, no mesmo commit do bugfix:
+
+1. **Saldo total com filtro "Todas Exchanges"**: com o filtro de
+   exchange/ambiente em "Todas Exchanges" o card Saldo mostrava só a testnet —
+   o `/balance` sem `env` cai no adapter padrão (testnet). Agora, quando o env é
+   ausente/`"all"`, o cliente agrega explicitamente `testnet + mainnet` (soma
+   equity/withdrawable/available/spot/unrealized/margin) e marca `network:"all"`.
+   O sub-label do card passa a exibir "total (testnet + mainnet)". As demais
+   queries (fills/pnl/positions) seguem com `network=null` em "all" (inalteradas).
+2. **Statusbar mais limpa**: removidos os textos **TESTNET** (badge de ambiente),
+   **GATEWAY hyperliquid** e **RISCO OK** do topo da página. Mantidos ENGINE
+   ONLINE/OFFLINE, relógio de SP e data. Circuit breaker / kill switch continuam
+   no rodapé da sidebar (inalterados).
+
+- **EDIT web**: `web/lib/copy-trade/data.ts` (`getBalance` agrega ambientes em
+  "all"), `web/app/(app)/copy-trade/page.tsx` (passa `selectedEnv` ao
+  `getBalance`), `web/components/copy-trade/KpiRow.tsx` (label "total (testnet +
+  mainnet)"), `web/components/Shell.tsx` (remove os 3 segmentos da statusbar).
+
 ### Ações do Hermes
-1. Ciclo normal (restart do runner de copy-trade). **Sem migration, sem passo
-   manual, sem secret novo.**
+1. Ciclo normal (restart do runner de copy-trade + rebuild/deploy da dashboard
+   web). **Sem migration, sem passo manual, sem secret novo.**
 
 ### Validação esperada
 - `.venv/bin/pytest -q` sem regressão nova — 218 passam (inclui os 3 testes

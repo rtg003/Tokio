@@ -111,8 +111,8 @@ export default async function CopyTradeDashboard({
           .map((t) => t.strategy_id)
           .filter((id): id is string => Boolean(id));
   const network = selectedEnv === "all" ? null : selectedEnv;
-  const balanceEnv = selectedEnv === "all" ? null : selectedEnv;
-  const balance = await getBalance(balanceEnv, walletFilter);
+  // "all" mantém-se: getBalance soma testnet + mainnet (saldo total).
+  const balance = await getBalance(selectedEnv, walletFilter);
   const [metrics, fillsSummary, pnlSummary, orders, fills, positions] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
     getFillsSummary(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),

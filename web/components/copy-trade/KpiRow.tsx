@@ -71,7 +71,11 @@ export default function KpiRow({
           {balance === null
             ? "gateway indisponível"
             : `disponível · equity $${fmtNum(balance.equity_usd)} · ${
-                balance.network === "mainnet" ? "mainnet" : "testnet"
+                balance.network === "all"
+                  ? "total (testnet + mainnet)"
+                  : balance.network === "mainnet"
+                    ? "mainnet"
+                    : "testnet"
               }`}
         </div>
       </div>

@@ -123,6 +123,26 @@ export async function getBalance(
   env?: string | null,
   wallet?: string | null,
 ): Promise<Balance> {
+  // "Todas Exchanges" (env ausente/"all") = soma dos ambientes (testnet +
+  // mainnet). Sem env, o gateway retornaria só o adapter padrão (testnet), por
+  // isso agregamos explicitamente cada ambiente e somamos.
+  if (!env || env === "all") {
+    const [tn, mn] = await Promise.all([
+      getBalance("testnet", wallet),
+      getBalance("mainnet", wallet),
+    ]);
+    if (!tn && !mn) return null;
+    const sum = (a?: number | null, b?: number | null) => (a ?? 0) + (b ?? 0);
+    return {
+      equity_usd: sum(tn?.equity_usd, mn?.equity_usd),
+      withdrawable_usd: sum(tn?.withdrawable_usd, mn?.withdrawable_usd),
+      available_usd: sum(tn?.available_usd, mn?.available_usd),
+      spot_usdc: sum(tn?.spot_usdc, mn?.spot_usdc),
+      unrealized_pnl: sum(tn?.unrealized_pnl, mn?.unrealized_pnl),
+      margin_used: sum(tn?.margin_used, mn?.margin_used),
+      network: "all",
+    };
+  }
   const q = new URLSearchParams();
   if (env && env !== "all") q.set("env", env);
   if (wallet && wallet !== "all") q.set("wallet", wallet);
