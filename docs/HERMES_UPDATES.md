@@ -2162,3 +2162,50 @@ Hyperliquid, então o filtro de exchange perdeu sentido.
   TESTNET + candidatos; combo oferece só o status do ambiente ativo.
 - **INVARIANTE**: `/intent`/`/cancel` e o gate humano de status inalterados —
   a restrição do combo é apenas de UI.
+
+## UPDATE-0036 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: novo módulo **TV-Executor (Trading View)** — `PROMPT-TV-EXECUTOR-v1.4.2.md`
++ `DESIGN-TV-DASHBOARD-v1.0.md`. Esta entrada anuncia o `EXECUTION_PLAN.md`
+(aprovado por rtg003 em 2026-07-12) e as ações de infra que o operador precisará
+executar. **Ainda SEM código do módulo** — este commit traz só os dois artefatos
+de planejamento (o §0 do PROMPT exige `EXECUTION_PLAN.md` antes de qualquer
+código).
+
+**Tipo**: infra (planejamento) — **sem migration ainda, sem secret, sem
+`logic_version`, sem mudança no engine neste commit**.
+
+**Contexto**: nova fonte de sinal — alertas do TradingView via webhook,
+executados na Hyperliquid pela engine determinística, com camada de operação pelo
+Hermes (autonomia total sobre estratégias, NUNCA no hot path). Módulo ADITIVO:
+não cria sistema paralelo, reusa `strategies` (`module='tradingview'`), o gateway
+único e os seletores globais de Wallet+Ambiente do UPDATE-0035.
+
+### O que este commit traz
+- **NEW**: `EXECUTION_PLAN.md` na raiz — mapa das fases F0→F3 para
+  arquivos/commits, decisões travadas do §12 e o protocolo REGRESSÃO-PRIMEIRO
+  (§8.4.1) para a extensão do gateway.
+- **NEW**: esta entrada de inbox.
+
+### Decisões travadas (contexto para o operador)
+- Trigger SL/TP: campos opcionais no `IntentRequest` (backward-compatible).
+- Cadastro TV: tabela satélite `tv_strategy_meta` + view `tv_strategies` (reusa
+  `strategies`, não duplica cadastro).
+- Fila: SQLite WAL + worker (sem Redis).
+- Receiver: porta **8702 / 127.0.0.1**, exposto via Caddy em `tokio.bz/tv/*`.
+- Kill switch: reusa a fonte única EXISTENTE (`settings.kill_file`,
+  `/control/kill`, `/health.kill_switch`) — NÃO se cria flag DB divergente.
+- Notificação (incidentes + alterações mainnet do Hermes): F0/F1 usam evento
+  `SYSTEM` no Logs + `tv_daily_report`; canal real definido antes de fechar a F1.
+
+### Ações do Hermes
+1. **Nenhuma ação imediata neste commit** (só planejamento). Ler o
+   `EXECUTION_PLAN.md` para contexto.
+2. Ações de infra reais (novo container do receiver no Compose, bloco Caddy
+   `tokio.bz/tv/*` → `127.0.0.1:8702` com precedência sobre o Next.js, allowlist
+   de IPs do TradingView) chegarão em entradas futuras, no commit da F0.
+
+### Validação esperada
+- `EXECUTION_PLAN.md` presente na raiz do repo.
+- **INVARIANTE**: nada de gates/caps é afetado; `/intent`/`/cancel` intocados;
+  isolamento de observabilidade (§5.1) preservado no design do módulo.
