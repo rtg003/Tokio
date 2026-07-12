@@ -2369,7 +2369,7 @@ dispara evento `tv.notify.mainnet_change`** no Logs (fallback §12.4.1; canal re
 - `pytest tests/gateway/test_tv_control.py tests/gateway/test_tv_hermes.py
   tests/gateway/test_tv_api.py -q` verde. `npx tsc --noEmit` verde no `web/`.
 
-## UPDATE-0040 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0040 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: bug de atribuição de `network` em fills (Copy Trade core), achado na
 revisão do canário. Uma ordem enviada com `env=mainnet` executava na mainnet, mas
@@ -2399,7 +2399,7 @@ novo, sem migração. Regressão §8.4.1 verde antes e depois.
 - `pytest tests/gateway/test_intent_regression.py tests/test_gateway.py -q` verde,
   incluindo `test_fill_network_matches_order_exchange_id`.
 
-## UPDATE-0041 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0041 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: fecha o gap achado na revisão do canário do UPDATE-0039 — o spread
 guard (validator check 9) ficava `skipped` ao vivo mesmo com a F1 no ar, porque o
