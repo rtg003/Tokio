@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -755,6 +755,16 @@ def build_app(state: GatewayState) -> FastAPI:
                                  "max_spread_bps": num("max_spread_bps", 10.0)},
         }
 
+    # Ator da mutação: só o Hermes se identifica (`actor: "hermes"`); qualquer
+    # outra coisa é a dashboard autenticada (ato humano). O ator vira `changed_by`
+    # na auditoria — e a view tv_events transforma `changed_by='hermes'` em evento
+    # HERMES (controle compensatório da autonomia do Hermes, §9). Fora do alcance
+    # do Hermes por construção: kill switch, caps globais e wallets/credenciais
+    # não têm endpoint aqui.
+    def _tv_actor(body: dict[str, Any] | None) -> str:
+        actor = str((body or {}).get("actor", "")).strip()
+        return "hermes" if actor == "hermes" else "dashboard_humano"
+
     @app.post("/control/tv/strategies", dependencies=[Depends(_control_auth)])
     def tv_create_strategy(body: dict[str, Any]) -> dict[str, Any]:
         import re
@@ -762,6 +772,7 @@ def build_app(state: GatewayState) -> FastAPI:
 
         from engine.tv import store as tv_store
 
+        actor = _tv_actor(body)
         sid = str(body.get("strategy_id", "")).strip()
         name = str(body.get("name", "")).strip() or sid
         env = str(body.get("environment", "testnet")).strip()
@@ -779,9 +790,9 @@ def build_app(state: GatewayState) -> FastAPI:
             state.db, strategy_id=sid, name=name, environment=env, config=config,
             secret_hash=tv_store.sha256_hex(secret),
             url_secret_hash=tv_store.sha256_hex(url_secret),
-            changed_by="dashboard_humano")
+            changed_by=actor)
         state.logger.log("tv.strategy.created",
-                         {"environment": env, "by": "dashboard_humano"},
+                         {"environment": env, "by": actor},
                          level="info", strategy_id=sid)
         base = os.environ.get("TV_PUBLIC_BASE", "https://tokio.bz").rstrip("/")
         return {
@@ -797,7 +808,9 @@ def build_app(state: GatewayState) -> FastAPI:
 
     @app.post("/control/tv/strategies/{strategy_id}/activate",
               dependencies=[Depends(_control_auth)])
-    def tv_activate_strategy(strategy_id: str) -> dict[str, Any]:
+    def tv_activate_strategy(strategy_id: str,
+                             body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        actor = _tv_actor(body)
         rows = state.db.query(
             "SELECT status, environment FROM tv_strategies WHERE strategy_id = ?",
             (strategy_id,))
@@ -814,9 +827,62 @@ def build_app(state: GatewayState) -> FastAPI:
         from engine.tv import store as tv_store
         tv_store.set_strategy_status(state.db, strategy_id, "active")
         state.logger.log("tv.strategy.activated",
-                         {"environment": env, "by": "dashboard_humano"},
+                         {"environment": env, "by": actor},
                          level="info", strategy_id=strategy_id)
+        if env == "mainnet":
+            _tv_notify_mainnet(strategy_id, f"ativada por {actor}")
         return {"ok": True, "status": "active"}
+
+    @app.post("/control/tv/strategies/{strategy_id}/pause",
+              dependencies=[Depends(_control_auth)])
+    def tv_pause_strategy(strategy_id: str,
+                          body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        actor = _tv_actor(body)
+        rows = state.db.query(
+            "SELECT status, environment FROM tv_strategies WHERE strategy_id = ?",
+            (strategy_id,))
+        if not rows:
+            raise HTTPException(404, "unknown strategy")
+        from engine.tv import store as tv_store
+        tv_store.set_strategy_status(state.db, strategy_id, "paused")
+        state.logger.log("tv.strategy.paused",
+                         {"environment": rows[0]["environment"], "by": actor},
+                         level="info", strategy_id=strategy_id)
+        return {"ok": True, "status": "paused"}
+
+    # Notificação de mudança em MAINNET (§12.4.1 fallback F0/F1): por ora um evento
+    # SYSTEM no Logs do módulo. O canal real (Telegram/Hermes GW) pluga aqui depois.
+    def _tv_notify_mainnet(strategy_id: str, what: str) -> None:
+        state.logger.log("tv.notify.mainnet_change",
+                         {"strategy_id": strategy_id, "change": what},
+                         level="warning", strategy_id=strategy_id)
+
+    @app.post("/control/tv/strategies/{strategy_id}/config",
+              dependencies=[Depends(_control_auth)])
+    def tv_update_config(strategy_id: str,
+                         body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        """Edição versionada da config (§9). O patch cobre só os campos de risco/
+        execução do modal §5; ambiente e segredos NÃO são editáveis aqui (fonte de
+        verdade em tv_strategy_meta). Cada edição bumpa versão + audita changed_by."""
+        from engine.tv import store as tv_store
+
+        actor = _tv_actor(body)
+        env = tv_store.strategy_environment(state.db, strategy_id)
+        if env is None:
+            raise HTTPException(404, "unknown strategy")
+        patch = _tv_defaults({**body, "strategy_id": strategy_id})
+        # só o subconjunto de risco/execução — ambiente/segredos ficam de fora.
+        patch.pop("strategy_id", None)
+        summary = str(body.get("justification") or body.get("change_summary")
+                      or "edição de parâmetros").strip()[:200]
+        version = tv_store.update_strategy_config(
+            state.db, strategy_id, patch=patch, changed_by=actor, change_summary=summary)
+        state.logger.log("tv.strategy.config_updated",
+                         {"environment": env, "by": actor, "version": version},
+                         level="info", strategy_id=strategy_id)
+        if env == "mainnet":
+            _tv_notify_mainnet(strategy_id, f"config v{version} por {actor}: {summary}")
+        return {"ok": True, "version": version}
 
     @app.get("/api/tv/strategies/{strategy_id}/handshake")
     def api_tv_handshake(strategy_id: str) -> dict[str, Any]:

@@ -148,6 +148,52 @@ def set_strategy_status(db: Database, strategy_id: str, status: str) -> None:
                (status, strategy_id))
 
 
+def current_config(db: Database, strategy_id: str) -> dict[str, Any] | None:
+    """Config viva (config_snapshot) da estratégia TV, já como dict."""
+    rows = db.query(
+        "SELECT config_snapshot FROM strategies WHERE id = ? AND module = 'tradingview'",
+        (strategy_id,))
+    if not rows:
+        return None
+    raw = rows[0]["config_snapshot"] or "{}"
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+
+
+def update_strategy_config(db: Database, strategy_id: str, *, patch: dict[str, Any],
+                           changed_by: str, change_summary: str) -> int:
+    """Aplica um patch parcial à config, bumpa a versão e AUDITA (§9). Cada
+    edição vira uma linha em `tv_strategy_versions` — quando `changed_by='hermes'`
+    a view `tv_events` a expõe como evento HERMES (controle compensatório da
+    autonomia total do Hermes sobre estratégias). Retorna a nova versão. NÃO toca
+    ambiente/segredos (fonte de verdade em tv_strategy_meta, §5.3)."""
+    base = current_config(db, strategy_id) or {}
+    merged = {**base, **{k: v for k, v in patch.items() if v is not None}}
+    rows = db.query("SELECT version FROM tv_strategy_meta WHERE strategy_id = ?",
+                    (strategy_id,))
+    new_version = (int(rows[0]["version"]) if rows else 1) + 1
+    db.execute("UPDATE strategies SET config_snapshot = ? "
+               "WHERE id = ? AND module = 'tradingview'",
+               (json.dumps(merged, ensure_ascii=False), strategy_id))
+    db.execute("UPDATE tv_strategy_meta SET version = ?, updated_at = ? WHERE strategy_id = ?",
+               (new_version, utcnow(), strategy_id))
+    db.insert("tv_strategy_versions", {
+        "strategy_id": strategy_id, "version": new_version,
+        "config": json.dumps(merged, ensure_ascii=False),
+        "changed_by": changed_by, "change_summary": change_summary,
+        "created_at": utcnow(),
+    })
+    return new_version
+
+
+def strategy_environment(db: Database, strategy_id: str) -> str | None:
+    rows = db.query("SELECT environment FROM tv_strategy_meta WHERE strategy_id = ?",
+                    (strategy_id,))
+    return rows[0]["environment"] if rows else None
+
+
 def latest_signal(db: Database, strategy_id: str) -> dict[str, Any] | None:
     """Último sinal (com desfecho da decisão) de uma estratégia — base do
     polling de handshake do wizard (§4 passo 4)."""
