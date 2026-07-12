@@ -1873,7 +1873,7 @@ vermelho (mainnet).
   `cd web && npm run build` verde.
 - `/intent` e `/cancel` inalterados (INVARIANTE). Sem `logic_version` novo.
 
-## UPDATE-0032 · 2026-07-11 · Status: PENDENTE
+## UPDATE-0032 · 2026-07-11 · Status: APLICADO em 2026-07-12
 
 **Origem**: pedido rtg003 (unificar modais do copy-trade + corrigir design UI)
 
