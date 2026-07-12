@@ -2429,7 +2429,7 @@ guard (validator check 9) ficava `skipped` ao vivo mesmo com a F1 no ar, porque 
   verde, incluindo `test_spread_guard_enforced_live_when_book_available` e
   `test_spread_guard_blocks_wide_book_live`.
 
-## UPDATE-0042 · 2026-07-12 · Status: PENDENTE
+## UPDATE-0042 · 2026-07-12 · Status: APLICADO em 2026-07-12
 
 **Origem**: operador reportou que ordens manuais enviadas com `"env":"mainnet"`
 executavam e eram gravadas em **testnet** (ordem 538 → `exchange_id=1`, fill 182 →
