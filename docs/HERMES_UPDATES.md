@@ -2027,3 +2027,59 @@ APENAS traders com `n_copy_fills > 0` OU em TESTNET/MAINNET (antes usava
 - `/intent` e `/cancel` inalterados (INVARIANTE): notional mínimo per-trader é
   `max(global, per_trader)`, só *skip* de ordens pequenas, nunca abaixo do piso
   global. Nenhum gate novo, sem `logic_version` novo.
+
+---
+
+## UPDATE-0034 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: bug CRÍTICO de sizing apontado pelo rtg003 (teto de alavancagem
+usava $1.000 fixo em vez do meu equity real)
+
+**Tipo**: bugfix no executor + novo método no cliente do gateway —
+**sem migration, sem secret novo, sem schema novo, sem `logic_version` novo**
+(a fórmula de sizing/teto é a mesma; só o insumo `my_eq` passa a ser o equity
+real).
+
+**Contexto**: o `_desired_mirror` dimensiona a posição (modo percent) e aplica o
+teto de alavancagem, ambos dependentes do MEU equity (`my_eq`). Em produção o
+`my_equity_fn` lia `gateway.health().get("equity", 0)`, mas o `/health` não expõe
+`equity` → sempre `0 or 1_000.0` → **$1.000 fixo**. Na mainnet com equity real
+$10,37 e `max_leverage=5`, o teto virava $1.000×5 = $5.000 (deveria ser $51,85);
+ordens de ~$103 passaram indevidamente. Em percent, a razão `my_eq/target_eq`
+também ficava ~96× inflada.
+
+### Correção
+- `my_equity_fn` passou a receber o `env` do trader e consulta `/balance?env=…`
+  (que retorna `equity_usd` real da minha conta naquele ambiente e já cacheia
+  30s no gateway). Cada trader opera num ambiente específico (TESTNET/MAINNET);
+  usa-se o equity do ambiente correto.
+- **Fallback seguro**: cache last-known por ambiente; em erro do `/balance` ou
+  `equity_usd`≤0 usa a última leitura boa; em cold start retorna `0.0` e o
+  `_desired_mirror` **segura a posição atual** (novo guard `decision.no_my_equity`,
+  espelhando o guard `decision.no_target_equity`). Nunca re-infla o teto para
+  $1.000 nem fecha posições por equity desconhecido.
+
+### Arquivos
+- **EDIT engine**: `engine/strategies/base_runner.py`
+  (`GatewayClient.balance(env)`), `engine/strategies/copy_trade/executor.py`
+  (`my_equity_fn(env)`, `_desired_mirror(env)` + guard cold-start, 2 call sites,
+  `main()` com `/balance` + cache last-known).
+- **EDIT tests**: `tests/test_copy_trade.py` (`make_executor` aceita
+  `my_equity_fn`/`target_equity_fn`; `test_teto_respects_real_equity`,
+  `test_my_equity_uses_correct_env`, `test_my_equity_zero_holds_position`).
+
+### Ações do Hermes
+1. Ciclo normal (restart do runner de copy-trade). **Sem migration, sem passo
+   manual, sem secret novo.**
+
+### Validação esperada
+- `.venv/bin/pytest -q` sem regressão nova — 218 passam (inclui os 3 testes
+  novos); baseline conhecido
+  `test_discovery_funnel.py::test_scan_approves_swing_rejects_traps` segue
+  falhando (pré-existente, fora de escopo).
+- Com equity mainnet ~$10 e `max_leverage=5`, ordens são capadas a ~$52 (não mais
+  $5.000). Cold start / erro do `/balance` → posição mantida (log
+  `decision.no_my_equity`), nunca teto de $1.000.
+- `/intent` e `/cancel` inalterados (INVARIANTE): o teto só *dimensiona* (reduz
+  size), agora com o equity certo; o guard só *segura* a posição, não rejeita
+  ordem nem toca no caminho de ordem. Sem `logic_version` novo.

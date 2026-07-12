@@ -97,10 +97,13 @@ def make_executor(settings: Settings, db: Database,
                   **overrides: Any) -> tuple[CopyTradeExecutor, FakeWatcher, RecordingGateway]:
     watcher = FakeWatcher()
     gw = RecordingGateway()
+    # my_equity_fn/target_equity_fn são do executor, não colunas do trader.
+    my_equity_fn = overrides.pop("my_equity_fn", lambda _env=None: 1_000.0)
+    target_equity_fn = overrides.pop("target_equity_fn", lambda _a: 100_000.0)
     seed_trader(db, **overrides)
     ex = CopyTradeExecutor(settings=settings, db=db, gateway=gw, watcher=watcher,
-                           my_equity_fn=lambda: 1_000.0,
-                           target_equity_fn=lambda _a: 100_000.0,
+                           my_equity_fn=my_equity_fn,
+                           target_equity_fn=target_equity_fn,
                            target_positions_fn=watcher.target_positions)
     return ex, watcher, gw
 
@@ -171,6 +174,58 @@ def test_percent_respects_max_leverage_ceiling(settings, db) -> None:
     watcher.emit(TARGET, fill("BTC", "B", 10.0, 50_000.0, start_pos=0.0))
     assert len(gw.intents) == 1
     assert gw.intents[0]["size"] == pytest.approx(0.06)
+
+
+def test_teto_respects_real_equity(settings, db) -> None:
+    # REGRESSÃO do bug: o teto de alavancagem usava $1.000 fixo (my_equity_fn
+    # lia /health, que não tem equity). Aqui o equity real injetado é $10,37 e
+    # max_leverage 5 -> teto = $51,85. Uma baleia grande é capada nesse teto, não
+    # em 1.000*5 = $5.000.
+    ex, watcher, gw = make_executor(settings, db, mode="percent", value=1.0,
+                                    max_leverage=5.0,
+                                    my_equity_fn=lambda _env=None: 10.37)
+    # whale abre 40 BTC @50k (2M notional) -> proporcional 2M*(10.37/100000) =
+    # $207,4, acima do teto $51,85. Capado -> 51.85/50000 BTC.
+    watcher.emit(TARGET, fill("BTC", "B", 40.0, 50_000.0, start_pos=0.0))
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["size"] == pytest.approx((10.37 * 5.0) / 50_000.0)
+
+
+def test_my_equity_uses_correct_env(settings, db) -> None:
+    # Cada trader opera num ambiente; o equity consultado deve ser o DAQUELE
+    # ambiente. Trader em MAINNET -> my_equity_fn é chamado com "mainnet".
+    seen: list[str | None] = []
+    equities = {"testnet": 999.0, "mainnet": 10.37}
+
+    def my_equity(env: str | None = None) -> float:
+        seen.append(env)
+        return equities.get(env or "", 1_000.0)
+
+    ex, watcher, gw = make_executor(settings, db, status="MAINNET",
+                                    mode="percent", value=1.0, max_leverage=5.0,
+                                    my_equity_fn=my_equity)
+    watcher.emit(TARGET, fill("BTC", "B", 40.0, 50_000.0, start_pos=0.0))
+    assert "mainnet" in seen
+    assert len(gw.intents) == 1
+    # size capado pelo equity de mainnet ($10,37), não pelo de testnet.
+    assert gw.intents[0]["size"] == pytest.approx((10.37 * 5.0) / 50_000.0)
+
+
+def test_my_equity_zero_holds_position(settings, db) -> None:
+    # Cold start / erro do /balance -> my_equity_fn devolve 0.0. O executor NÃO
+    # deve abrir nem FECHAR a posição (voltar a $1.000 re-inflaria o teto; zerar
+    # o mirror fecharia posições boas). Segura a posição atual.
+    ex, watcher, gw = make_executor(settings, db, mode="percent", value=1.0,
+                                    my_equity_fn=lambda _env=None: 0.0)
+    key = ("ct_whale01", "BTC")
+    ex._my_pos[key] = 0.05          # posição já espelhada de antes
+    ex._target_pos[key] = 1.0
+    watcher.emit(TARGET, fill("BTC", "B", 1.0, 50_000.0, start_pos=1.0))  # whale soma
+    assert gw.intents == []          # nenhuma ordem nova nem fechamento
+    assert ex._my_pos[key] == 0.05   # posição mantida
+    logs = db.query(
+        "SELECT event_type FROM events WHERE event_type = 'decision.no_my_equity'")
+    assert logs
 
 
 def test_partial_reduction_mirrors_proportionally(settings, db) -> None:

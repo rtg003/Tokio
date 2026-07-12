@@ -133,7 +133,7 @@ class CopyTradeExecutor:
         db: Database | None = None,
         gateway: GatewayClient | None = None,
         watcher: FillWatcher,
-        my_equity_fn: Callable[[], float] | None = None,
+        my_equity_fn: Callable[[str | None], float] | None = None,
         target_equity_fn: Callable[[str], float] | None = None,
         target_positions_fn: Callable[[str], dict[str, float]] | None = None,
     ) -> None:
@@ -142,7 +142,7 @@ class CopyTradeExecutor:
         self.gateway = gateway or GatewayClient()
         self.watcher = watcher
         self.logger = EventLogger("runner-copytrade", self.settings.logs_dir, db=self.db)
-        self.my_equity_fn = my_equity_fn or (lambda: 1_000.0)
+        self.my_equity_fn = my_equity_fn or (lambda _env=None: 1_000.0)
         self.target_equity_fn = target_equity_fn or (lambda _addr: 0.0)
         # Real signed position of the trader per symbol — the reconcile anchor
         # (clearinghouse, WS-independent). Empty in tests unless injected.
@@ -291,12 +291,12 @@ class CopyTradeExecutor:
         # Absolute sizing on the trader's CURRENT position — same map the
         # reconcile uses, so the fast path (WS) and the corrective path never
         # fight each other. Stateless: survives missed fills / restarts.
-        my_new = self._desired_mirror(cfg, symbol, new_target, px)
+        environment = environment_for_status(trader_status)
+        my_new = self._desired_mirror(cfg, symbol, new_target, px, environment)
         # Round the TARGET position to the venue's step (szDecimals) so the size
         # we send is always a valid multiple — the HL API rejects otherwise with
         # "float_to_wire causes rounding". my_prev is already on the grid from a
         # prior fill, so delta stays a clean multiple too.
-        environment = environment_for_status(trader_status)
         sz_decimals = self._sz_decimals_for(symbol, environment)
         if sz_decimals is not None:
             my_new = self._round_to_step(my_new, sz_decimals)
@@ -383,7 +383,8 @@ class CopyTradeExecutor:
         return round(size, sz_decimals) if sz_decimals > 0 else float(round(size))
 
     def _desired_mirror(self, cfg: TraderConfig, symbol: str,
-                        target_now: float, px: float) -> float:
+                        target_now: float, px: float,
+                        environment: str | None) -> float:
         """Absolute mirrored position we SHOULD hold given the trader's current
         signed position `target_now`. Stateless (no dependence on our previous
         size) so the reconcile converges after any missed fill or restart.
@@ -409,7 +410,16 @@ class CopyTradeExecutor:
             self.logger.warning("decision.no_target_equity", {"address": cfg.address},
                                 strategy_id=cfg.strategy_id)
             return self._my_pos.get((cfg.strategy_id, symbol), 0.0)
-        my_eq = self.my_equity_fn()
+        my_eq = self.my_equity_fn(environment)
+        if my_eq <= 0:
+            # Equity real indisponível (erro do /balance sem cache / cold start).
+            # Segura a posição atual — NUNCA fecha nem redimensiona com equity
+            # desconhecido (voltar a $1.000 re-inflaria o teto). O reconcile
+            # corrige quando o /balance responder.
+            self.logger.warning("decision.no_my_equity",
+                                 {"address": cfg.address, "env": environment},
+                                 strategy_id=cfg.strategy_id)
+            return self._my_pos.get((cfg.strategy_id, symbol), 0.0)
         notional = abs(target_now) * px * cfg.value * (my_eq / target_eq)
         # Teto de alavancagem: espelha o notional_cap da simulação
         # (metrics.simulate_copy) para manter a exposição ao vivo alinhada com o
@@ -470,7 +480,7 @@ class CopyTradeExecutor:
                 px = self._mid_price(symbol, environment)
                 if px <= 0:
                     continue
-                desired = self._desired_mirror(cfg, symbol, target_now, px)
+                desired = self._desired_mirror(cfg, symbol, target_now, px, environment)
                 sz_decimals = self._sz_decimals_for(symbol, environment)
                 if sz_decimals is not None:
                     desired = self._round_to_step(desired, sz_decimals)
@@ -669,11 +679,22 @@ def main() -> None:
     )
     gateway = GatewayClient()
 
-    def my_equity() -> float:
+    # Equity real da MINHA conta por ambiente, via /balance (o /health não expõe
+    # equity). Cache last-known por ambiente: em erro/0 usa a última leitura boa;
+    # em cold start retorna 0.0 e o _desired_mirror segura a posição (nunca
+    # re-infla o teto para $1.000).
+    equity_cache: dict[str, float] = {}
+
+    def my_equity(env: str | None = None) -> float:
+        key = env or "default"
         try:
-            return float(gateway.health().get("equity", 0)) or 1_000.0
+            eq = float(gateway.balance(env).get("equity_usd", 0.0) or 0.0)
         except Exception:  # noqa: BLE001
-            return 1_000.0
+            eq = 0.0
+        if eq > 0:
+            equity_cache[key] = eq
+            return eq
+        return equity_cache.get(key, 0.0)
 
     executor = CopyTradeExecutor(
         settings=settings,

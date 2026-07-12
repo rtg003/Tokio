@@ -57,6 +57,19 @@ class GatewayClient:
         resp.raise_for_status()
         return resp.json()
 
+    def balance(self, env: str | None = None) -> dict[str, Any]:
+        """Equity da conta ativa do adapter (a MINHA), escopada por ambiente.
+
+        Sem `wallet`, o `/balance` usa a conta ativa do adapter de `env`
+        (testnet/mainnet) e retorna `equity_usd` (perp c/ PnL não-realizado +
+        spot). O gateway já cacheia 30s por network:address."""
+        params: dict[str, Any] = {}
+        if env is not None:
+            params["env"] = env
+        resp = self._client.get("/balance", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
     def ledger(self) -> dict[str, Any]:
         """Virtual per-strategy book snapshot (attributed by strategy_id).
 
