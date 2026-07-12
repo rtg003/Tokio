@@ -223,3 +223,88 @@ export async function getPositions(
   const q = withScope({ strategy_id: strategyIds.join(",") }, env);
   return (await gatewayGet<Position[]>(`/api/positions?${q.toString()}`)) ?? [];
 }
+
+// -- escrita/polling do wizard (client-side, via proxies autenticados) ---------
+export type TvStrategyForm = {
+  strategy_id: string;
+  name: string;
+  environment: TvEnv;
+  symbols_allowed: string[];
+  timeframes_allowed: string[];
+  allocation_usd: number;
+  sizing_method?: "fixed_fractional" | "quarter_kelly";
+  risk_per_trade_pct?: number;
+  min_trade_usd?: number;
+  max_position_usd?: number;
+  max_leverage?: number;
+  max_trades_per_day?: number;
+  max_daily_loss_usd?: number;
+  cooldown_minutes_after_loss?: number;
+  stop_loss_pct?: number;
+  take_profit_pct?: number;
+};
+
+export type CreateResult = {
+  ok: boolean;
+  reason?: string;
+  strategy_id?: string;
+  environment?: string;
+  status?: string;
+  webhook_url?: string;
+  secret?: string;
+  alert_json?: Record<string, unknown>;
+};
+
+export async function createTvStrategy(form: TvStrategyForm): Promise<CreateResult> {
+  try {
+    const res = await fetch("/api/control/tv/strategies", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, reason: data.reason ?? data.detail ?? "erro_criacao" };
+    return data as CreateResult;
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
+export async function activateTvStrategy(
+  strategyId: string,
+): Promise<{ ok: boolean; status?: string; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/tv/strategies/${strategyId}/activate`, {
+      method: "POST",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, reason: data.reason ?? data.detail ?? "erro_ativacao" };
+    return data;
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
+export type Handshake = {
+  received: boolean;
+  signal: {
+    id: number;
+    source: string;
+    state: string;
+    received_at: string;
+    outcome?: string | null;
+    block_code?: string | null;
+  } | null;
+};
+
+export async function getHandshake(strategyId: string): Promise<Handshake> {
+  try {
+    const res = await fetch(`/api/tv/strategies/${strategyId}/handshake`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return { received: false, signal: null };
+    return (await res.json()) as Handshake;
+  } catch {
+    return { received: false, signal: null };
+  }
+}

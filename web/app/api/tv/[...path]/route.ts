@@ -7,6 +7,7 @@ import { authConfigured, SESSION_COOKIE, verifySession } from "@/lib/auth";
 // browser nunca vê o token do gateway. Allowlist estrita: apenas as views
 // read-only do módulo TV (isolamento já imposto no próprio endpoint, §5.1).
 const ALLOWED_GET = new Set(["tv/strategies", "tv/events"]);
+const ALLOWED_GET_PATTERNS = [/^tv\/strategies\/[a-z0-9_]{3,48}\/handshake$/];
 
 function gatewayBase(): string {
   const host = process.env.GATEWAY_HOST ?? "gateway";
@@ -29,7 +30,7 @@ export async function GET(
   }
   const { path } = await params;
   const joined = path.join("/");
-  if (!ALLOWED_GET.has(joined)) {
+  if (!ALLOWED_GET.has(joined) && !ALLOWED_GET_PATTERNS.some((p) => p.test(joined))) {
     return NextResponse.json({ ok: false, reason: "not_allowed" }, { status: 403 });
   }
   try {

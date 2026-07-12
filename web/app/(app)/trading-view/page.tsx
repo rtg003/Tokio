@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import AutoRefresh from "@/components/AutoRefresh";
 import KpiRow from "@/components/trading-view/KpiRow";
 import LogsTable from "@/components/trading-view/LogsTable";
+import NewStrategyButton from "@/components/trading-view/NewStrategyButton";
 import PositionsTable from "@/components/trading-view/PositionsTable";
 import StrategiesTable from "@/components/trading-view/StrategiesTable";
 import TradesOrdersTable from "@/components/trading-view/TradesOrdersTable";
@@ -111,13 +112,16 @@ export default async function TradingViewDashboard({
           <div className="eyebrow">Estratégias · trading view</div>
           <h1>Trading View</h1>
         </div>
-        <TvControls
-          period={period}
-          from={params.from ?? ""}
-          to={params.to ?? ""}
-          strategy={selectedStrategy}
-          strategies={strategyOptions}
-        />
+        <div className="controls">
+          <NewStrategyButton equity={balance?.equity_usd ?? null} />
+          <TvControls
+            period={period}
+            from={params.from ?? ""}
+            to={params.to ?? ""}
+            strategy={selectedStrategy}
+            strategies={strategyOptions}
+          />
+        </div>
       </div>
 
       <KpiRow

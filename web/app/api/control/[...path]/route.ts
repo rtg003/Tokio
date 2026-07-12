@@ -25,6 +25,10 @@ const ALLOWED_POST_PATTERNS = [
   // the control token; MAINNET still needs credentials configured server-side)
   /^hl\/agents\/(prepare|activate)$/,
   /^hl\/agents\/(testnet|mainnet)\/revoke$/,
+  // TV-Executor: criar estratégia (nasce draft) e ativar (draft→active).
+  // Ato humano autenticado; gateway ainda impõe mainnet só com credenciais.
+  /^tv\/strategies$/,
+  /^tv\/strategies\/[a-z0-9_]{3,48}\/activate$/,
 ];
 
 function gatewayBase(): string {
