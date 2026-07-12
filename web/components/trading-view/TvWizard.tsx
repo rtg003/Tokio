@@ -259,7 +259,7 @@ export default function TvWizard({
                 />
                 <button
                   className="btn"
-                  onClick={() => copy("json", JSON.stringify(created.alert_json))}
+                  onClick={() => copy("json", JSON.stringify(created.alert_json, null, 2))}
                 >
                   {copied === "json" ? "copiado" : "copiar"}
                 </button>
