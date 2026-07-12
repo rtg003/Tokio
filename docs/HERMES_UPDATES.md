@@ -2266,3 +2266,53 @@ completo. Sinais duplicados dentro de 24h ⇒ `DUPLICATE`.
 - **INVARIANTE**: gateway/adapter, `/intent`/`/cancel`, gates humanos e Copy
   Trade inalterados; NENHUMA ordem enviada (execução só na F1). Kill switch usa a
   fonte única existente — nenhuma flag DB nova.
+
+## UPDATE-0038 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: F1 do TV-Executor — **Execução (testnet primeiro)**, código concluído
+sob o protocolo REGRESSÃO-PRIMEIRO §8.4.1. Este é o PRIMEIRO commit que toca o
+`engine/gateway/server.py` — processo ÚNICO compartilhado com o Copy Trade, que já
+opera em produção.
+
+**Tipo**: engine (gateway + adapter) — mudança **ADITIVA backward-compatible** por
+guard clause. Sem `logic_version` novo, sem migração, sem tocar UI/Hermes.
+
+### Protocolo §8.4.1 cumprido (cada passo = 1 commit)
+1. **Baseline** `tests/gateway/test_intent_regression.py` (18 testes) — fotografou o
+   comportamento ATUAL do `/intent`/`/cancel` (commit `2cefecb`/`e040fc4`).
+2. **Mudança aditiva** (commit `c0317bc`): `stop_loss`/`take_profit` opcionais no
+   `IntentRequest` + método novo `adapter.bbo(symbol)` via `l2_snapshot`. Ausência
+   dos campos ⇒ caminho idêntico ao atual.
+3. **Baseline verde DEPOIS, sem editar teste** — 18/18. Backward-compat provada.
+4. **Wiring + validação nova** (commit `e138b9b`): brackets e rollback.
+
+### O que o commit `e138b9b` traz
+- **EDIT** `engine/exchanges/hyperliquid/adapter.py`: `place_trigger(symbol, side,
+  size, trigger_px, tpsl, reduce_only, cloid)` (SDK order type `trigger`
+  `{isMarket, tpsl}`) + `bbo()`. `place_order` intocado.
+- **EDIT** `engine/exchanges/paper.py`: `place_trigger` (gatilho fica resting) +
+  `bbo` — paridade para testes determinísticos.
+- **EDIT** `engine/gateway/server.py`: após a entrada preencher, `handle_intent`
+  coloca SL/TP `reduce_only` no lado de fechamento. **STOP pedido e rejeitado ⇒
+  rollback**: fecha a posição a mercado (reduce_only) + evento `critical`
+  `incident.unprotected_position` (`INCIDENT_UNPROTECTED_POSITION`). TP-only é
+  posição protegida (sem rollback).
+- **NEW test** `tests/gateway/test_tv_brackets.py` (T10–T13 + TP-only, 5 verdes).
+
+### Ações do Hermes
+1. **NÃO há migração, NÃO há mudança de infra/Caddy.** Só deploy do código do engine.
+2. **Antes de qualquer deploy da F1, confirmar com o Eduardo** — é o hot path do
+   Copy Trade em produção. O plano exige **canário**: subir com o Copy Trade
+   operando e observar ~24h SEM divergência de reconciliação ANTES de ativar a 1ª
+   estratégia TV na testnet.
+3. Reiniciar o `tokio-engine.service` após o deploy do código (quando autorizado).
+
+### Validação esperada
+- `pytest tests/gateway/test_intent_regression.py tests/gateway/test_tv_brackets.py -q`
+  verde (23 passed) — baseline intacta + brackets.
+- **INVARIANTE**: sem SL/TP no payload, `/intent` é byte-idêntico ao de hoje
+  (Copy Trade não muda). Nenhum gate novo em `/intent`/`/cancel`. Sizing e ambiente
+  de execução continuam no servidor.
+- Aceite funcional na **testnet real** (T10–T13 ao vivo: entrada+SL+TP visíveis,
+  short, flip, stop rejeitado ⇒ incidente) fica como passo de operador, após o
+  canário e o OK do Eduardo.
