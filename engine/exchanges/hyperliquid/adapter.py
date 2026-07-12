@@ -283,6 +283,17 @@ class HyperliquidAdapter(ExchangeAdapter):
         mids = self.info.all_mids()
         return float(mids.get(symbol, 0.0))
 
+    def bbo(self, symbol: str) -> dict[str, float]:
+        """Best bid/offer via l2Book. Returns {bid, ask, mid, spread}; 0.0 se lado vazio."""
+        book = self.info.l2_snapshot(symbol)
+        levels = book.get("levels") or [[], []]
+        bids, asks = levels[0], levels[1]
+        bid = float(bids[0]["px"]) if bids else 0.0
+        ask = float(asks[0]["px"]) if asks else 0.0
+        mid = (bid + ask) / 2.0 if bid and ask else (bid or ask)
+        spread = (ask - bid) if bid and ask else 0.0
+        return {"bid": bid, "ask": ask, "mid": mid, "spread": spread}
+
     def candles(self, symbol: str, interval: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
         """Historical candles (max 5000 per call) — used by the backtest harness."""
         return self.info.candles_snapshot(symbol, interval, start_ms, end_ms)

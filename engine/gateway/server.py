@@ -61,6 +61,8 @@ class IntentRequest(BaseModel):
     price: float | None = None
     reduce_only: bool = False
     leverage: float | None = None
+    stop_loss: float | None = None       # TV-Executor F1: bracket trigger; None ⇒ caminho atual
+    take_profit: float | None = None     # TV-Executor F1: bracket trigger; None ⇒ caminho atual
     dry_run: bool = False
     environment: str | None = Field(default=None, pattern="^(testnet|mainnet|paper)$")
     subaccount_address: str | None = None
