@@ -79,6 +79,17 @@ class PaperAdapter(ExchangeAdapter):
                            status="filled", filled_size=request.size, avg_price=price,
                            raw=fill)
 
+    def place_trigger(self, symbol: str, side: str, size: float, trigger_px: float,
+                      tpsl: str, *, reduce_only: bool = True,
+                      cloid: str | None = None) -> OrderResult:
+        """Trigger reduce_only: fica RESTING (não preenche na hora). Determinístico."""
+        with self._lock:
+            self.placed_orders.append(OrderRequest(
+                symbol=symbol, side=side, size=size, order_type="trigger",
+                price=trigger_px, reduce_only=reduce_only, cloid=cloid))
+            oid = str(next(self._oid))
+        return OrderResult(ok=True, exchange_order_id=oid, cloid=cloid, status="acked")
+
     def cancel(self, symbol: str, exchange_order_id: str | None = None,
                cloid: str | None = None) -> bool:
         return True  # market orders fill instantly; nothing resting
@@ -106,3 +117,7 @@ class PaperAdapter(ExchangeAdapter):
 
     def mid_price(self, symbol: str) -> float:
         return self.prices.get(symbol, 0.0)
+
+    def bbo(self, symbol: str) -> dict[str, float]:
+        mid = self.prices.get(symbol, 0.0)
+        return {"bid": mid, "ask": mid, "mid": mid, "spread": 0.0}

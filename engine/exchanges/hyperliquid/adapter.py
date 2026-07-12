@@ -294,6 +294,25 @@ class HyperliquidAdapter(ExchangeAdapter):
         spread = (ask - bid) if bid and ask else 0.0
         return {"bid": bid, "ask": ask, "mid": mid, "spread": spread}
 
+    def place_trigger(self, symbol: str, side: str, size: float, trigger_px: float,
+                      tpsl: str, *, reduce_only: bool = True,
+                      cloid: str | None = None) -> OrderResult:
+        """TV-Executor F1: ordem de gatilho (stop-loss / take-profit) reduce_only.
+        `side` é o lado de FECHAMENTO (oposto da posição). `tpsl` ∈ {sl, tp}."""
+        req = OrderRequest(symbol=symbol, side=side, size=size, order_type="trigger",
+                           price=trigger_px, reduce_only=reduce_only, cloid=cloid)
+        try:
+            with self._lock:
+                resp = self.exchange.order(
+                    symbol, side == "buy", size, trigger_px,
+                    {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": tpsl}},
+                    reduce_only=reduce_only, cloid=self._to_cloid(cloid),
+                )
+            return self._parse_order_response(resp, req)
+        except Exception as exc:  # noqa: BLE001 — surfaced as a structured error
+            return OrderResult(ok=False, cloid=cloid, status="error",
+                               error=f"{symbol}: {exc}")
+
     def candles(self, symbol: str, interval: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
         """Historical candles (max 5000 per call) — used by the backtest harness."""
         return self.info.candles_snapshot(symbol, interval, start_ms, end_ms)

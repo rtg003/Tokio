@@ -522,9 +522,67 @@ class GatewayState:
                                 "error": result.error,
                                 "exchange_order_id": result.exchange_order_id},
                strategy_id=intent.strategy_id, latency_ms=latency_ms)
-        return {"ok": result.ok, "cloid": cloid, "status": status,
-                "filled_size": result.filled_size, "avg_price": result.avg_price,
-                "error": result.error, "latency_ms": latency_ms}
+        response = {"ok": result.ok, "cloid": cloid, "status": status,
+                    "filled_size": result.filled_size, "avg_price": result.avg_price,
+                    "error": result.error, "latency_ms": latency_ms}
+        # TV-Executor F1: brackets opcionais. Sem stop_loss E sem take_profit este
+        # bloco é pulado e a resposta é idêntica ao caminho atual (guard clause §8.4.1).
+        if result.ok and (intent.stop_loss is not None or intent.take_profit is not None):
+            bracket = self._place_brackets(adapter, intent, abs(size), cloid, exchange_id)
+            response["brackets"] = bracket
+            if bracket.get("rolled_back"):
+                response["ok"] = False
+                response["status"] = "rolled_back"
+                response["reason"] = "INCIDENT_UNPROTECTED_POSITION"
+        return response
+
+    def _place_brackets(self, adapter: Any, intent: IntentRequest, size: float,
+                        entry_cloid: str, exchange_id: int | None) -> dict[str, Any]:
+        """Coloca SL/TP reduce_only DEPOIS que a entrada preencheu. Se um STOP foi
+        pedido e sua colocação falhar, a posição ficou desprotegida ⇒ rollback:
+        fecha a mercado (reduce_only) e emite INCIDENT_UNPROTECTED_POSITION.
+        TP-only é posição protegida (sem rollback)."""
+        closing_side = "sell" if intent.side == "buy" else "buy"
+        legs: dict[str, Any] = {}
+
+        def _leg(tpsl: str, trigger_px: float) -> Any:
+            leg_cloid = make_cloid(intent.strategy_id)
+            res = adapter.place_trigger(
+                intent.symbol, closing_side, size, trigger_px, tpsl,
+                reduce_only=True, cloid=leg_cloid)
+            self.db.insert("orders", {
+                "cloid": leg_cloid, "strategy_id": intent.strategy_id,
+                "symbol": intent.symbol, "side": closing_side, "type": "trigger",
+                "size": size, "price": trigger_px,
+                "status": res.status if res.ok else (res.status or "error"),
+                "created_at": utcnow(), "exchange_id": exchange_id,
+                "master_address": getattr(adapter, "account_address", None),
+            })
+            legs[tpsl] = {"cloid": leg_cloid, "ok": res.ok, "status": res.status,
+                          "error": res.error, "trigger_px": trigger_px}
+            return res
+
+        sl_res = _leg("sl", intent.stop_loss) if intent.stop_loss is not None else None
+        if intent.take_profit is not None:
+            _leg("tp", intent.take_profit)
+        self.logger.info("order.brackets",
+                         {"cloid": entry_cloid, "symbol": intent.symbol, "legs": legs},
+                         strategy_id=intent.strategy_id)
+
+        if sl_res is not None and not sl_res.ok:
+            close_cloid = make_cloid(intent.strategy_id)
+            close = adapter.place_order(OrderRequest(
+                symbol=intent.symbol, side=closing_side, size=size,
+                order_type="market", reduce_only=True, cloid=close_cloid))
+            self.logger.log("incident.unprotected_position", {
+                "code": "INCIDENT_UNPROTECTED_POSITION",
+                "entry_cloid": entry_cloid, "symbol": intent.symbol,
+                "stop_error": sl_res.error, "close_cloid": close_cloid,
+                "close_ok": close.ok, "close_error": close.error},
+                level="critical", strategy_id=intent.strategy_id)
+            legs["rollback"] = {"cloid": close_cloid, "ok": close.ok, "error": close.error}
+            return {"legs": legs, "rolled_back": True}
+        return {"legs": legs, "rolled_back": False}
 
     def handle_cancel(self, req: CancelRequest) -> dict[str, Any]:
         verdict = self.enforcer.check_intent(
