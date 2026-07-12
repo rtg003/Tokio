@@ -2209,3 +2209,60 @@ não cria sistema paralelo, reusa `strategies` (`module='tradingview'`), o gatew
 - `EXECUTION_PLAN.md` presente na raiz do repo.
 - **INVARIANTE**: nada de gates/caps é afetado; `/intent`/`/cancel` intocados;
   isolamento de observabilidade (§5.1) preservado no design do módulo.
+
+## UPDATE-0037 · 2026-07-12 · Status: PENDENTE
+
+**Origem**: F0 do TV-Executor — **Contrato e recepção, SEM execução** (mapa em
+`EXECUTION_PLAN.md`, anunciado no UPDATE-0036). Este commit traz o código do
+módulo até a fila+worker; ainda **nenhuma ordem é enviada ao gateway** (execução
+é F1, sob o protocolo REGRESSÃO-PRIMEIRO §8.4.1).
+
+**Tipo**: infra + engine (módulo novo, ADITIVO) — schema já veio na migração
+**0019** (commit anterior `4b48a6d`). Sem `logic_version` novo, sem tocar o
+Copy Trade/Discovery, sem tocar gateway/adapter.
+
+**Contexto**: o receiver recebe o webhook, persiste o `raw_payload` ANTES do
+parse, autentica o secret (path + payload) de forma síncrona (401 rápido em sinal
+forjado) e enfileira em `tv_queue`. O worker consome a fila, roda o validator
+determinístico (checklist §8.2, 1–13) e persiste a decisão com o checklist
+completo. Sinais duplicados dentro de 24h ⇒ `DUPLICATE`.
+
+### O que este commit traz
+- **NEW engine**: `engine/tv/{__init__,models,netting,validator,store,receiver,worker}.py`.
+  - `receiver.py`: FastAPI, `POST /tv/{url_secret}` (202 < 500ms), `POST
+    /signals/internal` (token interno; `source: hermes|manual|test`),
+    `GET /tv/healthz`. Rate-limit por IP (30/min) e por estratégia (10/min).
+  - `worker.py`: consumidor da fila (poll SQLite WAL), monta o contexto e valida.
+  - `validator.py`: função pura sobre `ValidatorContext`; check 3 lê o kill switch
+    (`/health.kill_switch`, fallback `settings.kill_file` = fail-closed); check 9
+    (spread/bbo) fica `skipped` em F0 (depende do `bbo` do adapter, que é F1).
+- **NEW test**: `tests/test_tv_executor.py` (T1–T9, T14, T16 — 15 testes verdes).
+- **EDIT infra**: `deploy/engine-processes.yaml` (processos `tv-receiver` e
+  `tv-worker`), `docker-compose.yml` (containers `tv-receiver`/`tv-worker`),
+  `deploy/Caddyfile` (bloco `tokio.bz/tv/*` → `127.0.0.1:8702` com precedência
+  sobre o Next.js + allowlist de IPs do TradingView).
+
+### Ações do Hermes
+1. Aplicar a migração se ainda não aplicada: `python -m engine.cli db migrate`
+   (idempotente; confere `schema_migrations` = 0019). **Nenhum dado destruído.**
+2. **Caddy** — acrescentar/ativar o bloco `/tv/*` do `deploy/Caddyfile` no
+   Caddyfile COMPARTILHADO da VPS. **CONFIRMAR a allowlist de IPs oficiais do
+   TradingView** (https://www.tradingview.com/support/solutions/43000529348/)
+   ANTES do reload — a lista muda. Depois: `sudo caddy validate` + `sudo
+   systemctl reload caddy` (reload, NUNCA restart).
+3. **Processos** — na VPS (systemd/supervisor), os novos processos `tv-receiver`
+   (127.0.0.1:8702) e `tv-worker` sobem via `deploy/engine-processes.yaml`.
+   Reiniciar o `tokio-engine.service` após o deploy do código.
+4. `TV_INTERNAL_TOKEN` no `.env` (token de `/signals/internal` p/ Hermes/manual).
+   Gerar um secret forte; sem ele o endpoint interno recusa tudo (401).
+
+### Validação esperada
+- `pytest tests/test_tv_executor.py -q` verde (15 passed).
+- `GET tokio.bz/tv/healthz` (de IP allowlisted) responde `{"ok": true, ...}` com
+  contagem da fila; de IP fora da allowlist ⇒ 403 do Caddy.
+- Sinal real do TradingView: 202 < 500ms, decisão persistida em
+  `tv_signal_decisions` com o checklist completo; replay do mesmo sinal ⇒
+  `DUPLICATE`. Secret errado ⇒ 401 + `tv_signals.state='REJECTED'` (auditoria).
+- **INVARIANTE**: gateway/adapter, `/intent`/`/cancel`, gates humanos e Copy
+  Trade inalterados; NENHUMA ordem enviada (execução só na F1). Kill switch usa a
+  fonte única existente — nenhuma flag DB nova.

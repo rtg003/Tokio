@@ -49,6 +49,28 @@ services:
       resources:
         limits: {cpus: "0.5", memory: 384M}
 
+  # Módulo TV-Executor (F0): receiver do webhook + worker da fila SQLite.
+  tv-receiver:
+    <<: *engine-base
+    container_name: tokio-tv-receiver
+    command: python -m engine.tv.receiver
+    environment:
+      TV_RECEIVER_BIND: "0.0.0.0"   # exposto ao proxy via rede interna
+      TV_RECEIVER_PORT: "8702"
+    depends_on: [gateway]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 384M}
+
+  tv-worker:
+    <<: *engine-base
+    container_name: tokio-tv-worker
+    command: python -m engine.tv.worker
+    depends_on: [gateway]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 384M}
+
 networks:
   internal:
     driver: bridge

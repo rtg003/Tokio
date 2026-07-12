@@ -19,6 +19,17 @@ processes:
     env:
       TV_WEBHOOK_BIND: "127.0.0.1"   # interno por enquanto (sem rota pública)
 
+  # Módulo TV-Executor (F0): receiver do webhook + worker da fila SQLite.
+  # Receiver: 127.0.0.1:8702, rota pública via Caddy (tokio.bz/tv/*).
+  - name: tv-receiver
+    module: engine.tv.receiver
+    env:
+      TV_RECEIVER_BIND: "127.0.0.1"
+      TV_RECEIVER_PORT: "8702"
+
+  - name: tv-worker
+    module: engine.tv.worker
+
   - name: discovery-scheduler
     module: engine.strategies.copy_trade.discovery_scheduler
     # 1ª varredura automática se a tabela traders estiver vazia + scan diário

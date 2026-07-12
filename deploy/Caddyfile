@@ -8,11 +8,31 @@
 # DNS (Hostinger): A tokio.bz -> 46.202.189.126 · A www -> 46.202.189.126
 # (ou CNAME www -> tokio.bz). O registro antigo 2.57.91.91 deve ser CORRIGIDO.
 #
-# Webhook do TradingView: sem rota pública por enquanto (decisão 2026-07-02).
-# Quando for ativar, acrescentar dentro do bloco:
-#   handle /webhook* { reverse_proxy 127.0.0.1:8701 }
+# Webhook legado do TradingView (8701): sem rota pública (decisão 2026-07-02).
+#
+# Módulo TV-Executor (F0): receiver próprio em 127.0.0.1:8702, rota pública
+# `tokio.bz/tv/*` com precedência sobre o Next.js. A allowlist abaixo usa os IPs
+# oficiais de webhook do TradingView — CONFIRMAR a lista atual em
+# https://www.tradingview.com/support/solutions/43000529348/ ANTES do reload
+# (a lista muda; não deixar defasar). O secret do path/payload é a 2ª camada.
 
 tokio.bz, www.tokio.bz {
 	encode gzip
-	reverse_proxy 127.0.0.1:3002
+
+	@tv_allow {
+		path /tv/*
+		remote_ip 52.89.214.238 34.212.75.30 52.32.178.7 54.218.53.128
+	}
+	handle @tv_allow {
+		reverse_proxy 127.0.0.1:8702
+	}
+	# /tv/* de qualquer outro IP: recusado (não vaza para o Next.js).
+	@tv_deny path /tv/*
+	handle @tv_deny {
+		respond 403
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3002
+	}
 }
