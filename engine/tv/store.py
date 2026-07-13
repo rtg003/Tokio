@@ -148,6 +148,53 @@ def set_strategy_status(db: Database, strategy_id: str, status: str) -> None:
                (status, strategy_id))
 
 
+def delete_strategy(db: Database, strategy_id: str) -> str:
+    """Apaga em cascata TODOS os dados do MÓDULO TV de uma estratégia, numa única
+    transação (§5.2 — dados de uma estratégia só valem para ela). Ordem respeita as
+    dependências (decisões/incidentes/fila apontam para tv_signals). PRESERVA
+    `fills`/`orders` de propósito: são registros reais de execução, base do
+    ledger/reconciliação e da auditoria mainnet — decisão do operador.
+
+    Como fills/orders têm FK para `strategies(id)`, a linha `strategies` só pode ser
+    HARD-DELETED quando não há execução atribuída; havendo, ela é ARQUIVADA (mantém a
+    integridade referencial). Em ambos os casos a estratégia some da view operacional
+    `tv_strategies` — ela é INNER JOIN com `tv_strategy_meta`, que é sempre apagada.
+    Devolve 'deleted' ou 'archived' para o log/telemetria."""
+    sub = "SELECT id FROM tv_signals WHERE strategy_id = ?"
+    with db._lock:
+        c = db._conn
+        c.execute(f"DELETE FROM tv_signal_decisions WHERE signal_id IN ({sub})",
+                  (strategy_id,))
+        c.execute(f"DELETE FROM tv_incidents WHERE signal_id IN ({sub})",
+                  (strategy_id,))
+        c.execute(f"DELETE FROM tv_queue WHERE signal_id IN ({sub})",
+                  (strategy_id,))
+        c.execute("DELETE FROM tv_signals WHERE strategy_id = ?", (strategy_id,))
+        c.execute("DELETE FROM tv_strategy_versions WHERE strategy_id = ?",
+                  (strategy_id,))
+        c.execute("DELETE FROM tv_strategy_meta WHERE strategy_id = ?",
+                  (strategy_id,))
+        # métricas diárias são agregados derivados (não execução real) — purga sempre
+        # para permitir o hard-delete da linha `strategies`.
+        c.execute("DELETE FROM strategy_metrics_daily WHERE strategy_id = ?",
+                  (strategy_id,))
+        has_exec = c.execute(
+            "SELECT 1 FROM orders WHERE strategy_id = ? "
+            "UNION ALL SELECT 1 FROM fills WHERE strategy_id = ? LIMIT 1",
+            (strategy_id, strategy_id)).fetchone()
+        if has_exec:
+            c.execute(
+                "UPDATE strategies SET status = 'archived', archived_at = ? "
+                "WHERE id = ? AND module = 'tradingview'", (utcnow(), strategy_id))
+            outcome = "archived"
+        else:
+            c.execute("DELETE FROM strategies WHERE id = ? AND module = 'tradingview'",
+                      (strategy_id,))
+            outcome = "deleted"
+        c.commit()
+    return outcome
+
+
 def current_config(db: Database, strategy_id: str) -> dict[str, Any] | None:
     """Config viva (config_snapshot) da estratégia TV, já como dict."""
     rows = db.query(

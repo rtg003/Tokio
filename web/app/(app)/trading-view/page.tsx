@@ -33,8 +33,8 @@ function parseDdMmYy(v: string | undefined): string | null {
 
 const PERIOD_LABEL: Record<string, string> = {
   today: "hoje",
+  yesterday: "ontem",
   "7d": "últimos 7 dias",
-  "30d": "últimos 30 dias",
   custom: "período personalizado",
 };
 
@@ -46,9 +46,9 @@ export default async function TradingViewDashboard({
   }>;
 }) {
   const params = await searchParams;
-  const period = ["today", "7d", "30d", "custom"].includes(params.period ?? "")
+  const period = ["today", "yesterday", "7d", "custom"].includes(params.period ?? "")
     ? (params.period as string)
-    : "30d";
+    : "today";
 
   function spDateString(d: Date): string {
     return d.toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" });
@@ -56,10 +56,12 @@ export default async function TradingViewDashboard({
   const todayIso = spDateString(new Date());
   let sinceDay = todayIso;
   let untilDay = todayIso;
-  if (period === "7d") {
+  if (period === "yesterday") {
+    const y = spDateString(new Date(Date.now() - 86400_000));
+    sinceDay = y;
+    untilDay = y;
+  } else if (period === "7d") {
     sinceDay = spDateString(new Date(Date.now() - 7 * 86400_000));
-  } else if (period === "30d") {
-    sinceDay = spDateString(new Date(Date.now() - 30 * 86400_000));
   } else if (period === "custom") {
     sinceDay = parseDdMmYy(params.from) ?? sinceDay;
     untilDay = parseDdMmYy(params.to) ?? untilDay;

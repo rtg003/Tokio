@@ -1,5 +1,12 @@
-import { fmtNum, fmtSigned, pnlClass } from "@/lib/format";
+import { fmtNum, fmtSignedUsd, pnlClass } from "@/lib/format";
 import { Balance, FillsSummary, Metrics, PnlSummary } from "@/lib/copy-trade/data";
+
+const SALDO_TIP =
+  "Saldo = valor sacável (withdrawable) da conta. Equity = patrimônio total, " +
+  "incluindo o PnL não-realizado das posições abertas.";
+const PNL_TIP =
+  "Realizado = lucro/prejuízo já materializado em trades fechados no período. " +
+  "Não-realizado = PnL das posições ainda abertas, marcado a mercado.";
 
 type Props = {
   balance: Balance;
@@ -63,22 +70,24 @@ export default function KpiRow({
   return (
     <div className="kpis">
       <div className="kpi">
-        <div className="lab">Saldo</div>
+        <div className="lab">
+          Saldo <span className="th-tip kpi-info" data-tip={SALDO_TIP}>ⓘ</span>
+        </div>
         <div className="val">
           {balance === null ? "—" : `$${fmtNum(balance.withdrawable_usd)}`}
         </div>
         <div className="sub">
           {balance === null
             ? "gateway indisponível"
-            : `disponível · equity $${fmtNum(balance.equity_usd)} · ${
-                balance.network === "mainnet" ? "mainnet" : "testnet"
-              }`}
+            : `equity $${fmtNum(balance.equity_usd)}`}
         </div>
       </div>
       <div className="kpi">
-        <div className="lab">PnL líquido</div>
-        <div className={`val ${pnlClass(netPnl)}`}>{fmtSigned(netPnl)}</div>
-        <div className="sub">USDC · realizado + não-realizado</div>
+        <div className="lab">
+          PnL líquido <span className="th-tip kpi-info" data-tip={PNL_TIP}>ⓘ</span>
+        </div>
+        <div className={`val ${pnlClass(netPnl)}`}>{fmtSignedUsd(netPnl)}</div>
+        <div className="sub">realizado + não realizado</div>
       </div>
       <div className="kpi">
         <div className="lab">Trades</div>

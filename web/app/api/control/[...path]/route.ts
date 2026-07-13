@@ -29,6 +29,9 @@ const ALLOWED_POST_PATTERNS = [
   // Ato humano autenticado; gateway ainda impõe mainnet só com credenciais.
   /^tv\/strategies$/,
   /^tv\/strategies\/[a-z0-9_]{3,48}\/activate$/,
+  // TV-Executor: pausar, editar config (versionada) e excluir (cascade só do
+  // módulo TV; preserva fills/orders; gateway recusa active/posição aberta).
+  /^tv\/strategies\/[a-z0-9_]{3,48}\/(pause|config|delete)$/,
 ];
 
 function gatewayBase(): string {

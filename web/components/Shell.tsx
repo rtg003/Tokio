@@ -15,20 +15,6 @@ type Health = {
   uptime_s?: number;
 };
 
-function Clock() {
-  const [now, setNow] = useState("");
-  useEffect(() => {
-    const tick = () =>
-      setNow(
-        new Date().toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo" }),
-      );
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, []);
-  return <strong>{now}</strong>;
-}
-
 function fmtUptime(s?: number): string {
   if (!s) return "—";
   const d = Math.floor(s / 86400);
@@ -147,12 +133,6 @@ export default function Shell({
           <option value="mainnet">MAINNET</option>
         </select>
         <span className="spacer" />
-        <span className="seg">
-          SP <Clock />
-        </span>
-        <span className="seg hide-m">
-          {new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}
-        </span>
       </div>
       {drawer && <div className="scrim show" onClick={() => setDrawer(false)} />}
 

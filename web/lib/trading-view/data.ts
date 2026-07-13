@@ -285,6 +285,54 @@ export async function activateTvStrategy(
   }
 }
 
+export async function pauseTvStrategy(
+  strategyId: string,
+): Promise<{ ok: boolean; status?: string; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/tv/strategies/${strategyId}/pause`, {
+      method: "POST",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, reason: data.reason ?? data.detail ?? "erro_pausa" };
+    return data;
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
+export async function updateTvStrategy(
+  strategyId: string,
+  patch: Record<string, unknown>,
+): Promise<{ ok: boolean; version?: number; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/tv/strategies/${strategyId}/config`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, reason: data.reason ?? data.detail ?? "erro_edicao" };
+    return data;
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
+export async function deleteTvStrategy(
+  strategyId: string,
+): Promise<{ ok: boolean; deleted?: string; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/tv/strategies/${strategyId}/delete`, {
+      method: "POST",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, reason: data.reason ?? data.detail ?? "erro_exclusao" };
+    return data;
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
 export type Handshake = {
   received: boolean;
   signal: {

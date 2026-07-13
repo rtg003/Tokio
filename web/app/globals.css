@@ -124,6 +124,8 @@ h1 { font: 600 22px/1.2 var(--sans); }
 .kpi .sub { font: 400 11px var(--mono); color: var(--muted); margin-top: 5px; }
 .kpi .val.pos { color: var(--pos); }
 .kpi .val.neg { color: var(--neg); }
+/* glifo de ajuda (ⓘ) ao lado do label do KPI — dispara o tooltip .th-tip */
+.kpi-info { color: var(--muted); font-size: 11px; letter-spacing: 0; cursor: help; }
 
 /* ============ CARDS + TABELAS ============ */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); margin-bottom: 18px; }
@@ -185,6 +187,34 @@ th.num { text-align: right; }
 .side.long { color: var(--pos); }
 .side.short { color: var(--neg); }
 .empty { padding: 26px 18px; font: 400 12px var(--mono); color: var(--faint); }
+
+/* ---- Logs (tv_events): linhas baixas, zebra discreta, detalhe legível ---- */
+.logs-table td { padding: 6px 12px; }
+.logs-table tbody tr.zebra { background: var(--surface-2); }
+.logs-table tbody tr.zebra:hover { background: var(--surface-2); }
+.log-detail {
+  margin: 0;
+  padding: 8px 4px 10px;
+  font: 400 12px/1.5 var(--mono);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-detail .k { color: var(--faint); }
+
+/* ---- Ações por linha (Estratégias TV): ícones minimalistas ---- */
+.col-actions { width: 1%; white-space: nowrap; }
+.row-actions { display: inline-flex; gap: 4px; align-items: center; }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.icon-btn:hover { color: var(--text); border-color: var(--line-strong, var(--muted)); background: var(--surface-2); }
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-btn-danger:hover { color: var(--neg); border-color: var(--neg-soft); background: var(--neg-soft); }
 
 .chip { display: inline-block; padding: 3px 8px; border-radius: 3px; font: 600 10px var(--mono); letter-spacing: 0.08em; }
 .chip.filled { background: var(--pos-soft); color: var(--pos); }
@@ -455,7 +485,7 @@ th.num { text-align: right; }
   .modal-scrim { padding: 0.5rem; }
 }
 @media (max-width: 480px) {
-  .kpis { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .kpis { grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .controls { width: 100%; }
   .filter-select {
     /* 3 combos (Wallet / Exchange+Ambiente / Trader) na mesma linha; gap 10px

@@ -1,5 +1,6 @@
 import { fmtDateTime, statusChip } from "@/lib/format";
 import { TvStrategy } from "@/lib/trading-view/data";
+import StrategyRowActions from "@/components/trading-view/StrategyRowActions";
 
 function parseSymbols(snapshot?: string | null): string {
   if (!snapshot) return "—";
@@ -42,6 +43,7 @@ export default function StrategiesTable({ strategies }: { strategies: TvStrategy
           <table>
             <thead>
               <tr>
+                <th className="col-actions" aria-label="Ações"></th>
                 <th>Estratégia</th>
                 <th>Status</th>
                 <th>Ambiente</th>
@@ -54,6 +56,9 @@ export default function StrategiesTable({ strategies }: { strategies: TvStrategy
             <tbody>
               {rows.map((s) => (
                 <tr key={s.strategy_id}>
+                  <td className="col-actions">
+                    <StrategyRowActions strategy={s} />
+                  </td>
                   <td>{s.name ?? s.strategy_id}</td>
                   <td>
                     <span className={`chip ${statusChip[s.status] ?? "dry"}`}>

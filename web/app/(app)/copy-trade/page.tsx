@@ -32,8 +32,8 @@ function parseDdMmYy(v: string | undefined): string | null {
 
 const PERIOD_LABEL: Record<string, string> = {
   today: "hoje",
+  yesterday: "ontem",
   "7d": "últimos 7 dias",
-  "30d": "últimos 30 dias",
   custom: "período personalizado",
 };
 
@@ -50,9 +50,9 @@ export default async function CopyTradeDashboard({
     Object.entries(params).filter(([k, v]) => k !== "cols" && v) as [string, string][],
   ).toString();
   const toggleHref = expanded ? `?${baseQuery}${baseQuery ? "&" : ""}cols=core` : `?${baseQuery}`;
-  const period = ["today", "7d", "30d", "custom"].includes(params.period ?? "")
+  const period = ["today", "yesterday", "7d", "custom"].includes(params.period ?? "")
     ? (params.period as string)
-    : "30d";
+    : "today";
 
   // Datas no fuso de São Paulo (UTC-3)
   function spDateString(d: Date): string {
@@ -69,10 +69,11 @@ export default async function CopyTradeDashboard({
   const todayIso = spToday();
   let sinceDay = todayIso;
   let untilDay = todayIso;
-  if (period === "7d") {
+  if (period === "yesterday") {
+    sinceDay = spDaysAgo(1);
+    untilDay = spDaysAgo(1);
+  } else if (period === "7d") {
     sinceDay = spDaysAgo(7);
-  } else if (period === "30d") {
-    sinceDay = spDaysAgo(30);
   } else if (period === "custom") {
     sinceDay = parseDdMmYy(params.from) ?? sinceDay;
     untilDay = parseDdMmYy(params.to) ?? untilDay;

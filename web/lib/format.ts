@@ -12,6 +12,14 @@ export function fmtSigned(v: number | null | undefined, digits = 2): string {
   return v > 0 ? `+${s}` : v < 0 ? `−${s}` : s;
 }
 
+// PnL em USD: prefixo $ e sinal explícito. Zero vira "$0" (sem casas decimais).
+export function fmtSignedUsd(v: number | null | undefined, digits = 2): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  if (v === 0) return "$0";
+  const s = fmtNum(Math.abs(v), digits);
+  return v > 0 ? `+$${s}` : `−$${s}`;
+}
+
 export function pnlClass(v: number | null | undefined): string {
   if (v === null || v === undefined || v === 0) return "";
   return v > 0 ? "pos" : "neg";

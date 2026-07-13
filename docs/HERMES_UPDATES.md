@@ -2485,3 +2485,62 @@ afetado — ele envia a chave canônica `environment`.
 - `pytest tests/gateway/test_intent_regression.py tests/test_gateway.py -q` verde,
   incluindo `test_intent_env_alias_routes_mainnet` e
   `test_intent_environment_key_still_works`.
+
+## UPDATE-0043 · 2026-07-13 · Status: PENDENTE
+
+**Origem**: lote de ajustes de UI/UX das dashboards (Copy Trade + Trading View) +
+nova capacidade de **exclusão de estratégia TV** direto da tabela, pedidos pelo
+operador. **Não toca `/intent`/`/cancel`/`handle_intent`/adapter/hot path** → §8.4.1
+não se aplica (sem baseline de regressão de gateway); ainda assim a regressão segue
+verde por sanidade.
+
+**Tipo**: infra (web/UI) + gateway (endpoint novo `.../delete`).
+
+### O que mudou (backend — o que você precisa saber)
+- **Novo endpoint** `POST /control/tv/strategies/{id}/delete` (gated por
+  `_control_auth`, como os demais controles TV). Semântica **destrutiva bounded**:
+  - Apaga em cascata **só os dados do módulo TV** da estratégia: `tv_signals`,
+    `tv_signal_decisions`, `tv_incidents`, `tv_queue`, `tv_strategy_versions`,
+    `tv_strategy_meta` e os agregados `strategy_metrics_daily`.
+  - **PRESERVA `fills`/`orders`** — registros reais de execução, base do ledger/
+    reconciliação e da auditoria mainnet (decisão do operador). Como esses têm FK
+    para `strategies(id)`, a linha `strategies` só é **hard-deleted** quando não há
+    execução atribuída; **havendo, ela é ARQUIVADA** (`status='archived'`) para
+    manter a integridade referencial. Em ambos os casos a estratégia **some da view
+    operacional `tv_strategies`** (INNER JOIN com `tv_strategy_meta`, sempre apagada).
+    A resposta traz `outcome: "deleted" | "archived"`.
+  - **Guardrails inquebráveis**: recusa (`{"ok":false,"reason":"ativa_pause_antes"}`)
+    se a estratégia está `active` — pause antes; recusa
+    (`{"ok":false,"reason":"posicao_aberta"}`) se há posição aberta no ambiente para
+    algum símbolo da estratégia — zere antes. 404 se desconhecida.
+  - Loga `tv.strategy.deleted` (aparece nos Logs como SYSTEM, `event_type LIKE 'tv.%'`);
+    se mainnet, dispara o `_tv_notify_mainnet` (mesmo canal do activate/config).
+- Racional do porquê preservar fills/orders: o histórico de execução real é a
+  fonte do ledger e da reconciliação — apagá-lo corromperia P&L e auditoria. Não
+  "corrija" isso mudando a cascata para incluir fills/orders.
+
+### O que mudou (web/UI — só apresentação)
+- Cabeçalho sem data/hora (statusbar limpa).
+- Cards **Saldo** e **PnL líquido** (ambas as telas): subtítulo curto + tooltip
+  objetivo (saldo=sacável vs equity=patrimônio; realizado vs não-realizado). PnL
+  com prefixo `$`; zero vira `$0`.
+- Filtros de período → **Hoje / Ontem / 7 dias / Personalizado** (default **Hoje**).
+- Mobile (≤480px): 6 KPIs em 3 por linha.
+- Tabela de **Estratégias (TV)**: coluna de ações por linha (editar params · pausar ·
+  excluir), com modal de confirmação destrutivo na exclusão.
+- Tabela de **Logs**: linhas mais baixas, combo de tipo na altura do título, zebra
+  discreta e detalhe legível (em vez de JSON cru) ao clicar.
+
+### Ação do Hermes
+- Deploy do código (engine + web) + reiniciar `tokio-engine.service tokio.service`
+  quando autorizado. Confere que o autodeploy reconstruiu o web (o menu/tela TV e os
+  novos ícones de ação devem aparecer).
+- Excluir estratégia é **ato humano autenticado** na dashboard; o gateway ainda
+  recusa `active`/posição aberta. Não há mudança nos gates de promoção/mainnet/caps.
+
+### Validação esperada
+- `.venv/bin/python -m pytest tests/gateway/test_tv_delete.py tests/gateway -q` verde
+  (404; recusa `active`; recusa posição aberta; cascade hard-delete sem execução;
+  cascade + archive preservando fills/orders).
+- `cd web && npm run build` verde (typecheck). Regressão `tests/gateway/test_intent_regression.py`
+  segue verde (sanidade — nada toca o hot path).

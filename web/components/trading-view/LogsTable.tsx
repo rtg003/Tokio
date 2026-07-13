@@ -19,6 +19,47 @@ function sevClass(sev: string): string {
   return "";
 }
 
+// Rótulos legíveis para os campos que mais aparecem no detail dos eventos.
+const FIELD_LABELS: Record<string, string> = {
+  outcome: "Resultado",
+  state: "Estado",
+  block_code: "Motivo do bloqueio",
+  environment: "Ambiente",
+  adapter_network: "Rede do adapter",
+  ticker: "Ticker",
+  coin: "Ativo",
+  action: "Ação",
+  market_position: "Posição",
+  version: "Versão",
+  changed_by: "Alterado por",
+  change_summary: "Resumo",
+  type: "Tipo",
+  by: "Por",
+};
+
+// Transforma o detail (JSON string) num texto legível de "o que ocorreu".
+// Cai para o texto cru se não for JSON. Ignora estruturas grandes (ex.: checklist
+// completo) mostrando só um resumo dos campos escalares mais úteis.
+function readableDetail(detail: string, summary: string): { k: string; v: string }[] {
+  const lines: { k: string; v: string }[] = [];
+  let obj: unknown = null;
+  try {
+    obj = JSON.parse(detail);
+  } catch {
+    return [{ k: "", v: detail }];
+  }
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    for (const [key, raw] of Object.entries(obj as Record<string, unknown>)) {
+      if (raw === null || raw === undefined || raw === "") continue;
+      if (typeof raw === "object") continue; // pula arrays/objetos aninhados (ex.: checks)
+      const label = FIELD_LABELS[key] ?? key;
+      lines.push({ k: label, v: String(raw) });
+    }
+  }
+  if (lines.length === 0) lines.push({ k: "", v: summary || detail });
+  return lines;
+}
+
 export default function LogsTable({ initial }: { initial: TvEvent[] }) {
   const [rows, setRows] = useState<TvEvent[]>(initial);
   const [kind, setKind] = useState<string>("");
@@ -56,12 +97,12 @@ export default function LogsTable({ initial }: { initial: TvEvent[] }) {
   return (
     <div className="card">
       <div className="cardhead">
-        <h2>Logs</h2>
-        <span className="cardnote">
-          eventos unificados do módulo (sinais, incidentes, alterações) · fonte: view tv_events
-        </span>
-      </div>
-      <div className="controls" style={{ marginBottom: 8 }}>
+        <div>
+          <h2>Logs</h2>
+          <span className="cardnote">
+            eventos unificados do módulo (sinais, incidentes, alterações) · fonte: view tv_events
+          </span>
+        </div>
         <select
           className="select"
           aria-label="Tipo de evento"
@@ -79,7 +120,7 @@ export default function LogsTable({ initial }: { initial: TvEvent[] }) {
         {rows.length === 0 ? (
           <div className="empty">nenhum evento</div>
         ) : (
-          <table>
+          <table className="logs-table">
             <thead>
               <tr>
                 <th>Hora</th>
@@ -95,6 +136,7 @@ export default function LogsTable({ initial }: { initial: TvEvent[] }) {
                 return (
                   <Fragment key={id}>
                     <tr
+                      className={i % 2 ? "zebra" : ""}
                       onClick={() => setOpen(isOpen ? null : id)}
                       style={{ cursor: "pointer" }}
                     >
@@ -106,9 +148,16 @@ export default function LogsTable({ initial }: { initial: TvEvent[] }) {
                       <td className="addr">{e.ref_id ?? "—"}</td>
                     </tr>
                     {isOpen && e.detail && (
-                      <tr>
+                      <tr className={i % 2 ? "zebra" : ""}>
                         <td colSpan={4}>
-                          <pre className="logdetail">{e.detail}</pre>
+                          <div className="log-detail">
+                            {readableDetail(e.detail, e.summary).map((ln, j) => (
+                              <div key={j}>
+                                {ln.k && <span className="k">{ln.k}: </span>}
+                                {ln.v}
+                              </div>
+                            ))}
+                          </div>
                         </td>
                       </tr>
                     )}

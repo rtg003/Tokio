@@ -924,6 +924,45 @@ def build_app(state: GatewayState) -> FastAPI:
             _tv_notify_mainnet(strategy_id, f"config v{version} por {actor}: {summary}")
         return {"ok": True, "version": version}
 
+    @app.post("/control/tv/strategies/{strategy_id}/delete",
+              dependencies=[Depends(_control_auth)])
+    def tv_delete_strategy(strategy_id: str,
+                           body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        """Exclusão destrutiva de UMA estratégia TV (§5.2). Apaga em cascata SÓ os
+        dados do módulo TV (sinais/decisões/incidentes/fila/versões/meta + linha
+        `strategies`); PRESERVA `fills`/`orders` (registros reais de execução, base
+        do ledger/reconciliação e da auditoria mainnet — decisão do operador).
+
+        Guardrails (nunca contornáveis): recusa se a estratégia está `active`
+        (pausar antes) ou se há posição aberta no ambiente para algum dos seus
+        símbolos (zerar antes). Loga tv.strategy.deleted; se mainnet, notifica."""
+        from engine.tv import store as tv_store
+
+        actor = _tv_actor(body)
+        rows = state.db.query(
+            "SELECT status, environment FROM tv_strategies WHERE strategy_id = ?",
+            (strategy_id,))
+        if not rows:
+            raise HTTPException(404, "unknown strategy")
+        status, env = rows[0]["status"], rows[0]["environment"]
+        if status == "active":
+            return {"ok": False, "reason": "ativa_pause_antes"}
+        # Posição aberta no ambiente para os símbolos da estratégia → recusa.
+        if env in ("testnet", "mainnet"):
+            try:
+                scoped = _scoped_positions([strategy_id], env, None)
+            except Exception:  # noqa: BLE001 — venue hiccup não pode 500 a exclusão
+                scoped = []
+            if any(abs(float(p.get("size") or 0)) > 0 for p in scoped):
+                return {"ok": False, "reason": "posicao_aberta"}
+        outcome = tv_store.delete_strategy(state.db, strategy_id)
+        state.logger.log("tv.strategy.deleted",
+                         {"environment": env, "by": actor, "outcome": outcome},
+                         level="warning", strategy_id=strategy_id)
+        if env == "mainnet":
+            _tv_notify_mainnet(strategy_id, f"excluída por {actor}")
+        return {"ok": True, "deleted": strategy_id, "outcome": outcome}
+
     @app.post("/control/tv/strategies/{strategy_id}/promote",
               dependencies=[Depends(_control_auth)])
     def tv_promote_strategy(strategy_id: str,

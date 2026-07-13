@@ -12,8 +12,8 @@ export type StrategyOption = { value: string; label: string };
 
 const PRESETS: { key: string; label: string }[] = [
   { key: "today", label: "Hoje" },
-  { key: "7d", label: "7D" },
-  { key: "30d", label: "30D" },
+  { key: "yesterday", label: "Ontem" },
+  { key: "7d", label: "7 dias" },
   { key: "custom", label: "Personalizado" },
 ];
 
