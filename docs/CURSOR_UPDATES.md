@@ -1564,7 +1564,7 @@ Sem este fix, o copy trade não funciona — o executor perde fills do trader
 quando o WS cai (que acontece frequentemente). O trader fez +$2,371 em 2
 dias e não espelhamos nada.
 
-## UPDATE-0021 · 2026-07-13 · Status: PENDENTE
+## UPDATE-0044 · 2026-07-13 · Status: PENDENTE
 
 Origem: PR do Hermes — MVP da estratégia **Oracle Mismatch** (skill-first)
 Tipo: skill | operacao

@@ -154,4 +154,4 @@ Migração `0020_oracle_mismatch.sql` (tabelas `om_*` + registro em `strategies`
 isolamento §5.1–5.4), `adapter.oracle_px()`, eventos `om.*` na tabela `events`,
 dashboard `/oracle-mismatch` (§5.3), descoberta automática de listings e eventual
 execução assistida (aí sim `§8.4.1` + gates humanos). Detalhes em
-`docs/CURSOR_UPDATES.md` (UPDATE-0021).
+`docs/CURSOR_UPDATES.md` (UPDATE-0044).
