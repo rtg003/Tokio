@@ -269,7 +269,28 @@ credenciais. MAINNET (ativar/promover) mantém o gate humano: falha sem
 credenciais no servidor e toda mudança mainnet notifica Eduardo. Ambiente é a
 fonte de verdade em `tv_strategy_meta` — só muda por `promote`, nunca por payload.
 
+## Módulo Oracle Mismatch (detecção/alerta — vigilância, não execução)
+
+Vigilância de **descolamento de oráculo** na Hyperliquid: um scanner que você roda
+a cada ~1 min (cron) lê dados **públicos** da HL (`/info metaAndAssetCtxs`, incl.
+perp DEXs de builder / HIP-3 tipo `xyz:SPCX`), compara cada par da watchlist contra
+uma referência (`hl_peer` = mediana das variações Δ% de listings irmãos numa
+janela; `cex` = nível spot público) e, quando o descolamento passa do limiar,
+dispara **Telegram + log JSONL**. Nasceu do caso SpaceX do vídeo (misconfig de
+oráculo, não mercado). É **ferramenta de vigilância, não fonte de receita**.
+
+**Fronteira:** você **alerta**, Eduardo **decide e opera**. O scanner NUNCA emite
+ordem, **não importa `engine/`**, não toca gateway/DB/dashboard nem credencial de
+trading. Por isso está **fora do hot path**: `§8.4.1` não se aplica e **não** aciona
+gate de mainnet/caps. Segredos (`TELEGRAM_*`) só são lidos do `.env`, nunca logados.
+
+Contrato/runbook completos (watchlist, modelo de detecção temporal, stale,
+debounce/histerese, warm-up, cron, pitfalls, Fase 2) em
+`references/oracle_mismatch/` ([README](references/oracle_mismatch/README.md)).
+Operação: `scanner.py --list-symbols | --once [--dry-run] | --reset-state`.
+
 Referências: `references/strategy_md_template.md` (template obrigatório de
 `strategy.md`), `references/lessons.md` (lições agregadas de post-mortems),
 `references/hyperliquid_ops.md` (receitas de operação da HL: saldo, agent
-wallet, ordens de teste) e `references/tv/` (skills do módulo Trading View).
+wallet, ordens de teste), `references/tv/` (skills do módulo Trading View) e
+`references/oracle_mismatch/` (vigilância de descolamento de oráculo — só alerta).

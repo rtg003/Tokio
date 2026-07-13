@@ -1563,3 +1563,52 @@ corretivo (enviar ordem para alinhar a posição).
 Sem este fix, o copy trade não funciona — o executor perde fills do trader
 quando o WS cai (que acontece frequentemente). O trader fez +$2,371 em 2
 dias e não espelhamos nada.
+
+## UPDATE-0021 · 2026-07-13 · Status: PENDENTE
+
+Origem: PR do Hermes — MVP da estratégia **Oracle Mismatch** (skill-first)
+Tipo: skill | operacao
+
+Resumo: nova estratégia de **vigilância de descolamento de oráculo** na
+Hyperliquid, nascida do caso SpaceX do vídeo (o pré-IPO caiu ~40% por
+**misconfig de oráculo**, não por mercado — o valor foi ser avisado a tempo).
+MVP **inteiramente dentro do Hermes**: skill + script self-contained + cron +
+state file. **NÃO toca engine/schema/gateway/dashboard** — só detecção e alerta.
+Expectativa registrada: ferramenta de **vigilância, não fonte de receita**.
+
+Arquivos criados (todos fora do engine):
+- `skill/references/oracle_mismatch/scanner.py` — scanner self-contained
+  (stdlib + `httpx` + `yaml`, **sem importar `engine/`**). Lê `/info
+  metaAndAssetCtxs` público (default cripto + perp DEXs de builder / HIP-3 via
+  `perpDexs`, ex.: `xyz:SPCX`), compara par vs referência, alerta Telegram + JSONL.
+- `skill/references/oracle_mismatch/watchlist.yaml` — o que vigiar (Hermes-owned;
+  sem DB no MVP). v1: `xyz:SPCX`, `xyz:TSLA`, `xyz:COIN` (hl_peer) + BTC, ETH (cex).
+- `skill/references/oracle_mismatch/README.md` — contrato/runbook completo.
+- `skill/SKILL.md` — nova seção "Módulo Oracle Mismatch".
+- `state/oracle_mismatch_state.json` — criado em runtime (gitignored); `state/`
+  adicionado ao `.gitignore`.
+
+**Modelo de detecção — NÃO simplificar de volta para comparação de nível.** O
+`hl_peer` é **TEMPORAL**: compara a **variação Δ%** do par numa janela (`window_s`,
+default 600s) contra a **mediana das Δ% dos peers** na mesma janela, e só alerta se
+(1) `|Δ%_par| > threshold` E (2) `|mediana(Δ%_peers)| < threshold/3` E (3) ≥ 2 peers
+válidos. Isso é a desambiguação do caso SpaceX ("os outros pré-IPO não caíram") — um
+pré-IPO a $2.200 e outro a $80 só são comparáveis em Δ%, nunca em nível. O `cex` é
+comparação de nível (HL vs spot) por ser stateless por natureza. Estado persistido
+(ring buffer N=20 por símbolo + `open_alert`) existe porque o cron roda `--once`
+stateless; cobre também warm-up, stale (>120s / HTTP≠200 / timeout 5s) e
+debounce/histerese (threshold×0.7, fecha após 2 ciclos, lembrete único aos 30 min).
+
+Ações do Cursor:
+1. **Ciência**, sem ação de código no engine agora — o MVP é skill/operação.
+2. Ao construir a **Fase 2** (quando priorizada), preservar o modelo temporal
+   acima: migração `0020_oracle_mismatch.sql` (tabelas `om_watchlist/om_samples/
+   om_alerts` + registro em `strategies`, isolamento §5.1–5.4), `adapter.oracle_px()`
+   via `info.meta_and_asset_ctxs()`, eventos `om.*` na tabela `events`, dashboard
+   `/oracle-mismatch` (§5.3, espelhando copy_trade), descoberta automática de
+   listings. Execução assistida só depois → aí sim `§8.4.1` + gates humanos.
+
+Validação: `python skill/references/oracle_mismatch/scanner.py --once --dry-run`
+roda o ciclo (pares `hl_peer` em warm-up no 1º boot, `cex` amostrando HL vs spot);
+`grep -c "Oracle Mismatch" skill/SKILL.md` ≥ 1; scanner não importa `engine/`
+(`grep -c "import engine" skill/references/oracle_mismatch/scanner.py` == 0).

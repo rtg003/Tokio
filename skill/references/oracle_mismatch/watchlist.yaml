@@ -1,0 +1,68 @@
+# Oracle Mismatch — watchlist (Hermes-owned, MVP)
+#
+# Cada `pair` diz ao scanner o que vigiar. NADA aqui emite ordem: só detecção +
+# alerta. Fronteira: Hermes alerta, Eduardo decide e opera manualmente.
+#
+# Símbolos HL são a STRING EXATA do meta da mainnet (confirmar com
+# `scanner.py --list-symbols`). HIP-3 é builder-namespaced (ex.: `xyz:SPCX`).
+# Símbolo não encontrado no meta → `enabled: false` + comentário, NUNCA chute.
+#
+# Campos por par:
+#   pair_id      identificador humano (livre, único)
+#   hl_symbol    string exata do meta HL (default cripto OU builder dex `xyz:*`)
+#   price_type   oracle | mark | mid   (padrão: oracle — é o que misconfigura)
+#   ref_kind     hl_peer | cex
+#   threshold_pct  limiar de |desvio| p/ alertar (sobrescreve defaults)
+#   window_s     janela temporal do hl_peer em s (sobrescreve defaults)
+#   peer_group   (hl_peer) lista de símbolos-irmãos p/ mediana de Δ%
+#   ref          (cex) { venue: binance|coinbase|bybit, symbol: <par spot> }
+#   enabled      false p/ desligar sem apagar
+#
+# Confirmados no meta em 2026-07-13 via --list-symbols (dex `xyz` + default).
+
+defaults:
+  threshold_pct: 10.0   # ~10% do vídeo
+  window_s: 600         # 10 min
+  price_type: oracle
+
+pairs:
+  # === HIP-3 pré-IPO — o caso-manchete do vídeo (SpaceX) ===
+  # Se o oráculo do SPCX descolar e os mega-caps não → alerta. Exatamente a
+  # distorção do vídeo (pré-IPO caiu por misconfig, não por mercado).
+  - pair_id: hip3-spcx
+    hl_symbol: "xyz:SPCX"
+    price_type: oracle
+    ref_kind: hl_peer
+    peer_group: ["xyz:TSLA", "xyz:NVDA", "xyz:META", "xyz:AAPL", "xyz:MSFT"]
+    enabled: true
+
+  # === HIP-3 ação líquida — TSLA vs mega-caps de tech ===
+  - pair_id: hip3-tsla
+    hl_symbol: "xyz:TSLA"
+    price_type: oracle
+    ref_kind: hl_peer
+    peer_group: ["xyz:NVDA", "xyz:AMD", "xyz:META", "xyz:AAPL", "xyz:MSFT", "xyz:GOOGL"]
+    enabled: true
+
+  # === HIP-3 cripto-equities — COIN vs pares expostos a cripto ===
+  - pair_id: hip3-coin
+    hl_symbol: "xyz:COIN"
+    price_type: oracle
+    ref_kind: hl_peer
+    peer_group: ["xyz:HOOD", "xyz:MSTR", "xyz:PLTR", "xyz:CRCL"]
+    enabled: true
+
+  # === Cripto líquida — caminho CEX (comparação de nível HL vs spot) ===
+  - pair_id: cex-btc
+    hl_symbol: "BTC"
+    price_type: oracle
+    ref_kind: cex
+    ref: { venue: binance, symbol: BTCUSDT }
+    enabled: true
+
+  - pair_id: cex-eth
+    hl_symbol: "ETH"
+    price_type: oracle
+    ref_kind: cex
+    ref: { venue: binance, symbol: ETHUSDT }
+    enabled: true
