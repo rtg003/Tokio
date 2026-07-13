@@ -700,18 +700,23 @@ def build_app(state: GatewayState) -> FastAPI:
             state._balance_cache[cache_key] = {"data": balances, "ts": now}
         data = state._balance_cache[cache_key]["data"]
         # dict rico (HL) com fallback p/ chaves legadas (ex.: PaperAdapter).
+        # `spot` = USDC spot LIVRE (total - hold). O adapter já desconta o `hold`
+        # (margem no perp, contada no accountValue) — somar aqui não duplica mais
+        # a margem (UPDATE-0046).
         spot = float(data.get("spot_usdc", 0.0) or 0.0)
         account_value = float(data.get("accountValue", data.get("USDC", 0.0)) or 0.0)
         available = float(
             data.get("withdrawable_perp", data.get("withdrawable", 0.0)) or 0.0)
         return {
             "ok": True,
-            # equity = valor da conta perp (com PnL não-realizado) + spot
+            # equity = valor da conta perp (com PnL não-realizado) + spot livre
             "equity_usd": account_value + spot,
             # withdrawable = o que casa com a UI da HL (sem PnL aberto travado)
             "withdrawable_usd": available + spot,
             "available_usd": available,
             "spot_usdc": spot,
+            "spot_usdc_total": float(data.get("spot_usdc_total", spot) or 0.0),
+            "spot_usdc_hold": float(data.get("spot_usdc_hold", 0.0) or 0.0),
             "unrealized_pnl": float(data.get("unrealized_pnl", 0.0) or 0.0),
             "margin_used": float(data.get("margin_used", 0.0) or 0.0),
             "network": adapter.network,

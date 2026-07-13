@@ -2544,3 +2544,42 @@ verde por sanidade.
   cascade + archive preservando fills/orders).
 - `cd web && npm run build` verde (typecheck). Regressão `tests/gateway/test_intent_regression.py`
   segue verde (sanidade — nada toca o hot path).
+
+## UPDATE-0046 · 2026-07-13 · Status: APLICADO em 2026-07-13
+
+**Origem**: bug de double-counting no `/balance` (você reportou; evidência testnet,
+conta master `0x4124…0915`). O `equity_usd` vinha inflado porque somava
+`accountValue` (perp) + `spot_usdc` **total**, e o `total` do spot inclui o `hold`
+— a mesma margem já contada no `accountValue`. Dinheiro contado duas vezes.
+
+**Tipo**: correção de leitura de saldo (adapter + `/balance`). **Não toca**
+`/intent`/`/cancel`/`handle_intent`/hot path de ordem → §8.4.1 não se aplica;
+regressão de gateway segue verde por sanidade.
+
+### O que mudou (backend — o que você precisa saber)
+- **`engine/exchanges/hyperliquid/adapter.py` `balances()`**: lê agora o `hold`
+  do spot USDC e devolve o **spot LIVRE** (`total - hold`) em `spot_usdc`. Adiciona
+  duas chaves de observabilidade: `spot_usdc_total` e `spot_usdc_hold`. As chaves
+  legadas (`USDC`, `withdrawable`) passam a bater com a realidade (usam o livre).
+- **`engine/gateway/server.py` `/balance`**: sem mudança de fórmula (já somava
+  `spot_usdc`, agora livre) → `equity_usd = accountValue + spot_livre`,
+  `withdrawable_usd = withdrawable_perp + spot_livre`. Expõe `spot_usdc_total` e
+  `spot_usdc_hold` na resposta.
+- **PaperAdapter**: intocado (só devolve `{"USDC": 10_000}`; sem `hold`/`spot_usdc`
+  → cai nos fallbacks do `/balance`, comportamento igual).
+
+### Impacto operacional
+- O `my_equity_fn` do executor lê `/balance?env=` p/ o teto `notional_max =
+  my_eq * max_leverage`. Com o equity antes inflado, o teto estava **alto demais**.
+  O fix **reduz** o `notional_max` (teto menor = menos risco) — comportamento
+  correto. Nenhum gate novo; só o número de equity fica fiel.
+- Combina com o UPDATE-0045 (leverage real na venue): agora tanto o **tamanho**
+  (via equity correto) quanto a **alavancagem efetiva** respeitam a config.
+
+### Validação esperada (com o gateway de pé)
+- `curl -s 'http://127.0.0.1:8700/balance?env=testnet'` →
+  `equity_usd` ≈ $1.041 (não $1.450), `withdrawable_usd` ≈ $599 (não $1.024),
+  `spot_usdc` ≈ $599 (livre), `spot_usdc_hold` ≈ $442, `margin_used` = $442.
+- `.venv/bin/python -m pytest tests/test_hl_adapter_balances.py -q` verde (3 casos:
+  desconta hold; sem `hold` ⇒ livre==total; sem USDC spot ⇒ 0).
+- `tests/gateway/test_intent_regression.py` verde (hot path intacto).

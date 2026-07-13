@@ -244,16 +244,21 @@ class HyperliquidAdapter(ExchangeAdapter):
         unrealized = 0.0
         for ap in state.get("assetPositions", []):
             unrealized += float(ap.get("position", {}).get("unrealizedPnl") or 0)
-        # Somar saldo spot USDC (HL unificado — spot + perp)
+        # Saldo spot USDC (HL unificado — spot + perp). O `total` do spot inclui
+        # o `hold`: a margem que já saiu do spot p/ o perp e JÁ está contada no
+        # `accountValue`. Somar o `total` contaria essa margem duas vezes
+        # (UPDATE-0046) — por isso devolvemos só o spot LIVRE (total - hold).
         try:
             spot_state = self.info.spot_user_state(addr)
-            spot_usdc = 0.0
+            spot_total = spot_hold = 0.0
             for b in spot_state.get("balances", []):
                 if b.get("coin") == "USDC":
-                    spot_usdc = float(b.get("total", 0))
+                    spot_total = float(b.get("total", 0) or 0)
+                    spot_hold = float(b.get("hold", 0) or 0)
                     break
         except Exception:
-            spot_usdc = 0.0
+            spot_total = spot_hold = 0.0
+        spot_usdc = spot_total - spot_hold  # só o USDC spot livre (sem margem)
         return {
             # chaves legadas mantidas por compatibilidade
             "USDC": perp_equity + spot_usdc,
@@ -261,7 +266,9 @@ class HyperliquidAdapter(ExchangeAdapter):
             # dict rico (bug /balance — AJUSTES 2026-07-11)
             "accountValue": perp_equity,
             "withdrawable_perp": withdrawable,
-            "spot_usdc": spot_usdc,
+            "spot_usdc": spot_usdc,            # livre (total - hold)
+            "spot_usdc_total": spot_total,     # observabilidade
+            "spot_usdc_hold": spot_hold,       # margem travada no perp
             "unrealized_pnl": unrealized,
             "margin_used": margin_used,
         }
