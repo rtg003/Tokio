@@ -12,6 +12,7 @@ Phase B (ADR 0002): `subaccount_address` on an order maps to the SDK's
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from typing import Any
@@ -23,6 +24,8 @@ from engine.exchanges.base import (
     OrderResult,
     Position,
 )
+
+_log = logging.getLogger(__name__)
 
 TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz"
 MAINNET_API_URL = "https://api.hyperliquid.xyz"
@@ -90,6 +93,29 @@ class HyperliquidAdapter(ExchangeAdapter):
 
         return Cloid.from_str(cloid) if not isinstance(cloid, Cloid) else cloid
 
+    def _apply_leverage(self, exchange: Any, request: OrderRequest) -> None:
+        """Aplica o teto de alavancagem no ativo ANTES de abrir a posição
+        (UPDATE-0045). Sem isto a HL usa o default do ativo (ex.: 10x na
+        testnet), ignorando o `max_leverage` configurado.
+
+        - `leverage is None` (ex.: estratégias TV que não setam) ⇒ mantém o
+          default da venue.
+        - `reduce_only` (fechamento) ⇒ não mexe em leverage.
+        - `update_leverage` é idempotente na HL (só muda se diferente) e
+          espera `int`, não `float`.
+        - NÃO é gate: é configuração, não validação. Se falhar (ativo sem
+          cross, etc.) loga warning e SEGUE — nunca aborta a ordem
+          (INVARIANTE: nenhum gate novo no caminho de ordem)."""
+        if request.leverage is None or request.reduce_only:
+            return
+        try:
+            exchange.update_leverage(
+                int(request.leverage), request.symbol, is_cross=True)
+        except Exception as exc:  # noqa: BLE001 — configuração, não validação
+            _log.warning(
+                "adapter.update_leverage_failed symbol=%s leverage=%s error=%s",
+                request.symbol, request.leverage, exc)
+
     # -- ExchangeAdapter -------------------------------------------------
     def place_order(self, request: OrderRequest) -> OrderResult:
         try:
@@ -99,6 +125,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                     exchange.vault_address = request.subaccount_address
                 is_buy = request.side == "buy"
                 cloid = self._to_cloid(request.cloid)
+                self._apply_leverage(exchange, request)
                 try:
                     if request.order_type == "market":
                         result = self._place_market_with_retry(

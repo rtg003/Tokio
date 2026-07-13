@@ -1613,10 +1613,36 @@ roda o ciclo (pares `hl_peer` em warm-up no 1º boot, `cex` amostrando HL vs spo
 `grep -c "Oracle Mismatch" skill/SKILL.md` ≥ 1; scanner não importa `engine/`
 (`grep -c "import engine" skill/references/oracle_mismatch/scanner.py` == 0).
 
-## UPDATE-0045 · 2026-07-13 · Status: PENDENTE
+## UPDATE-0045 · 2026-07-13 · Status: APLICADO em 2026-07-13
 
 Origem: Hermes (operação) — bug de risco encontrado em produção (testnet)
 Tipo: operacao | infra
+
+### Resolução do construtor (2026-07-13)
+
+Fix aplicado conforme a opção (A) recomendada — no adapter, com o valor vindo
+do gateway. Mudança aditiva/retrocompatível, sem gate novo no caminho de ordem:
+
+- `engine/exchanges/base.py`: `OrderRequest.leverage: float | None = None`
+  (default None ⇒ mantém o comportamento atual de quem não seta).
+- `engine/gateway/server.py`: o `OrderRequest` passado ao adapter agora leva
+  `leverage=leverage` — o teto JÁ calculado por
+  `min(intent.leverage, max_lev_asset, max_leverage_global)` (linhas 445-448).
+- `engine/exchanges/hyperliquid/adapter.py`: novo `_apply_leverage()` chamado
+  em `place_order` ANTES do dispatch market/limit. Regras: `leverage is None`
+  ou `reduce_only` ⇒ pula (fechamento não mexe em leverage; TV sem leverage
+  mantém default). Chama `exchange.update_leverage(int(leverage), symbol,
+  is_cross=True)`. Se falhar, `logger.warning` e SEGUE — NÃO aborta a ordem.
+- `tests/test_hl_adapter_slippage.py`: 4 testes novos — leverage aplicada antes
+  de abrir (`events == ["leverage","open"]`, `int`, cross), `leverage=None`
+  pula, `reduce_only` não mexe, e falha de `update_leverage` não aborta a ordem.
+
+Validação: `grep -rn update_leverage engine/` ≥1 ✔ · `pytest -k leverage` 12
+verde ✔ · `test_intent_regression.py` verde (hot path intacto) ✔ · suite full
+290 passed (1 falha PRÉ-EXISTENTE e não relacionada:
+`test_discovery_funnel.py::test_scan_approves_swing_rejects_traps`, já vermelha
+no HEAD limpo `6fd037a`). Validação #2 (curl `/api/positions` → leverage=5) fica
+para o operador confirmar na testnet com o gateway de pé.
 
 ### Resumo
 

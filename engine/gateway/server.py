@@ -524,6 +524,10 @@ class GatewayState:
             order_type=intent.order_type, price=intent.price,
             reduce_only=intent.reduce_only, cloid=cloid,
             subaccount_address=intent.subaccount_address,
+            # UPDATE-0045: leva o teto já calculado (min do intent, do ativo e
+            # do global) para o adapter APLICAR na venue via update_leverage —
+            # sem isto a HL abria com o default do ativo (ex.: 10x).
+            leverage=leverage,
         ))
         latency_ms = (time.perf_counter() - t0) * 1000
         # Ativo sem liquidez: o IOC agressivo não cruzou o book mesmo após todos

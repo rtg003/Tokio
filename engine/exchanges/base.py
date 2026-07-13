@@ -25,6 +25,8 @@ class OrderRequest:
     reduce_only: bool = False
     cloid: str | None = None      # client order id — strategy attribution
     subaccount_address: str | None = None  # Phase B (vaultAddress)
+    leverage: float | None = None  # teto de alavancagem a aplicar no ativo antes
+    #  de abrir (UPDATE-0045). None ⇒ mantém o default da venue.
 
 
 @dataclass
