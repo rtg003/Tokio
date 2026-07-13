@@ -137,6 +137,27 @@ Entrada no crontab do usuário `tokio` (operação do Hermes):
 - **Warm-up esperado** nos primeiros ~10 min após habilitar/boot (pares `hl_peer`
   sem janela ainda).
 
+### Listing Watch — detecção de novos listings (1x/dia)
+
+O universe do builder dex `xyz:` muda: novos equities/pré-IPO aparecem e
+sommem. O scanner só vigia o que está no `watchlist.yaml`, então um listing
+novo passa despercebido até alguém adicionar manualmente. O listing watch
+fecha essa lacuna:
+
+```cron
+0 12 * * * cd /home/tokio/Tokio && .venv/bin/python skill/references/oracle_mismatch/listing_watch.py >> logs/oracle_mismatch-listing.log 2>&1
+```
+
+- Roda **09:00 SP** (12:00 UTC) — pega listings adicionados overnight/pré-market
+  US antes da abertura regular (10:30 SP).
+- Compara o universe `xyz:` atual contra o snapshot do dia anterior
+  (`state/oracle_listings_snapshot.json`).
+- **Silencioso** quando não há mudanças (só loga o ciclo no JSONL).
+- **Alerta Telegram** quando há símbolos novos (🆕) ou removidos (❌), com a
+  lista e o preço oracle de cada um.
+- Mesma fronteira: só leitura pública + alerta, zero ordem, zero engine.
+- Reaproveita `fetch_all_hl_prices()` do `scanner.py` (import direto).
+
 ## Pitfalls
 
 - **Falso positivo** de `hl_peer` se o peer-group for pequeno/correlacionado demais,
