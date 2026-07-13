@@ -2486,7 +2486,7 @@ afetado — ele envia a chave canônica `environment`.
   incluindo `test_intent_env_alias_routes_mainnet` e
   `test_intent_environment_key_still_works`.
 
-## UPDATE-0043 · 2026-07-13 · Status: PENDENTE
+## UPDATE-0043 · 2026-07-13 · Status: APLICADO em 2026-07-13
 
 **Origem**: lote de ajustes de UI/UX das dashboards (Copy Trade + Trading View) +
 nova capacidade de **exclusão de estratégia TV** direto da tabela, pedidos pelo
