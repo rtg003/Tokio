@@ -1759,3 +1759,127 @@ aplicou 10x, não 5x. Com 5x a margin seria ~$807.
    → `leverage` igual a `cfg.max_leverage` (5.0), não 10.
 3. `.venv/bin/python -m pytest tests/ -q -k leverage` verde.
 4. `tests/gateway/test_intent_regression.py` segue verde (hot path).
+
+## UPDATE-0046 · 2026-07-13 · Status: PENDENTE
+
+Origem: Hermes (operação) — bug de double-counting no /balance
+Tipo: operacao | infra
+
+### Resumo
+
+**BUG no `/balance`**: o endpoint reporta `equity_usd` inflado porque soma
+`accountValue` (perp) + `spot_usdc` (total), mas o `spot_usdc` inclui o
+`hold` — que é a mesma margin já contabilizada no `accountValue`. O
+dinheiro é contado duas vezes.
+
+### Evidência (testnet, conta master 0x4124...0915)
+
+Resposta da HL API:
+
+```json
+// user_state (perp)
+"marginSummary": {
+  "accountValue": "442.38",
+  "totalMarginUsed": "442.38"
+},
+"withdrawable": "0.0",
+
+// spot_user_state
+"balances": [{
+  "coin": "USDC",
+  "total": "1041.58",
+  "hold": "442.38",
+  "entryNtl": "0.0"
+}]
+```
+
+O que o engine reporta (`/balance?env=testnet`):
+
+```json
+{
+  "equity_usd": 1450.18,
+  "withdrawable_usd": 1024.67,
+  "spot_usdc": 1041.58,
+  "margin_used": 442.38,
+  "available_usd": 0.0
+}
+```
+
+O valor real:
+
+```
+equity = (spot_total - hold) + accountValue
+       = (1041.58 - 442.38) + 442.38
+       = 599.20 + 442.38
+       = 1041.58
+
+withdrawable = spot_total - hold = 599.20
+```
+
+### Causa raiz
+
+`engine/exchanges/hyperliquid/adapter.py`, método `balances()` (linha
+~262):
+
+```python
+spot_usdc = float(b.get("total", 0))   # lê "total" (inclui hold)
+```
+
+Depois em `engine/gateway/server.py`, endpoint `/balance` (linha ~710):
+
+```python
+equity_usd = account_value + spot     # 442 + 1041 = 1483 (double-count)
+withdrawable_usd = available + spot   # 0 + 1041 = 1041 (ignora hold)
+```
+
+O `accountValue` do perp já é a margin que saiu do spot (o `hold`). Mas
+o `spot_usdc` usa `total` que inclui esse mesmo `hold`. Resultado: a
+margin é contada uma vez no perp e outra no spot.
+
+### Ações do Cursor
+
+1. **No adapter** (`engine/exchanges/hyperliquid/adapter.py`, método
+   `balances()`): ler o `hold` do spot e devolver o spot **livre**
+   (total - hold):
+
+   ```python
+   spot_total = float(b.get("total", 0))
+   spot_hold = float(b.get("hold", 0))
+   spot_usdc = spot_total - spot_hold  # só o livre
+   ```
+
+   Alternativamente, devolver ambos e deixar o `/balance` decidir:
+
+   ```python
+   "spot_usdc": spot_total - spot_hold,
+   "spot_usdc_total": spot_total,
+   "spot_usdc_hold": spot_hold,
+   ```
+
+2. **No `/balance`** (`engine/gateway/server.py`): se o adapter já
+   devolver spot livre, o cálculo atual passa a estar correto:
+
+   ```python
+   equity_usd = account_value + spot    # 442 + 599 = 1041 ✅
+   withdrawable_usd = available + spot  # 0 + 599 = 599 ✅
+   ```
+
+3. **Verificar o `PaperAdapter`** (`engine/exchanges/paper.py`): o
+   paper adapter provavelmente não tem `hold` — garantir que não
+   quebra.
+
+4. **Impacto no executor**: o `my_equity_fn` do executor lê
+   `/balance?env=` para calcular o teto de notional (`notional_max =
+   my_eq * max_leverage`). Com o equity inflado, o teto estava alto
+   demais — o fix vai **reduzir** o notional_max, o que é correto
+   (teto menor = menos risco).
+
+### Validação esperada
+
+1. `curl -s 'http://127.0.0.1:8700/balance?env=testnet'` → `equity_usd`
+   ≈ $1,041 (não $1,450).
+2. `withdrawable_usd` ≈ $599 (não $1,024).
+3. `spot_usdc` = total - hold ≈ $599.
+4. `margin_used` continua $442 (não muda).
+5. `tests/gateway/test_intent_regression.py` verde.
+6. PaperAdapter não quebra (sem `hold` no paper).
