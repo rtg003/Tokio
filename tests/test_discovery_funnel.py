@@ -185,9 +185,11 @@ def test_scan_approves_swing_rejects_traps(db) -> None:
     rejected = {c.address: c.reject_reason for c in result.rejected}
 
     assert GOOD in approved
-    # v9: o scalper morre ANTES da simulação — 19 dias de histórico < F16 (30d)
-    # (na v7 ele morria no F15; o edge magro continua barrado, mais cedo)
-    assert SCALP in rejected and rejected[SCALP].startswith("F16")
+    # logic v14: f16_min_coverage_days caiu p/ 10 dias, e o scalper tem ~19d de
+    # histórico → PASSA a cobertura (F16) e morre na SIMULAÇÃO: copiar o edge
+    # magro não paga taxa+slippage (F15, net simulado de 30d negativo). Na v9 o
+    # F16 era 30d e o matava antes; hoje a simulação é o filtro decisivo.
+    assert SCALP in rejected and rejected[SCALP].startswith("F15")
     assert DEPOSIT in rejected and rejected[DEPOSIT].startswith("F10")  # anti-aporte
     assert result.funnel_stats["aprovados"] == len(result.approved)
     assert result.funnel_stats["coletados"] == 5
