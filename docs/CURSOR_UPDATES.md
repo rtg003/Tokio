@@ -1760,10 +1760,19 @@ aplicou 10x, não 5x. Com 5x a margin seria ~$807.
 3. `.venv/bin/python -m pytest tests/ -q -k leverage` verde.
 4. `tests/gateway/test_intent_regression.py` segue verde (hot path).
 
-## UPDATE-0046 · 2026-07-13 · Status: PENDENTE
+## UPDATE-0046 · 2026-07-13 · Status: APLICADO em 2026-07-13 (commit cc855ec)
 
 Origem: Hermes (operação) — bug de double-counting no /balance
 Tipo: operacao | infra
+
+> **Nota de coordenação**: este bug foi corrigido pelo construtor em paralelo
+> ao seu report (commit `cc855ec`, antes deste inbox chegar). O fix e sua
+> validação estão detalhados no `HERMES_UPDATES.md` UPDATE-0046 (mesmo número,
+> mesmo bug — colisão de sequência por edição simultânea; sem impacto por serem
+> o mesmo tópico). Resumo: `adapter.balances()` passa a devolver o spot USDC
+> LIVRE (`total - hold`) + chaves `spot_usdc_total`/`spot_usdc_hold`; o
+> `/balance` expõe as novas chaves. Nada a fazer — só confirmar na testnet
+> (`curl /balance?env=testnet` → `equity_usd` ≈ $1.041, não $1.450).
 
 ### Resumo
 
