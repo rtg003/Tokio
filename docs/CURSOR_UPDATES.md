@@ -1612,3 +1612,124 @@ Validação: `python skill/references/oracle_mismatch/scanner.py --once --dry-ru
 roda o ciclo (pares `hl_peer` em warm-up no 1º boot, `cex` amostrando HL vs spot);
 `grep -c "Oracle Mismatch" skill/SKILL.md` ≥ 1; scanner não importa `engine/`
 (`grep -c "import engine" skill/references/oracle_mismatch/scanner.py` == 0).
+
+## UPDATE-0045 · 2026-07-13 · Status: PENDENTE
+
+Origem: Hermes (operação) — bug de risco encontrado em produção (testnet)
+Tipo: operacao | infra
+
+### Resumo
+
+**BUG CRÍTICO DE RISCO**: o adapter Hyperliquid NUNCA chama
+`Exchange.update_leverage()`. As posições abrem com a alavancagem
+**padrão da HL** (10x para a maioria dos perps na testnet), ignorando
+`cfg.max_leverage` e `risk.max_leverage_global`. Em produção agora:
+trader `0xf5b0` (config 5x) com posição ZRO a **10x reais** — o dobro
+do teto configurado.
+
+### Diagnóstico completo
+
+1. **Executor** (`executor.py:334, 537`): envia `leverage=cfg.max_leverage`
+   no `send_intent`. Valor correto (5.0).
+2. **Gateway** (`server.py:445-448`): faz
+   `leverage = min(intent.leverage, max_lev_asset, max_leverage_global)`
+   = `min(5.0, ?, 5.0)` = 5.0. Passa para o `risk_enforcer` como
+   validação de notional. Correto.
+3. **Risk enforcer** (`risk_enforcer.py:149-150`): rejeita se
+   `leverage > max_leverage_global`. Correcto, mas só valida o
+   **campo do intent**, não aplica na HL.
+4. **Adapter** (`adapter.py:94-150`): `place_order` →
+   `_place_market_with_retry` → `exchange.market_open()`.
+   **NENHUMA chamada a `exchange.update_leverage()` em qualquer
+   ponto do fluxo.** O SDK tem o método
+   (`Exchange.update_leverage(leverage: int, name: str, is_cross=True)`)
+   mas o engine nunca o invoca.
+5. **Resultado**: a HL abre a posição com a alavancagem **padrão do
+   ativo** (geralmente 10x). O `notional_max = my_eq * max_leverage`
+   (`executor.py:428`) limita o **tamanho** (size) da posição, mas
+   não a **alavancagem efetiva** aplicada pela corretora.
+
+### Evidência em produção (testnet, 2026-07-13)
+
+```
+Trader:  0xf5b0af85 (status=TESTNET, max_leverage=5.0, copy_pinned=1)
+Posição: ZRO, size=4,672.4, entry=$0.8524, position_value=$4,037
+Margin:  $453  →  leverage efetiva = $4,037 / $453 = 10x  (deveria ser ≤5x)
+Equity:  $1,505 (testnet)
+```
+
+`notional_max` = $1,505 × 5.0 = $7,525 — limitou o size corretamente
+($4,037 < $7,525), mas a margin só precisou de $453 porque a HL
+aplicou 10x, não 5x. Com 5x a margin seria ~$807.
+
+### Impacto
+
+- **Testnet**: posição 10x em ZRO com `0xf5b0` (teste, sem perda real).
+- **Mainnet**: `0x2ae6` (BTC, max_leverage=3.0) corre o MESMO risco se
+  abrir uma posição — a HL aplicará o default do ativo, não 3x.
+- O `notional_max` dá falsa sensação de segurança: limita tamanho,
+  não alavancagem. Uma posição "pequena" pode estar super-alavancada.
+- Inconsistência entre simulação (`metrics.simulate_copy` usa
+  `max_copy_leverage` como teto do notional) e execução real.
+
+### Ações do Cursor
+
+1. **Aplicar `update_leverage` no adapter ANTES de abrir posição**.
+   O ponto natural é dentro de `place_order` (ou
+   `_place_market_with_retry`), antes do `market_open`/`order`.
+   Sugerência:
+   ```python
+   # No adapter, antes de enviar a ordem:
+   if request.leverage is not None:
+       exchange.update_leverage(
+           int(request.leverage), request.symbol, is_cross=True
+       )
+   ```
+   Nota: `update_leverage` aceita `int` (não float). O SDK pode
+   arredondar ou rejeitar — testar com 3, 5, 10.
+
+2. **Adicionar `leverage` ao `OrderRequest`** se ainda não existir
+   (verificar `engine/exchanges/base.py`). Hoje o `IntentRequest`
+   do gateway tem `leverage: float | None`, mas o `OrderRequest`
+   do adapter pode não ter o campo — o `place_order` atual não
+   recebe leverage, então o adapter não tem como saber qual aplicar.
+
+3. **Decidir onde aplicar**: duas opções:
+   - **(A) No adapter** (`adapter.py`): toda ordem passa por aqui,
+     centralizado. Mas o adapter não sabe distinguir copy_trade de
+     TV — precisa receber o valor.
+   - **(B) No executor** (`executor.py`): antes do `send_intent`,
+     chamar um endpoint separado `set_leverage`. Mais explícito,
+     mas adiciona round-trip.
+   Recomendo **(A)** — menos acoplamento, e o `OrderRequest.leverage`
+   já vem do `IntentRequest.leverage` que o gateway seta.
+
+4. **Idempotência**: `update_leverage` é segura de chamar múltiplas
+   vezes (a HL é idempotente — só atualiza se diferente). Pode chamar
+   a cada ordem sem overhead real.
+
+5. **Cross vs isolated**: o default do SDK é `is_cross=True`.
+   Manter cross (consistente com o estado atual das posições).
+
+6. **Testes**:
+   - Unit test: mock do `exchange.update_leverage` verificando que
+     é chamado com o valor correto antes de `market_open`.
+   - Integration test (testnet): abrir posição, consultar
+     `/api/positions?strategy_id=ct_f5b0af85`, confirmar
+     `leverage == cfg.max_leverage` (não o default da HL).
+   - Edge case: `leverage=None` (TV strategies que não setam
+     leverage) → não chamar `update_leverage`, manter default.
+
+7. **Não adicionar gate novo no caminho de ordem** (INVARIANTE do
+   protocolo): `update_leverage` é configuração, não validação.
+   Se falhar (asset não suporta cross, etc.), logar warning e
+   continuar — não abortar a ordem.
+
+### Validação esperada
+
+1. `grep -rn "update_leverage" engine/` retorna ≥1 match (adapter).
+2. Após abrir posição na testnet:
+   `curl -s 'http://127.0.0.1:8700/api/positions?strategy_id=ct_f5b0af85'`
+   → `leverage` igual a `cfg.max_leverage` (5.0), não 10.
+3. `.venv/bin/python -m pytest tests/ -q -k leverage` verde.
+4. `tests/gateway/test_intent_regression.py` segue verde (hot path).
