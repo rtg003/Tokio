@@ -1920,10 +1920,10 @@ Ações tomadas pelo Hermes:
 1. **Limpei 46 GB** de backups `.db` não comprimidos (só mantive os 3
    `.gz` válidos de 5–7/07). Disco caiu de 39% → 27%.
 2. **Reescrevi `tokio_sqlite_backup.sh`**: usa `sqlite3 .backup` (cópia
-   consistente online via API oficial, sem lock global) + `gzip -c` com
-   timeout 300s + limpeza automática de `.db` não comprimidos > 1 dia +
-   retenção 7 dias em `.gz`. Validado: DB de 7.8 GB → .gz de 1.2 GB em
-   ~30s. **Backup funcional agora.**
+   consistente online via API oficial, sem lock global) + `gzip -f -c`
+   com timeout 300s. **Arquivo único `tokio_latest.db.gz`** — sempre
+   sobrescreve o último (sem acumular). Validado: DB de 7.8 GB → .gz
+   de 1.2 GB em ~30s. **Pasta de backups agora contém só 1 arquivo.**
 3. **Reativei o cron "Monitor de drift do copy trade"** (estava disabled
    desde 12/07).
 4. **Listing watch** (`listing_watch.py`) adicionado ao UPDATE-0044 e ao
