@@ -135,6 +135,55 @@ class Ledger:
                  "policy": "allow (netting reduces real margin); review if unintended"},
             )
 
+    def strategy_holding_symbol(self, symbol: str) -> str | None:
+        """Estratégia ÚNICA que segura `symbol` agora, ou None se 0 ou >1.
+
+        Usado para atribuir fills órfãos (ADL/liquidação, cloid=null): a venue
+        deslevera por ativo, então um fill sem cloid só é atribuível sem
+        ambiguidade quando exatamente uma estratégia tem posição naquele símbolo.
+        Nunca cruza estratégias (§5.1): >1 dono ⇒ None (fica em visão de sistema).
+        """
+        with self._lock:
+            holders = [
+                sid for sid, book in self._books.items()
+                if (pos := book.positions.get(symbol)) is not None
+                and abs(pos.size) > 1e-12
+            ]
+        return holders[0] if len(holders) == 1 else None
+
+    def hydrate_from_db(self, rows: list[dict[str, Any]]) -> None:
+        """Reconstrói os books em memória a partir dos fills persistidos.
+
+        `Ledger` é 100% em memória; após um restart do gateway o reconcile de
+        startup compararia o alvo do trader contra um book VAZIO e reabriria tudo
+        (posições dobradas). Reproduzir o histórico completo de fills (ordem
+        `id ASC`) reconstrói o SIZE líquido corrente — aberturas e fechamentos se
+        anulam. `strategy_id` vem explícito de cada linha, então independe do
+        `_cloid_map` (que não sobrevive ao restart).
+
+        Chamado no startup do gateway (antes dos runners). Não altera a
+        assinatura de `apply_fill`.
+        """
+        with self._lock:
+            self._books.clear()
+        # `_lock` é não-reentrante e `apply_fill` o re-adquire — replay FORA do
+        # lock. Silencia o logger no replay p/ evitar rajada de warnings no boot.
+        saved_logger = self.logger
+        self.logger = None
+        try:
+            for row in rows:
+                self.apply_fill(
+                    cloid=row.get("cloid"),
+                    strategy_id=row["strategy_id"],
+                    symbol=row["symbol"],
+                    side=row["side"],
+                    price=float(row["price"]),
+                    size=float(row["size"]),
+                    fee=float(row["fee"] or 0.0),
+                )
+        finally:
+            self.logger = saved_logger
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {

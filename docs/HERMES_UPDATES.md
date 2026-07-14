@@ -2644,3 +2644,63 @@ secret novo, sem mudança de `logic_version`.
   `tests/gateway/test_period_tz_filter.py` (fill 21:16 SP entra; 21:30 SP do dia
   anterior fica de fora) e `tests/gateway/test_intent_regression.py` (hot path).
 - `cd web && npm run build` verde.
+
+## UPDATE-0048 · 2026-07-14 · Status: PENDENTE
+
+**Origem**: 3 bugs de produção que **você** reportou (trader
+`0x1a5db900797a672e2e52f8d089adddeb646563a4`, `ct_1a5db900`, TESTNET espelhando
+mainnet, 2026-07-14). São independentes; a evidência do log/DB foi decisiva.
+
+**Tipo**: correção de engine (ledger + executor + gravação de fill). **Não toca**
+`/intent`/`/cancel`/`handle_intent`/hot path de ordem → §8.4.1 não se aplica; a
+regressão de gateway segue verde sem edição. **Tem migration** (`0020`), sem
+secret novo, sem mudança de `logic_version`. `apply_fill` mantém a assinatura.
+
+### Bug C — Ledger não reidratado no restart (posições dobradas)
+- **Sintoma**: após `systemctl restart` o reconcile de startup comparava o alvo
+  do trader contra um ledger VAZIO e **reabria tudo** (AAVE 15.41→30.80, HYPE
+  0→2.32).
+- **Fix**: `Ledger.hydrate_from_db(rows)` (`engine/gateway/ledger.py`) limpa os
+  books e reproduz os fills persistidos (ordem `id ASC`, `strategy_id` explícito)
+  reconstruindo o SIZE líquido. Chamado no `main()` do gateway **antes** de os
+  runners subirem, com `SELECT … FROM fills WHERE strategy_id IS NOT NULL ORDER BY
+  id ASC`. Loga `ledger.hydrated {fills, strategies}` no boot.
+
+### Bug A — partial fill tratado como total (drift que nunca corrigia)
+- **Sintoma**: ordem 20.98 preenche 0.16, mas `_my_pos` virava 20.98 (desejado);
+  a seleção otimista×ledger escolhia o otimista falso, `delta=0`, e o reconcile
+  **nunca** completava a posição.
+- **Fix** (`engine/strategies/copy_trade/executor.py`): `_my_pos` passa a refletir
+  a posição REAL resultante via `filled_size` da resposta (`on_target_fill` e
+  `reconcile`). Fallback ao desejado quando `filled_size` ausente (dry_run) —
+  comportamento antigo preservado. A heurística de seleção e o cooldown de 120s
+  ficam intactos (proteção anti-runaway).
+
+### Bug B — fills órfãos de ADL/liquidação (cloid=null) sumiam o PnL
+- **Sintoma**: fills de auto-deleverage chegam sem `cloid`; `strategy_id` ficava
+  NULL e `realized_pnl` NULL (ignorando o `closedPnl` da HL) — PnL sumia da dash.
+- **Fix** (`engine/gateway/server.py on_own_fill` + `ledger.py`):
+  1. `Ledger.strategy_holding_symbol(symbol)` atribui o fill órfão à estratégia
+     ÚNICA que segura o símbolo (None se 0 ou >1 — **nunca cruza estratégias**,
+     §5.1);
+  2. usa `closedPnl` da HL quando o ledger não computa realizado (sem dono único
+     → strategy_id NULL, visão de sistema, mas o PnL aparece);
+  3. colunas `tid`/`fill_hash` (migration `0020_fills_idempotency.sql`) + guarda
+     de idempotência no topo de `on_own_fill`: `tid` já gravado ⇒ pula (não dobra
+     ledger nem DB) — protege contra re-entrega do websocket.
+
+### Impacto operacional
+- Restart do gateway não reabre/dobra posições. Partial fills reais convergem via
+  reconcile. PnL realizado de fechamentos por ADL volta a aparecer atribuído.
+
+### Investigar à parte (fora do escopo)
+- `sqlite_sequence`=234 vs 58 linhas em `fills` — gap a investigar separadamente.
+
+### Validação esperada
+- `.venv/bin/python -m pytest tests/ -q` verde (310 = 298 + 12 novos), incluindo
+  `tests/test_partial_fill.py`, `tests/gateway/test_orphan_fill.py`,
+  `tests/test_ledger_hydrate.py`, e a regressão do hot path
+  `tests/gateway/test_intent_regression.py`.
+- `cd web && npm run build` verde.
+- No boot do gateway: log `ledger.hydrated` com as posições restauradas; o
+  reconcile de startup **não** reabre AAVE/HYPE.

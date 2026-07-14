@@ -336,7 +336,16 @@ class CopyTradeExecutor:
             environment=environment,
         )
         if result.get("ok"):
-            self._my_pos[key] = my_new
+            # Grava a posição REAL resultante a partir do quanto preencheu, não o
+            # desejado: um partial fill (ex.: ordem 20.98, preenche 0.16) deixaria
+            # `_my_pos` otimista mascarando o buraco e o reconcile nunca corrigiria.
+            # `filled_size` ausente (dry_run) ⇒ fallback ao comportamento atual.
+            filled = result.get("filled_size")
+            if filled is None:
+                self._my_pos[key] = my_new
+            else:
+                signed = float(filled) if delta > 0 else -float(filled)
+                self._my_pos[key] = my_prev + signed
         elif result.get("reason") == "no_liquidity":
             # o gateway não achou book mesmo após todos os passos de slippage —
             # cacheia p/ não reenviar a cada reconcile (log 1x).
@@ -542,8 +551,15 @@ class CopyTradeExecutor:
                 # must still reach the stuck cap instead of looping forever.
                 self._reconcile_attempts[key] = attempts + 1
                 if result.get("ok"):
-                    # optimistic: assume it fills; cooldown covers order->ledger gap
-                    self._my_pos[key] = desired
+                    # posição REAL após o preenchido (partial fill não fica
+                    # mascarado como se tivesse completado); cooldown cobre o gap
+                    # order->ledger. `filled_size` ausente (dry_run) ⇒ fallback.
+                    filled = result.get("filled_size")
+                    if filled is None:
+                        self._my_pos[key] = desired
+                    else:
+                        signed = float(filled) if delta > 0 else -float(filled)
+                        self._my_pos[key] = actual + signed
                     self._target_pos[key] = target_now
                     self._reconcile_cooldown[key] = now
                 elif result.get("reason") == "no_liquidity":

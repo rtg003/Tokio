@@ -329,21 +329,45 @@ class GatewayState:
     # -- fills ------------------------------------------------------------
     def on_own_fill(self, fill: dict[str, Any]) -> None:
         cloid = fill.get("cloid")
+        symbol = str(fill.get("coin", ""))
         side = fill.get("side", "")
         side = {"B": "buy", "A": "sell", "buy": "buy", "sell": "sell"}.get(side, side)
         price = float(fill.get("px", 0))
         size = abs(float(fill.get("sz", 0)))
         fee = float(fill.get("fee", 0))
-        realized = self.ledger.apply_fill(
-            cloid=cloid, symbol=str(fill.get("coin", "")), side=side,
-            price=price, size=size, fee=fee,
-        )
+        # HL manda esses no fill cru (adapter passa sem tocar); paper/teste não.
+        tid = fill.get("tid")
+        tid = str(tid) if tid is not None else None
+        fill_hash = fill.get("hash")
+        closed_pnl = fill.get("closedPnl")
+        # Idempotência: se este `tid` já foi gravado, é re-entrega do WS — pular
+        # ANTES do apply_fill, senão o ledger dobra a posição.
+        if tid is not None and self.db.query(
+            "SELECT 1 FROM fills WHERE tid = ? LIMIT 1", (tid,)
+        ):
+            self.logger.info("fill.duplicate_skipped", {
+                "tid": tid, "cloid": cloid, "symbol": symbol,
+            })
+            return
         order_rows = self.db.query(
             "SELECT id, strategy_id FROM orders WHERE cloid = ?", (cloid,)
         ) if cloid else []
         strategy_id = self.ledger.strategy_for_cloid(cloid) or (
             order_rows[0]["strategy_id"] if order_rows else None
         )
+        # Fill órfão (ADL/liquidação: cloid=null, sem ordem casada): atribui à
+        # estratégia ÚNICA que segura o símbolo (None se 0 ou >1 — nunca cruza
+        # estratégias, §5.1). Assim o realizado do fechamento não some da dash.
+        if strategy_id is None and cloid is None:
+            strategy_id = self.ledger.strategy_holding_symbol(symbol)
+        realized = self.ledger.apply_fill(
+            cloid=cloid, strategy_id=strategy_id, symbol=symbol, side=side,
+            price=price, size=size, fee=fee,
+        )
+        # Sem dono único o ledger não computa realizado; usa o `closedPnl` da HL
+        # (visão de sistema — strategy_id fica NULL, mas o PnL aparece).
+        if realized is None and closed_pnl is not None and float(closed_pnl) != 0.0:
+            realized = float(closed_pnl)
         # Fonte de verdade do network é o `exchange_id` da ordem (fixado em
         # handle_intent a partir do adapter que EXECUTOU), não o `_network` do
         # callback do websocket — este pode vir ausente/errado em bordas (adapter
@@ -390,6 +414,8 @@ class GatewayState:
             "realized_pnl": realized,
             "network": network,
             "master_address": getattr(fill_adapter, "account_address", None),
+            "tid": tid,
+            "fill_hash": fill_hash,
             "ts": utcnow(),
         })
         if cloid:
@@ -1831,6 +1857,17 @@ def main() -> None:
         adapter = make_adapter(settings.exchange.active, settings.exchange.network)
         adapters = {adapter.network: adapter}
     state = GatewayState(settings, adapter, db, adapters=adapters)
+    # Reidrata o ledger em memória a partir dos fills persistidos ANTES de os
+    # runners subirem: sem isto, o reconcile de startup compara o alvo do trader
+    # contra um book vazio e reabre todas as posições (dobra AAVE/HYPE etc.).
+    hydrate_rows = db.query(
+        "SELECT cloid, strategy_id, symbol, side, price, size, fee "
+        "FROM fills WHERE strategy_id IS NOT NULL ORDER BY id ASC"
+    )
+    state.ledger.hydrate_from_db(hydrate_rows)
+    state.logger.info("ledger.hydrated", {
+        "fills": len(hydrate_rows), "strategies": len(state.ledger.books()),
+    })
     state.watch_kill_file()
     app = build_app(state)
     # GATEWAY_BIND overrides the listen address (VPS: 127.0.0.1 — nothing
