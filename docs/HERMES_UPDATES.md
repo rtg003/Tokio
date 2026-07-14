@@ -2586,7 +2586,7 @@ regressão de gateway segue verde por sanidade.
 
 ---
 
-## UPDATE-0047 · 2026-07-14 · Status: PENDENTE
+## UPDATE-0047 · 2026-07-14 · Status: APLICADO em 2026-07-14
 
 **Origem**: ajustes de UI pedidos pelo rtg003 + bug do filtro de período nos
 KPIs que **você** reportou (trader `ct_f5b0af85`, testnet): ao filtrar "hoje" o
