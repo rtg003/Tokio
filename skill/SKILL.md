@@ -289,6 +289,22 @@ debounce/histerese, warm-up, cron, pitfalls, Fase 2) em
 `references/oracle_mismatch/` ([README](references/oracle_mismatch/README.md)).
 Operação: `scanner.py --list-symbols | --once [--dry-run] | --reset-state`.
 
+**Listing Watch** (detecção de novos listings, 1x/dia às 09:00 SP / 12:00 UTC):
+roda `listing_watch.py` via cron, compara o universe `xyz:` atual contra o
+snapshot do dia anterior (`state/oracle_listings_snapshot.json`) e alerta no
+Telegram quando símbolos novos 🆕 ou removidos ❌ aparecem. Silencioso sem
+mudanças. Fecha a lacuna: o scanner só vigia o que está no `watchlist.yaml`,
+então um listing novo passaria despercebido até adicionar manualmente. Quando
+um símbolo novo aparecer, Eduardo decide se vale vigiar e o Hermes adiciona no
+`watchlist.yaml` (no próximo ciclo do scanner já está ativo). Mesma fronteira:
+só leitura pública + alerta, zero ordem, zero engine.
+
+Crontab do tokio (Oracle Mismatch):
+```cron
+* * * * * cd /home/tokio/Tokio && .venv/bin/python skill/references/oracle_mismatch/scanner.py --once >> logs/oracle_mismatch-cron.log 2>&1
+0 12 * * * cd /home/tokio/Tokio && .venv/bin/python skill/references/oracle_mismatch/listing_watch.py >> logs/oracle_mismatch-listing.log 2>&1
+```
+
 Referências: `references/strategy_md_template.md` (template obrigatório de
 `strategy.md`), `references/lessons.md` (lições agregadas de post-mortems),
 `references/hyperliquid_ops.md` (receitas de operação da HL: saldo, agent
