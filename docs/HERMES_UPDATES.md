@@ -2645,7 +2645,7 @@ secret novo, sem mudança de `logic_version`.
   anterior fica de fora) e `tests/gateway/test_intent_regression.py` (hot path).
 - `cd web && npm run build` verde.
 
-## UPDATE-0048 · 2026-07-14 · Status: PENDENTE
+## UPDATE-0048 · 2026-07-14 · Status: APLICADO em 2026-07-14
 
 **Origem**: 3 bugs de produção que **você** reportou (trader
 `0x1a5db900797a672e2e52f8d089adddeb646563a4`, `ct_1a5db900`, TESTNET espelhando
