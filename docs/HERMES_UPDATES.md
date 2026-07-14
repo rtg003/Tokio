@@ -2705,7 +2705,7 @@ secret novo, sem mudança de `logic_version`. `apply_fill` mantém a assinatura.
 - No boot do gateway: log `ledger.hydrated` com as posições restauradas; o
   reconcile de startup **não** reabre AAVE/HYPE.
 
-## UPDATE-0049 · 2026-07-14 · Status: PENDENTE
+## UPDATE-0049 · 2026-07-14 · Status: APLICADO em 2026-07-14
 
 **Origem**: follow-on do UPDATE-0048. O fix do partial fill (Bug A) tornou
 `_my_pos` verdadeiro, então o `reconcile` passou a reenviar o restante de um
