@@ -2704,3 +2704,57 @@ secret novo, sem mudança de `logic_version`. `apply_fill` mantém a assinatura.
 - `cd web && npm run build` verde.
 - No boot do gateway: log `ledger.hydrated` com as posições restauradas; o
   reconcile de startup **não** reabre AAVE/HYPE.
+
+## UPDATE-0049 · 2026-07-14 · Status: PENDENTE
+
+**Origem**: follow-on do UPDATE-0048. O fix do partial fill (Bug A) tornou
+`_my_pos` verdadeiro, então o `reconcile` passou a reenviar o restante de um
+partial. **Mas** o teto anti-runaway `RECONCILE_MAX_ATTEMPTS = 3` contava TODO
+send, sem distinguir **progresso** (partial fill que converge devagar — book raso
+tipo HYPE na testnet) de **rejeição persistente** (`ok=False`, incidente das
+407). Resultado em produção (mesmo trader `0x1a5db900…`, `ct_1a5db900`): HYPE
+fazia partials crônicos, batia o cap de 3 em ~6 min e **travava** sem nunca
+alcançar o alvo. Ao investigar, achei um 2º defeito real: **`reconcile.stuck`
+nunca chegava à tabela `events`** (o alerta some da dash — só ia pro JSONL).
+
+**Tipo**: correção de engine (executor + logger). **Não toca**
+`/intent`/`/cancel`/`handle_intent`/hot path → §8.4.1 não se aplica. **Sem
+migration**, sem secret, sem `logic_version`. `send_intent`/`apply_fill`/
+`OrderResult` mantêm assinatura; `ILLIQUID_TTL_S` inalterado.
+
+### Fix 1 — cap zera no progresso (`executor.py reconcile`)
+- No caminho `ok`, se o send fez progresso (partial ou cheio) o
+  `_reconcile_attempts` é zerado — não é rejeição persistente. O cap agora só
+  acumula em `ok=False` (rejeição, sem cooldown) ou fill zero. O cooldown de 120s
+  continua sendo o guard PRIMÁRIO anti-runaway (1 reenvio/120s por símbolo).
+
+### Fix 2 — `reconcile.*` visível no DB (`engine/core/logger.py`)
+- `"reconcile."` adicionado a `_DB_EVENT_PREFIXES`. `reconcile.stuck` (e
+  `ledger_failed`/`target_positions_failed`/`venue_mismatch`/`startup_failed`/
+  `cycle_failed`) passam a persistir em `events` — antes só iam pro JSONL. Sem
+  renomear (o nome é referenciado em docs/testes).
+
+### Fix 3 — partial crônico vira ilíquido (`executor.py`)
+- Novo `PARTIAL_FILL_ILLIQUID_THRESHOLD = 5` + estado `_partial_fill_streaks` +
+  helper `_record_partial_streak`: após N partials consecutivos no mesmo
+  (strategy, symbol), o símbolo é marcado ilíquido (reusa `_mark_illiquid`, TTL
+  1h) e para de martelar em vez de travar. Um fill cheio zera o streak.
+
+### Fix 4 — mesmo streak no caminho rápido (`executor.py on_target_fill`)
+- O WS path também alimenta o streak, para o cache ilíquido ativar independente
+  do caminho (WS ou reconcile). `on_target_fill` não mexe no cap (conceito só do
+  reconcile).
+
+### Impacto operacional
+- HYPE (book raso) segue convergindo ciclo a ciclo sem travar no cap; após ~5
+  partials seguidos vira ilíquido (log `decision.skipped_no_liquidity`, TTL 1h)
+  em vez de ficar preso. Ordem realmente rejeitada 3× → `reconcile.stuck` agora
+  **aparece na tabela `events`** (dash/alertas enxergam).
+
+### Validação esperada
+- `.venv/bin/python -m pytest tests/ -q` verde (314 = 310 + 4 novos:
+  `tests/strategies/test_partial_fill_stuck.py`), sem regressão de
+  `tests/test_partial_fill.py` nem
+  `tests/test_copy_trade.py::test_reconcile_stuck_after_three_attempts`.
+- `cd web && npm run build` verde (não toca web).
+- Em operação: HYPE não trava no cap; `reconcile.stuck` consultável em `events`.

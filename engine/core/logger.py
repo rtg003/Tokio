@@ -21,7 +21,7 @@ _DB_LEVELS = {"info", "warning", "error", "critical"}
 _DB_EVENT_PREFIXES = (
     "order.", "fill.", "signal.", "decision.", "strategy.", "risk.",
     "killswitch", "circuit_breaker", "config.", "health.", "replication.",
-    "ws.", "drift.", "trader.", "discovery.", "logic_", "tv.",
+    "ws.", "drift.", "trader.", "discovery.", "logic_", "tv.", "reconcile.",
 )
 
 

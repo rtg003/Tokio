@@ -159,6 +159,12 @@ class CopyTradeExecutor:
         # drift. Caps runaway retries (a persistently-rejected order must not loop
         # forever — the 407-rejections incident). Reset to 0 once the key aligns.
         self._reconcile_attempts: dict[tuple[str, str], int] = {}
+        # (strategy_id, symbol) -> partial fills consecutivos. Book cronicamente
+        # raso (ex.: HYPE na testnet) preenche pouco a cada ordem e nunca
+        # converge; após PARTIAL_FILL_ILLIQUID_THRESHOLD seguidos, o símbolo vira
+        # ilíquido em vez de travar no cap de tentativas. Fill cheio zera.
+        # Compartilhado entre on_target_fill (WS) e reconcile.
+        self._partial_fill_streaks: dict[tuple[str, str], int] = {}
         # symbol -> szDecimals (static venue metadata; cached to avoid per-fill RTT)
         self._sz_decimals: dict[str, int] = {}
         # símbolo ilíquido -> monotonic ts do último no-match. Enquanto fresco
@@ -179,6 +185,14 @@ class CopyTradeExecutor:
     # correcting and log `reconcile.stuck` — a persistently-rejected order must not
     # loop forever.
     RECONCILE_MAX_ATTEMPTS = 3
+
+    # partial fills consecutivos no MESMO (strategy, symbol) antes de tratar o
+    # símbolo como ilíquido: um book raso (ex.: HYPE testnet) preenche pouco a
+    # cada ordem e nunca converge — após N seguidos paramos de reabrir o delta a
+    # cada ciclo (cache ilíquido, TTL abaixo) em vez de travar no cap. Fill cheio
+    # zera a contagem. Distinguir progresso (partial) de rejeição persistente é
+    # o cerne do fix: rejeição sobe o cap; partial que progride, não.
+    PARTIAL_FILL_ILLIQUID_THRESHOLD = 5
 
     # TTL do cache de ativos ilíquidos (1h). Após expirar, re-tentamos o símbolo
     # uma vez — a liquidez pode ter voltado.
@@ -203,6 +217,23 @@ class CopyTradeExecutor:
             self._illiquid_logged.add(symbol)
             self.logger.info("decision.skipped_no_liquidity", {"symbol": symbol},
                              strategy_id=strategy_id, latency_ms=latency_ms)
+
+    def _record_partial_streak(self, key: tuple[str, str], symbol: str,
+                               strategy_id: str, *, filled: float,
+                               requested: float,
+                               latency_ms: float | None = None) -> None:
+        """Conta partial fills consecutivos; após o limite, cacheia o símbolo
+        como ilíquido (para de martelar um book raso). Fill cheio
+        (>= requested) zera o streak. Chamado só no caminho ok + fill real
+        (`filled_size` presente); dry_run/paper resetam via `pop` no chamador."""
+        if 0.0 < filled < requested * (1.0 - 1e-6):        # partial de verdade
+            streak = self._partial_fill_streaks.get(key, 0) + 1
+            self._partial_fill_streaks[key] = streak
+            if streak >= self.PARTIAL_FILL_ILLIQUID_THRESHOLD:
+                self._mark_illiquid(symbol, strategy_id, latency_ms=latency_ms)
+                self._partial_fill_streaks.pop(key, None)
+        else:                                              # fill cheio ⇒ zera
+            self._partial_fill_streaks.pop(key, None)
 
     # -- setup ---------------------------------------------------------------
     def reload_traders(self) -> None:
@@ -343,9 +374,16 @@ class CopyTradeExecutor:
             filled = result.get("filled_size")
             if filled is None:
                 self._my_pos[key] = my_new
+                self._partial_fill_streaks.pop(key, None)   # dry_run/paper: cheio
             else:
-                signed = float(filled) if delta > 0 else -float(filled)
+                f = float(filled)
+                signed = f if delta > 0 else -f
                 self._my_pos[key] = my_prev + signed
+                # partial crônico neste símbolo ⇒ eventualmente vira ilíquido
+                # (para de reenviar); fill cheio zera o streak.
+                self._record_partial_streak(key, symbol, strategy_id,
+                                            filled=f, requested=abs(delta),
+                                            latency_ms=latency_ms)
         elif result.get("reason") == "no_liquidity":
             # o gateway não achou book mesmo após todos os passos de slippage —
             # cacheia p/ não reenviar a cada reconcile (log 1x).
@@ -557,11 +595,21 @@ class CopyTradeExecutor:
                     filled = result.get("filled_size")
                     if filled is None:
                         self._my_pos[key] = desired
+                        self._partial_fill_streaks.pop(key, None)
                     else:
-                        signed = float(filled) if delta > 0 else -float(filled)
+                        f = float(filled)
+                        signed = f if delta > 0 else -f
                         self._my_pos[key] = actual + signed
+                        self._record_partial_streak(key, symbol, sid,
+                                                    filled=f, requested=abs(delta))
                     self._target_pos[key] = target_now
                     self._reconcile_cooldown[key] = now
+                    # progresso (partial ou cheio) NÃO é rejeição persistente:
+                    # zera o cap. O cooldown de 120s continua sendo o guard
+                    # primário anti-runaway; o cap só acumula em rejeição
+                    # (ok=False, sem cooldown) ou fill zero (sem progresso).
+                    if filled is None or float(filled) > 0.0:
+                        self._reconcile_attempts.pop(key, None)
                 elif result.get("reason") == "no_liquidity":
                     # cacheia p/ parar de reenviar nos próximos ciclos (log 1x).
                     self._mark_illiquid(symbol, sid)
