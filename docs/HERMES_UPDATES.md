@@ -2759,7 +2759,7 @@ migration**, sem secret, sem `logic_version`. `send_intent`/`apply_fill`/
 - `cd web && npm run build` verde (não toca web).
 - Em operação: HYPE não trava no cap; `reconcile.stuck` consultável em `events`.
 
-## UPDATE-0050 · 2026-07-14 · Status: PENDENTE
+## UPDATE-0050 · 2026-07-14 · Status: APLICADO em 2026-07-14
 
 **Origem**: dois defeitos reais achados na operação do trader `0x1a5db900…`
 (`ct_1a5db900`) em 2026-07-14 14:14–14:28 UTC, depois do deploy do UPDATE-0049.
