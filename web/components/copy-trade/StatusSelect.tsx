@@ -135,7 +135,7 @@ export default function StatusSelect({
     setToast(
       closePositions
         ? `Transição completa — ${closedCount} posição(ões) fechada(s), ${who} ativo em ${env}`
-        : `Cópia ativada — ${who} em ${env}`,
+        : "Cópia Ativada",
     );
     setValue(next);
     setModalTarget(null);

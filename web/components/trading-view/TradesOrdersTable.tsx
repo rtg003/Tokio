@@ -15,9 +15,12 @@ type Row = {
   reject?: string | null;
   latency?: number | null;
   cloid: string;
+  master?: string | null;
 };
 
 const ts = (v: string | undefined | null) => (v ? new Date(v).getTime() : 0);
+// Rótulo curto de carteira: 6 primeiros caracteres (shortAddr corta 6+4).
+const short6 = (a: string | null | undefined) => (a ? a.slice(0, 6) : "—");
 
 export default function TradesOrdersTable({
   orders,
@@ -41,6 +44,7 @@ export default function TradesOrdersTable({
       reject: o.reject_reason,
       latency: o.latency_ms,
       cloid: o.cloid,
+      master: o.master_address,
     }));
 
   const tradeRows: Row[] = (fills ?? [])
@@ -57,6 +61,7 @@ export default function TradesOrdersTable({
       fee: f.fee,
       pnl: f.realized_pnl,
       cloid: f.cloid,
+      master: f.master_address,
     }));
 
   const rows = [...openOrders, ...tradeRows];
@@ -76,6 +81,7 @@ export default function TradesOrdersTable({
           <table>
             <thead>
               <tr>
+                <th>Trader</th>
                 <th>Tipo</th>
                 <th>Hora</th>
                 <th>Par</th>
@@ -93,6 +99,7 @@ export default function TradesOrdersTable({
             <tbody>
               {rows.map((r) => (
                 <tr key={r.key}>
+                  <td className="addr">{short6(r.master)}</td>
                   <td>
                     <span className={`chip ${r.kind === "ORDEM" ? "ack" : "filled"}`}>{r.kind}</span>
                   </td>

@@ -2583,3 +2583,64 @@ regressão de gateway segue verde por sanidade.
 - `.venv/bin/python -m pytest tests/test_hl_adapter_balances.py -q` verde (3 casos:
   desconta hold; sem `hold` ⇒ livre==total; sem USDC spot ⇒ 0).
 - `tests/gateway/test_intent_regression.py` verde (hot path intacto).
+
+---
+
+## UPDATE-0047 · 2026-07-14 · Status: PENDENTE
+
+**Origem**: ajustes de UI pedidos pelo rtg003 + bug do filtro de período nos
+KPIs que **você** reportou (trader `ct_f5b0af85`, testnet): ao filtrar "hoje" o
+PnL realizado zerava embora sem filtro a rota devolvesse `n_trades:30,
+realized_pnl:54.26`. Sua evidência foi decisiva p/ isolar a causa.
+
+**Tipo**: operacao (dashboard/frontend) + correção de leitura (janela de data no
+gateway). **Não toca** `/intent`/`/cancel`/`handle_intent`/hot path de ordem →
+§8.4.1 não se aplica; regressão de gateway segue verde. Sem migration, sem
+secret novo, sem mudança de `logic_version`.
+
+### O que mudou (frontend — Copy Trade + Trading View)
+1. **Tabela de Traders ordenável**: qualquer coluna ordena asc/desc ao clicar no
+   cabeçalho (ícone flat: seta ↑/↓ na coluna ativa; vazio nas demais). Abre
+   ordenada por **SIM NET** decrescente (padrão). É puramente de exibição — não
+   muda ranking persistido nem métricas.
+2. **Toast de ativação**: a mensagem simples agora é só **"Cópia Ativada"** (sem
+   `— 0x… em testnet`). A mensagem de **transição** (fechou posições) permanece.
+3. **Coluna "Trader"** como 1ª coluna de "Trades e Ordens em Aberto". Copy Trade
+   mostra o trader copiado (via `strategy_id`); Trading View mostra os 6 primeiros
+   chars da carteira executora (`master_address`). **Posições NÃO** ganham a
+   coluna — a venue agrega posição por símbolo, sem atribuição por trader.
+
+### O que mudou (backend — bug do período, o que você precisa saber)
+- **`engine/gateway/server.py`**: novo helper `_normalize_iso_utc(ts)` aplicado a
+  `since`/`until` em `/api/fills/summary`, `/api/pnl/summary`, `/api/fills` e
+  `/api/orders`. **Root cause**: `fills.ts`/`orders.created_at` são gravados em
+  UTC (`…+00:00`) mas os limites chegam do front em fuso SP (`…-03:00`); o SQLite
+  comparava os TEXTOS lexicograficamente — offsets diferentes NÃO correspondem ao
+  instante real. Os 14 sells de fechamento às ~21:16 SP (que em UTC caem no dia
+  seguinte, `2026-07-14T00:16…`) falhavam o `<= until` da janela "hoje" e sumiam,
+  levando o PnL realizado junto (sobravam só os buys, com realizado 0/NULL).
+  Normalizando os DOIS lados p/ UTC, a comparação passa a bater o instante real.
+- **Nada de ledger nem backfill**: sua evidência mostrou o dado ÍNTEGRO (fills
+  atribuídos a `ct_f5b0af85`, realized 54.26). Não havia fill órfão — só a janela
+  de data o escondia. O valor reaparece sozinho com o fix.
+
+### Impacto operacional
+- Os cards KPI (PnL líquido, Win rate, Profit factor, Drawdown, Trades) passam a
+  refletir corretamente o período SP selecionado. Um trade fechado às 21:00–23:59
+  SP conta no dia SP certo, sem vazar p/ o dia anterior/seguinte.
+
+### Melhoria futura (fora do escopo deste UPDATE)
+- `strategy_metrics_daily` / `/api/metrics` agrupam por dia **UTC**
+  (`strftime("%Y-%m-%d")` em `_refresh_daily_metrics`), deslocando o dia no fuso.
+  Os cards com `envFiltered=true` não dependem dessa rota (usam
+  `pnlSummary`/`fillsSummary`, já corrigidos), então fica anotado p/ depois:
+  rollup por dia SP.
+
+### Validação esperada (com o gateway de pé)
+- `curl -s 'http://127.0.0.1:8700/api/pnl/summary?strategy_id=ct_f5b0af85&network=testnet&since=2026-07-13T00:00:00-03:00&until=2026-07-13T23:59:59-03:00'`
+  → `n_trades:30, realized_pnl:54.26` (não mais `16 / 0.0`).
+- `/api/fills/summary?…` (mesmos parâmetros) → `n_trades:30, net_pnl:54.26`.
+- `.venv/bin/python -m pytest tests/ -q` verde, incluindo o novo
+  `tests/gateway/test_period_tz_filter.py` (fill 21:16 SP entra; 21:30 SP do dia
+  anterior fica de fora) e `tests/gateway/test_intent_regression.py` (hot path).
+- `cd web && npm run build` verde.

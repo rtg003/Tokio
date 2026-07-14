@@ -147,7 +147,7 @@ export default async function CopyTradeDashboard({
         envFiltered={true}
       />
       <PositionsTable positions={positions} />
-      <TradesOrdersTable orders={orders} fills={fills} />
+      <TradesOrdersTable orders={orders} fills={fills} traders={allTraders} />
       <TradersTable
         traders={filteredTraders}
         env={selectedEnv}

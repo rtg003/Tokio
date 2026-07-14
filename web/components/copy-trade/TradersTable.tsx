@@ -1,3 +1,6 @@
+"use client";
+
+import { useMemo, useState } from "react";
 import { fmtDateTime, fmtNum, fmtSigned, pnlClass, shortAddr } from "@/lib/format";
 import { Trader } from "@/lib/copy-trade/data";
 import StatusSelect from "@/components/copy-trade/StatusSelect";
@@ -32,20 +35,96 @@ const COLUMN_TIPS: Record<string, string> = {
   Janelas: "Quantidade de janelas positivas. Ajuda a separar consistência de sorte pontual.",
 };
 
+function parseTopAssets(value: unknown): string[] {
+  try {
+    return Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"));
+  } catch {
+    return [];
+  }
+}
+
+// Acessores de ordenação por rótulo de coluna. `numeric` decide o comparador.
+// A coluna "#" (rank) e "Sizing" não são ordenáveis (ausentes deste mapa).
+type Accessor = { get: (t: Trader) => number | string | null | undefined; numeric: boolean };
+const ACCESSORS: Record<string, Accessor> = {
+  "SIM NET": { get: (t) => t.sim_net_pnl_usd, numeric: true },
+  Trader: { get: (t) => t.name ?? t.address, numeric: false },
+  Score: { get: (t) => t.score, numeric: true },
+  Coorte: { get: (t) => t.cohort, numeric: false },
+  "Win rate": { get: (t) => t.win_rate, numeric: true },
+  PF: { get: (t) => t.profit_factor, numeric: true },
+  "TWRR 30d": { get: (t) => t.twrr_30d, numeric: true },
+  "PnL 30d": { get: (t) => t.pnl_30d, numeric: true },
+  "Max DD": { get: (t) => t.max_drawdown, numeric: true },
+  Status: { get: (t) => t.status, numeric: false },
+  "Trades 30d": { get: (t) => t.n_trades_30d, numeric: true },
+  "Hold méd.": { get: (t) => t.avg_holding_hours, numeric: true },
+  "SIM EXP": { get: (t) => t.sim_expectancy_usd, numeric: true },
+  "SIM DD": { get: (t) => t.sim_max_dd_pct, numeric: true },
+  "Alav. méd.": { get: (t) => t.avg_leverage, numeric: true },
+  "Alav. atual": { get: (t) => t.max_current_leverage, numeric: true },
+  "Margem disp.": { get: (t) => t.available_margin_pct, numeric: true },
+  "Metades A": { get: (t) => t.sim_half_new_net, numeric: true },
+  Equity: { get: (t) => t.equity, numeric: true },
+  Janelas: { get: (t) => t.windows_positive, numeric: true },
+  Ativos: { get: (t) => parseTopAssets(t.top_assets).join(" "), numeric: false },
+  "Últ. atividade": { get: (t) => t.last_activity, numeric: false },
+  "Dist. liq.": { get: (t) => t.liq_distance, numeric: true },
+  Origem: { get: (t) => t.origin, numeric: false },
+  Lógica: { get: (t) => t.logic_version, numeric: true },
+};
+
+type SortDir = "asc" | "desc";
+
+function SortIcon({ dir }: { dir: SortDir | null }) {
+  // Ícone flat (chevron via stroke). Estado inativo ocupa o mesmo espaço, sem seta.
+  if (dir === null) {
+    return <svg className="th-sort-ico th-sort-ico-empty" viewBox="0 0 10 10" aria-hidden />;
+  }
+  const d = dir === "asc" ? "M2 6.5 L5 3.5 L8 6.5" : "M2 3.5 L5 6.5 L8 3.5";
+  return (
+    <svg className="th-sort-ico" viewBox="0 0 10 10" aria-hidden>
+      <path d={d} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function Th({
   label,
   className,
+  sortKey,
+  sortDir,
+  onSort,
 }: {
   label: string;
   className?: string;
+  sortKey: string;
+  sortDir: SortDir;
+  onSort: (label: string) => void;
 }) {
+  const sortable = label in ACCESSORS;
+  const active = sortable && label === sortKey;
+  if (!sortable) {
+    return (
+      <th
+        className={`${className ?? ""} th-tip`}
+        data-tip={COLUMN_TIPS[label] ?? label}
+        title={COLUMN_TIPS[label] ?? label}
+      >
+        {label}
+      </th>
+    );
+  }
   return (
     <th
-      className={`${className ?? ""} th-tip`}
+      className={`${className ?? ""} th-tip th-sort`}
       data-tip={COLUMN_TIPS[label] ?? label}
       title={COLUMN_TIPS[label] ?? label}
+      onClick={() => onSort(label)}
+      aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
     >
       {label}
+      <SortIcon dir={active ? sortDir : null} />
     </th>
   );
 }
@@ -55,14 +134,6 @@ function traderNameClass(status: string): string {
   if (status === "SALVO") return "trader-watch";
   if (status === "TESTNET" || status === "MAINNET") return "trader-copying";
   return "";
-}
-
-function parseTopAssets(value: unknown): string[] {
-  try {
-    return Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"));
-  } catch {
-    return [];
-  }
 }
 
 export default function TradersTable({
@@ -76,7 +147,40 @@ export default function TradersTable({
   expanded: boolean;
   toggleHref: string;
 }) {
-  const rows = traders ?? [];
+  const rows = useMemo(() => traders ?? [], [traders]);
+  const [sortKey, setSortKey] = useState("SIM NET");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function handleSort(label: string) {
+    if (label === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(label);
+      setSortDir("desc");
+    }
+  }
+
+  const sortedRows = useMemo(() => {
+    const acc = ACCESSORS[sortKey];
+    if (!acc) return rows;
+    const isNil = (v: unknown) =>
+      v === null || v === undefined || (acc.numeric && Number.isNaN(Number(v)));
+    return [...rows].sort((a, b) => {
+      const va = acc.get(a);
+      const vb = acc.get(b);
+      const na = isNil(va);
+      const nb = isNil(vb);
+      // null/undefined sempre por último, em qualquer direção
+      if (na && nb) return 0;
+      if (na) return 1;
+      if (nb) return -1;
+      const cmp = acc.numeric
+        ? Number(va) - Number(vb)
+        : String(va).localeCompare(String(vb), "pt-BR");
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [rows, sortKey, sortDir]);
+
   return (
     <div className="card">
       <div className="cardhead">
@@ -86,7 +190,7 @@ export default function TradersTable({
         </a>
       </div>
       <div className="tablewrap tablewrap-traders">
-        {rows.length === 0 ? (
+        {sortedRows.length === 0 ? (
           <div className="empty">
             nenhum trader na tabela — rode o discovery (os candidatos aprovados entram aqui;
             YAMLs não existem mais)
@@ -95,37 +199,37 @@ export default function TradersTable({
           <table className="traders-table">
             <thead>
               <tr>
-                <Th label="#" className="num" />
-                <Th label="SIM NET" className="num" />
-                <Th label="Trader" />
-                <Th label="Score" />
-                <Th label="Coorte" />
-                <Th label="Win rate" className="num" />
-                <Th label="PF" className="num" />
-                <Th label="TWRR 30d" className="num" />
-                <Th label="PnL 30d" className="num" />
-                <Th label="Max DD" className="num" />
-                <Th label="Status" />
-                <Th label="Trades 30d" className="num" />
-                <Th label="Hold méd." className="num" />
-                <Th label="SIM EXP" className="num" />
-                <Th label="SIM DD" className="num" />
-                <Th label="Alav. méd." className="num" />
-                <Th label="Alav. atual" className="num" />
-                <Th label="Margem disp." className="num" />
-                <Th label="Metades A" className="num" />
-                <Th label="Equity" className="num" />
-                <Th label="Janelas" />
-                <Th label="Ativos" />
-                <Th label="Últ. atividade" />
-                <Th label="Sizing" />
-                <Th label="Dist. liq." className="num" />
-                <Th label="Origem" />
-                <Th label="Lógica" className="num" />
+                <Th label="#" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="SIM NET" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Trader" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Coorte" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Win rate" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="PF" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="TWRR 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="PnL 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Max DD" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Trades 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Hold méd." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="SIM EXP" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="SIM DD" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Alav. méd." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Alav. atual" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Margem disp." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Metades A" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Equity" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Janelas" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Ativos" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Últ. atividade" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Sizing" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Dist. liq." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Origem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Lógica" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
               </tr>
             </thead>
             <tbody>
-              {rows.map((t, i) => {
+              {sortedRows.map((t, i) => {
                 const topAssets = parseTopAssets(t.top_assets);
                 const score = Math.max(0, Math.min(100, Number(t.score ?? 0)));
                 const nameClass = traderNameClass(t.status);

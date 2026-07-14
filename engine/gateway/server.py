@@ -51,6 +51,28 @@ def _max_drawdown_pct(realized_pnls: list[float]) -> float:
     return max_dd
 
 
+def _normalize_iso_utc(ts: str | None) -> str | None:
+    """Normaliza um timestamp ISO para UTC com offset `+00:00`.
+
+    Os limites de janela chegam do front em fuso SP (`…-03:00`), mas `fills.ts`
+    e `orders.created_at` são gravados por `utcnow()` em UTC (`…+00:00`). O
+    SQLite compara esses TEXTOS lexicograficamente — offsets diferentes NÃO
+    correspondem ao instante real (um sell 21:16 SP vira `…+00:00` do dia
+    seguinte e "vaza" da janela "hoje"). Convertendo ambos os lados p/ o mesmo
+    instante UTC, a comparação de string passa a ser correta. Naïve ⇒ assume UTC.
+    Entrada inválida ⇒ devolve o valor original (comportamento conservador).
+    """
+    if not ts:
+        return ts
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return ts
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 class IntentRequest(BaseModel):
     # Aceita `env` (convenção dos demais endpoints: ClosePositions/AgentPrepare/
     # /balance) E `environment` (chave canônica usada pelo Copy Trade e pelas
@@ -1267,6 +1289,8 @@ def build_app(state: GatewayState) -> FastAPI:
             if wallet:
                 where.append("master_address = ?")
                 params.append(wallet)
+            since = _normalize_iso_utc(since)
+            until = _normalize_iso_utc(until)
             if since:
                 where.append("ts >= ?")
                 params.append(since)
@@ -1343,6 +1367,8 @@ def build_app(state: GatewayState) -> FastAPI:
             if wallet:
                 where.append("master_address = ?")
                 params.append(wallet)
+            since = _normalize_iso_utc(since)
+            until = _normalize_iso_utc(until)
             if since:
                 where.append("ts >= ?")
                 params.append(since)
@@ -1530,6 +1556,8 @@ def build_app(state: GatewayState) -> FastAPI:
             if wallet:
                 where.append("o.master_address = ?")
                 params.append(wallet)
+            since = _normalize_iso_utc(since)
+            until = _normalize_iso_utc(until)
             if since:
                 where.append("o.created_at >= ?")
                 params.append(since)
@@ -1708,6 +1736,8 @@ def build_app(state: GatewayState) -> FastAPI:
             if wallet:
                 where.append("master_address = ?")
                 params.append(wallet)
+            since = _normalize_iso_utc(since)
+            until = _normalize_iso_utc(until)
             if since:
                 where.append("ts >= ?")
                 params.append(since)

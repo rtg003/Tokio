@@ -1,5 +1,5 @@
 import { fmtDateTime, fmtNotional, fmtNum, fmtSigned, pnlClass, shortAddr, statusChip } from "@/lib/format";
-import { Fill, Order } from "@/lib/copy-trade/data";
+import { Fill, Order, Trader } from "@/lib/copy-trade/data";
 
 type Row = {
   kind: "ORDEM" | "TRADE";
@@ -15,17 +15,33 @@ type Row = {
   reject?: string | null;
   latency?: number | null;
   cloid: string;
+  strategyId?: string | null;
+  master?: string | null;
 };
 
 const ts = (v: string | undefined | null) => (v ? new Date(v).getTime() : 0);
+// Rótulo curto de carteira: 6 primeiros caracteres (shortAddr corta 6+4).
+const short6 = (a: string | null | undefined) => (a ? a.slice(0, 6) : null);
 
 export default function TradesOrdersTable({
   orders,
   fills,
+  traders,
 }: {
   orders: Order[] | null;
   fills: Fill[] | null;
+  traders: Trader[] | null;
 }) {
+  const traderMap = new Map<string, Trader>();
+  for (const t of traders ?? []) {
+    if (t.strategy_id) traderMap.set(t.strategy_id, t);
+  }
+  // Trader copiado (via strategy_id); fallback: carteira executora (master).
+  function traderLabel(row: Row): string {
+    const t = row.strategyId ? traderMap.get(row.strategyId) : undefined;
+    return t?.name ?? short6(t?.address) ?? short6(row.master) ?? "—";
+  }
+
   const openOrders: Row[] = (orders ?? [])
     .filter((o) => o.status !== "filled" && o.status !== "closed" && o.status !== "cancelled")
     .sort((a, b) => ts(b.created_at) - ts(a.created_at))
@@ -41,6 +57,8 @@ export default function TradesOrdersTable({
       reject: o.reject_reason,
       latency: o.latency_ms,
       cloid: o.cloid,
+      strategyId: o.strategy_id,
+      master: o.master_address,
     }));
 
   const tradeRows: Row[] = (fills ?? [])
@@ -57,6 +75,8 @@ export default function TradesOrdersTable({
       fee: f.fee,
       pnl: f.realized_pnl,
       cloid: f.cloid,
+      strategyId: f.strategy_id,
+      master: f.master_address,
     }));
 
   // ordens em aberto no topo, trades executados abaixo
@@ -77,6 +97,7 @@ export default function TradesOrdersTable({
           <table>
             <thead>
               <tr>
+                <th>Trader</th>
                 <th>Tipo</th>
                 <th>Hora</th>
                 <th>Par</th>
@@ -94,6 +115,7 @@ export default function TradesOrdersTable({
             <tbody>
               {rows.map((r) => (
                 <tr key={r.key}>
+                  <td className="addr">{traderLabel(r)}</td>
                   <td>
                     <span className={`chip ${r.kind === "ORDEM" ? "ack" : "filled"}`}>{r.kind}</span>
                   </td>

@@ -177,6 +177,15 @@ tbody tr:hover { background: var(--surface-2); }
 td .sub { display: block; font-size: 10.5px; color: var(--faint); margin-top: 2px; }
 .num { text-align: right; }
 th.num { text-align: right; }
+/* Cabeçalho ordenável: clicável + ícone flat de direção. O ícone vazio ocupa o
+   mesmo espaço (sem seta) p/ preservar o alinhamento das colunas inativas. */
+.th-sort { cursor: pointer; user-select: none; }
+.th-sort:hover { color: var(--muted); }
+.th-sort-ico {
+  width: 9px; height: 9px; margin-left: 4px; vertical-align: middle;
+  display: inline-block; color: var(--text); opacity: 0.85;
+}
+.th-sort-ico-empty { opacity: 0; }
 .pos { color: var(--pos); }
 .neg { color: var(--neg); }
 .addr { color: var(--muted); }
