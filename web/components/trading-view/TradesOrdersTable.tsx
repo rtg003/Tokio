@@ -1,4 +1,4 @@
-import { fmtDateTime, fmtNotional, fmtNum, fmtSigned, pnlClass, shortAddr, statusChip } from "@/lib/format";
+import { fmtDateTime, fmtNotional, fmtNum, fmtSigned, pnlClass, statusChip } from "@/lib/format";
 import { Fill, Order } from "@/lib/trading-view/data";
 
 type Row = {
@@ -9,6 +9,7 @@ type Row = {
   side: string;
   size: number;
   price?: number | null;
+  leverage?: number | null;
   fee?: number | null;
   pnl?: number | null;
   status?: string | null;
@@ -21,6 +22,12 @@ type Row = {
 const ts = (v: string | undefined | null) => (v ? new Date(v).getTime() : 0);
 // Rótulo curto de carteira: 6 primeiros caracteres (shortAddr corta 6+4).
 const short6 = (a: string | null | undefined) => (a ? a.slice(0, 6) : "—");
+// Margem = notional / alavancagem. "—" quando falta preço ou alav. (ordens
+// gravadas antes da migration 0022 ficam com leverage NULL).
+const marginOf = (r: Row): number | null => {
+  if (!r.price || !r.leverage || r.leverage <= 0) return null;
+  return (r.price * r.size) / r.leverage;
+};
 
 export default function TradesOrdersTable({
   orders,
@@ -40,6 +47,7 @@ export default function TradesOrdersTable({
       side: o.side,
       size: o.size,
       price: o.price,
+      leverage: o.leverage,
       status: o.status,
       reject: o.reject_reason,
       latency: o.latency_ms,
@@ -58,6 +66,7 @@ export default function TradesOrdersTable({
       side: f.side,
       size: f.size,
       price: f.price,
+      leverage: f.leverage,
       fee: f.fee,
       pnl: f.realized_pnl,
       cloid: f.cloid,
@@ -88,12 +97,13 @@ export default function TradesOrdersTable({
                 <th>Lado</th>
                 <th className="num">Qtd</th>
                 <th className="num">Preço</th>
+                <th className="num">Margem</th>
+                <th className="num">Alav.</th>
                 <th className="num">Valor</th>
                 <th className="num">Fee</th>
                 <th className="num">PnL líquido</th>
                 <th>Status</th>
                 <th className="num">Latência</th>
-                <th>cloid</th>
               </tr>
             </thead>
             <tbody>
@@ -112,6 +122,10 @@ export default function TradesOrdersTable({
                   </td>
                   <td className="num">{fmtNum(r.size, 4)}</td>
                   <td className="num">{r.price ? `$${fmtNum(r.price)}` : "MKT"}</td>
+                  <td className="num">
+                    {marginOf(r) === null ? "—" : `$${fmtNum(marginOf(r) as number, 2)}`}
+                  </td>
+                  <td className="num">{r.leverage ? `${fmtNum(r.leverage, 1)}×` : "—"}</td>
                   <td className="num">${fmtNotional(r.size, r.price)}</td>
                   <td className="num">{r.fee != null ? `$${fmtNum(r.fee, 4)}` : "—"}</td>
                   <td className={`num ${r.kind === "TRADE" ? pnlClass(r.pnl) : ""}`}>
@@ -130,7 +144,6 @@ export default function TradesOrdersTable({
                     )}
                   </td>
                   <td className="num">{r.latency ? `${Math.round(r.latency)}ms` : "—"}</td>
-                  <td className="addr">{shortAddr(r.cloid)}</td>
                 </tr>
               ))}
             </tbody>

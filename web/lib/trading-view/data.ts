@@ -62,6 +62,7 @@ export type Order = Record<string, any> & {
   type: string;
   size: number;
   price?: number | null;
+  leverage?: number | null;
   status: string;
   created_at: string;
   network?: "testnet" | "mainnet" | null;
@@ -75,6 +76,7 @@ export type Fill = Record<string, any> & {
   price: number;
   size: number;
   fee: number;
+  leverage?: number | null;
   realized_pnl?: number | null;
   ts: string;
   network?: "testnet" | "mainnet" | null;
@@ -89,6 +91,7 @@ export type Position = Record<string, any> & {
   liquidation_px?: number | null;
   position_value?: number | null;
   margin_used?: number | null;
+  strategy_id?: string | null;
   network?: string;
 };
 
@@ -222,6 +225,30 @@ export async function getPositions(
   if (strategyIds.length === 0) return [];
   const q = withScope({ strategy_id: strategyIds.join(",") }, env);
   return (await gatewayGet<Position[]>(`/api/positions?${q.toString()}`)) ?? [];
+}
+
+// Client-side: fecha UMA posição (símbolo) via reduce_only market na venue.
+// Ato humano autenticado (a UI confirma antes de chamar). `strategy_id` vem
+// atribuído na linha da posição; a venue neta por conta.
+export async function closeSinglePosition(args: {
+  strategy_id: string;
+  symbol: string;
+  env: TvEnv;
+}): Promise<{ ok: boolean; reason?: string | null }> {
+  try {
+    const res = await fetch(`/api/control/position/close`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, reason: data.reason ?? data.detail ?? "erro_fechamento" };
+    }
+    return { ok: true, reason: data.reason ?? null };
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
 }
 
 // -- escrita/polling do wizard (client-side, via proxies autenticados) ---------

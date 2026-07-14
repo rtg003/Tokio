@@ -63,6 +63,7 @@ export type Order = Record<string, any> & {
   type: string;
   size: number;
   price?: number | null;
+  leverage?: number | null;
   status: string;
   created_at: string;
   latency_ms?: number | null;
@@ -78,6 +79,7 @@ export type Fill = Record<string, any> & {
   price: number;
   size: number;
   fee: number;
+  leverage?: number | null;
   realized_pnl?: number | null;
   ts: string;
   network?: "testnet" | "mainnet" | null;
@@ -111,6 +113,7 @@ export type Position = Record<string, any> & {
   position_value?: number | null;
   margin_used?: number | null;
   cum_funding?: number | null;
+  strategy_id?: string | null;
   network?: string;
 };
 
@@ -167,21 +170,55 @@ export async function getTraders(): Promise<Trader[] | null> {
   return rows?.filter((t) => t.status !== "REJEITADO") ?? rows;
 }
 
+// Rótulos amigáveis de wallet geridos no app (SQLite, migration 0023). A
+// MetaMask NÃO expõe o nome da conta a sites — guardamos um rótulo por endereço.
+// Mapa {address(lower): label}. Server-side; tolera falha (combo não cai).
+export async function getWalletLabels(): Promise<Record<string, string>> {
+  const data = await gatewayGet<Record<string, string>>("/api/wallet-labels");
+  return data ?? {};
+}
+
 // Wallets = masters de trading dos agents provisionados (hl-auth v2.0). O
 // filtro por Wallet cruza com orders/fills.master_address (migration 0015).
+// Quando há rótulo (migration 0023) o label vira "Hyperliquid 1 — 0x4124…".
 export async function getWallets(): Promise<WalletOption[]> {
-  const snap = await gatewayGet<{ agents?: { master_address?: string }[] }>(
-    "/hl/agents",
-  );
+  const [snap, labels] = await Promise.all([
+    gatewayGet<{ agents?: { master_address?: string }[] }>("/hl/agents"),
+    getWalletLabels(),
+  ]);
   const seen = new Set<string>();
   const options: WalletOption[] = [];
   for (const a of snap?.agents ?? []) {
     const addr = a.master_address;
     if (!addr || seen.has(addr)) continue;
     seen.add(addr);
-    options.push({ value: addr, label: `${addr.slice(0, 6)}…${addr.slice(-4)}` });
+    const short = `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+    const name = labels[addr.toLowerCase()];
+    options.push({ value: addr, label: name ? `${name} — ${short}` : short });
   }
   return [{ value: "all", label: "Todas Wallets" }, ...options];
+}
+
+// Client-side: define (ou remove, se vazio) o rótulo de uma wallet. Ato humano
+// autenticado — o proxy /api/control injeta o token de controle.
+export async function setWalletLabel(
+  address: string,
+  label: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/wallet/${address}/label`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, reason: data.reason ?? data.detail ?? "erro_label" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
 }
 
 export function traderOptions(traders: Trader[] | null): TraderOption[] {
@@ -423,6 +460,30 @@ export async function closeAllPositions(
     return { ok: true, results: data.results ?? [] };
   } catch {
     return { ok: false, results: [], reason: "gateway_indisponivel" };
+  }
+}
+
+// Client-side: fecha UMA posição (símbolo) via reduce_only market na venue.
+// Ato humano autenticado (a UI confirma antes de chamar). `strategy_id` vem
+// atribuído na linha da posição; a venue neta por conta.
+export async function closeSinglePosition(args: {
+  strategy_id: string;
+  symbol: string;
+  env: "testnet" | "mainnet";
+}): Promise<{ ok: boolean; reason?: string | null }> {
+  try {
+    const res = await fetch(`/api/control/position/close`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, reason: data.reason ?? data.detail ?? "erro_fechamento" };
+    }
+    return { ok: true, reason: data.reason ?? null };
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
   }
 }
 

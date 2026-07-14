@@ -47,7 +47,7 @@ export default function KpiRow({ balance, metrics, fillsSummary, pnlSummary, per
       </div>
       <div className="kpi">
         <div className="lab">
-          PnL líquido <span className="th-tip kpi-info" data-tip={PNL_TIP}>ⓘ</span>
+          PnL <span className="th-tip kpi-info" data-tip={PNL_TIP}>ⓘ</span>
         </div>
         <div className={`val ${pnlClass(netPnl)}`}>{fmtSignedUsd(netPnl)}</div>
         <div className="sub">realizado + não realizado</div>

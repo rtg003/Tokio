@@ -49,6 +49,16 @@ a { color: inherit; }
 /* Controle GLOBAL no topo: wallet + ambiente. */
 .statusbar-sel { background: var(--ink); border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px; font: 600 11px var(--mono); color: var(--text); letter-spacing: 0.08em; cursor: pointer; }
 .statusbar-sel.wallet-sel { color: var(--muted); font-weight: 500; }
+/* Edição inline do rótulo da wallet: botões flat (✎/✓/✕) + input reusando o
+   estilo do combo. Discreto, alinhado à statusbar. */
+.wallet-label-editor { display: inline-flex; align-items: center; gap: 4px; }
+.statusbar-sel.wallet-label-input { color: var(--text); font-weight: 500; min-width: 160px; cursor: text; }
+.wallet-label-edit {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 12px; padding: 2px 4px; line-height: 1; border-radius: 3px;
+}
+.wallet-label-edit:hover { color: var(--text); background: var(--surface-2); }
+.wallet-label-edit:disabled { opacity: 0.5; cursor: default; }
 .env-sel { font-weight: 700; letter-spacing: 0.12em; }
 .env-sel.env-testnet { color: var(--amber); border-color: var(--amber); }
 .env-sel.env-mainnet { color: var(--pos); border-color: var(--pos); }
@@ -120,7 +130,7 @@ h1 { font: 600 22px/1.2 var(--sans); }
 .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 22px; }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); padding: 15px 16px 13px; }
 .kpi .lab { font: 600 10px var(--mono); letter-spacing: 0.14em; color: var(--faint); text-transform: uppercase; }
-.kpi .val { font: 600 26px/1.15 var(--mono); margin-top: 8px; font-feature-settings: "tnum"; }
+.kpi .val { font: 600 23px/1.15 var(--mono); margin-top: 8px; font-feature-settings: "tnum"; }
 .kpi .sub { font: 400 11px var(--mono); color: var(--muted); margin-top: 5px; }
 .kpi .val.pos { color: var(--pos); }
 .kpi .val.neg { color: var(--neg); }
@@ -142,7 +152,7 @@ h1 { font: 600 22px/1.2 var(--sans); }
 .tablewrap::-webkit-scrollbar-track { background: transparent; }
 .tablewrap::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
 .tablewrap::-webkit-scrollbar-thumb:hover { background: var(--muted); }
-.tablewrap-traders { max-height: calc(39px + 6 * 39px); }
+.tablewrap-traders { max-height: calc(39px + 8 * 39px); }
 .tablewrap-orders { max-height: calc(41px + 6 * 42px); }
 .tablewrap-fills { max-height: calc(41px + 8 * 42px); }
 table { width: 100%; border-collapse: collapse; font: 400 12.5px var(--mono); font-feature-settings: "tnum"; }
@@ -169,12 +179,23 @@ th {
 }
 td { padding: 11px 14px; border-bottom: 1px solid var(--line); color: var(--text); white-space: nowrap; vertical-align: middle; }
 .traders-table th { padding: 8px 10px; }
-.traders-table td { padding: 8px 10px; }
+.traders-table td { padding: 6px 10px; }
 .traders-table th.num, .traders-table td.num { padding-left: 8px; padding-right: 8px; }
 tr:last-child td { border-bottom: none; }
 tbody tr { transition: background 0.12s; }
 tbody tr:hover { background: var(--surface-2); }
 td .sub { display: block; font-size: 10.5px; color: var(--faint); margin-top: 2px; }
+/* Botão flat de fechar posição (coluna após Ativo). Discreto por padrão, fica
+   vermelho no hover; usa reduce_only market via /control/position/close. */
+.pos-close-cell { width: 1%; padding-left: 4px; padding-right: 4px; }
+.pos-close-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border-radius: 4px;
+  background: none; border: 1px solid var(--line); color: var(--muted);
+  cursor: pointer; transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.pos-close-btn:hover:not(:disabled) { color: var(--neg); border-color: var(--neg); background: var(--surface-2); }
+.pos-close-btn:disabled { opacity: 0.35; cursor: default; }
 .num { text-align: right; }
 th.num { text-align: right; }
 /* Cabeçalho ordenável: clicável + ícone flat de direção. O ícone vazio ocupa o
@@ -487,7 +508,7 @@ th.num { text-align: right; }
   .modal-grid { grid-template-columns: 1fr; }
   .modal { min-width: 0; width: 100%; }
   h1 { font-size: 19px; }
-  .kpi .val { font-size: 22px; }
+  .kpi .val { font-size: 20px; }
 }
 @media (max-width: 520px) {
   .modal { padding: 1rem; }

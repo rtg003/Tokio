@@ -21,6 +21,11 @@ const ALLOWED_POST_PATTERNS = [
   // close_positions: preview (execute=false) + fechamento reduce_only
   // (execute=true) das posições do trader — ato humano autenticado.
   /^trader\/0x[0-9a-fA-F]{40}\/close_positions$/,
+  // fechar UMA posição (símbolo) via reduce_only market — ato humano
+  // autenticado (com confirmação na UI).
+  /^position\/close$/,
+  // rótulo amigável da wallet no combo do topo (upsert/remove) — ato humano.
+  /^wallet\/0x[0-9a-fA-F]{40}\/label$/,
   // HL agent wallets: prepare/activate provisioning + revoke (gateway gates
   // the control token; MAINNET still needs credentials configured server-side)
   /^hl\/agents\/(prepare|activate)$/,

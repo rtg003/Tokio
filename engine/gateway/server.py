@@ -115,6 +115,21 @@ class ClosePositionsRequest(BaseModel):
     execute: bool = False
 
 
+class ClosePositionRequest(BaseModel):
+    # Fecha UMA posição (símbolo) via reduce_only market. `strategy_id` nomeia o
+    # cloid da ordem de fechamento (a venue neta por conta); `env` é o ambiente
+    # da posição. Ato humano autenticado (dashboard, com confirmação).
+    strategy_id: str
+    symbol: str
+    env: str = Field(pattern="^(testnet|mainnet)$")
+
+
+class WalletLabelRequest(BaseModel):
+    # Rótulo amigável exibido no combo de Wallets ("Hyperliquid 1 — 0x4124…").
+    # Vazio remove o rótulo. Ato humano autenticado (dashboard).
+    label: str = Field(default="", max_length=64)
+
+
 class AgentPrepareRequest(BaseModel):
     env: str = Field(pattern="^(testnet|mainnet)$")
     master_address: str
@@ -558,6 +573,10 @@ class GatewayState:
             "type": intent.order_type,
             "size": abs(size),
             "price": intent.price,
+            # Alavancagem efetiva já teto-limitada (min do intent, do ativo e do
+            # global). Persistida p/ a UI exibir Alav./Margem por ordem/trade
+            # (margem = notional/alav.). NULL em ordens antigas (pré-migration).
+            "leverage": leverage,
             "status": "dry_run" if intent.dry_run else "created",
             "created_at": utcnow(),
             "exchange_id": exchange_id,
@@ -1415,7 +1434,20 @@ def build_app(state: GatewayState) -> FastAPI:
                 "ORDER BY id DESC LIMIT ?",
                 params,
             )
-            return [dict(r) for r in rows]
+            result = [dict(r) for r in rows]
+            # Alavancagem por trade: `fills` não guarda alav.; herda da ordem-pai
+            # (orders.cloid é UNIQUE). A UI deriva a margem = notional / alav.
+            cloids = [c for c in {r.get("cloid") for r in result} if c]
+            if cloids:
+                lev_rows = state.db.query(
+                    f"SELECT cloid, leverage FROM orders "
+                    f"WHERE cloid IN ({_in_clause(cloids)})",
+                    cloids,
+                )
+                lev = {r["cloid"]: r["leverage"] for r in lev_rows}
+                for r in result:
+                    r["leverage"] = lev.get(r.get("cloid"))
+            return result
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -1636,21 +1668,31 @@ def build_app(state: GatewayState) -> FastAPI:
         placeholders = _in_clause(strategy_ids)
         if wallet:
             sym_rows = state.db.query(
-                f"SELECT DISTINCT symbol FROM orders "
+                f"SELECT DISTINCT strategy_id, symbol FROM orders "
                 f"WHERE strategy_id IN ({placeholders}) AND master_address = ? "
                 f"UNION "
-                f"SELECT DISTINCT symbol FROM fills "
+                f"SELECT DISTINCT strategy_id, symbol FROM fills "
                 f"WHERE strategy_id IN ({placeholders}) AND master_address = ?",
                 [*strategy_ids, wallet, *strategy_ids, wallet],
             )
         else:
             sym_rows = state.db.query(
-                f"SELECT DISTINCT symbol FROM orders WHERE strategy_id IN ({placeholders}) "
+                f"SELECT DISTINCT strategy_id, symbol FROM orders WHERE strategy_id IN ({placeholders}) "
                 f"UNION "
-                f"SELECT DISTINCT symbol FROM fills WHERE strategy_id IN ({placeholders})",
+                f"SELECT DISTINCT strategy_id, symbol FROM fills WHERE strategy_id IN ({placeholders})",
                 [*strategy_ids, *strategy_ids],
             )
-        symbols = {r["symbol"] for r in sym_rows}
+        # symbol -> strategy_id: atribuição p/ o botão de fechar posição da UI.
+        # Se >1 estratégia negocia o símbolo, escolhe deterministicamente o menor
+        # sid — a venue neta por conta, então o reduce_only achata a posição
+        # daquela conta independentemente da atribuição (o strategy_id só nomeia
+        # o cloid da ordem de fechamento).
+        sym_to_sid: dict[str, str] = {}
+        for r in sym_rows:
+            sym, sid = r["symbol"], r["strategy_id"]
+            if sym not in sym_to_sid or sid < sym_to_sid[sym]:
+                sym_to_sid[sym] = sid
+        symbols = set(sym_to_sid)
         if not symbols:
             return []
         address = wallet or getattr(adapter, "account_address", None)
@@ -1664,7 +1706,8 @@ def build_app(state: GatewayState) -> FastAPI:
                 return []
             state._positions_cache[cache_key] = {"data": fetched, "ts": now}
         data = state._positions_cache[cache_key]["data"]
-        return [{**p, "network": adapter.network}
+        return [{**p, "network": adapter.network,
+                 "strategy_id": sym_to_sid.get(p.get("symbol"))}
                 for p in data if p.get("symbol") in symbols]
 
     @app.get("/api/positions")
@@ -1744,6 +1787,73 @@ def build_app(state: GatewayState) -> FastAPI:
         return {"ok": all(r["ok"] for r in results) if results else True,
                 "env": env, "results": results}
 
+    @app.post("/control/position/close",
+              dependencies=[Depends(_control_auth)])
+    def close_single_position(req: ClosePositionRequest) -> dict[str, Any]:
+        """Fecha UMA posição (símbolo) via intent `reduce_only` market. Ato
+        humano autenticado (dashboard, com confirmação prévia). Reusa
+        `handle_intent` — NÃO adiciona gate ao caminho de ordem (INVARIANTE
+        §8.4.1). O `strategy_id` vem atribuído na linha de posição
+        (`_scoped_positions`); a venue neta por conta, então o reduce_only
+        achata a posição daquela conta no símbolo."""
+        sid = req.strategy_id
+        if not state.db.query("SELECT id FROM strategies WHERE id = ?", (sid,)):
+            return {"ok": False, "reason": "strategy_desconhecida"}
+        try:
+            scoped = _scoped_positions([sid], req.env, None)
+        except Exception as exc:  # noqa: BLE001 — venue hiccup não pode 500
+            return {"ok": False, "reason": f"positions_indisponiveis: {str(exc)[:120]}"}
+        match = next(
+            (p for p in scoped if p.get("symbol") == req.symbol
+             and abs(float(p.get("size") or 0)) > 0),
+            None,
+        )
+        if match is None:
+            return {"ok": False, "reason": "posicao_nao_encontrada"}
+        size = float(match["size"])
+        side = "sell" if size > 0 else "buy"
+        try:
+            r = state.handle_intent(IntentRequest(
+                strategy_id=sid, symbol=req.symbol, side=side,
+                size=abs(size), reduce_only=True, environment=req.env,
+                dry_run=False,
+            ))
+        except Exception as exc:  # noqa: BLE001 — best-effort; devolve o motivo
+            r = {"ok": False, "reason": str(exc)[:200]}
+        state.logger.info(
+            "position.close",
+            {"symbol": req.symbol, "env": req.env, "side": side,
+             "size": abs(size), "ok": bool(r.get("ok")), "by": "dashboard_humano"},
+            strategy_id=sid)
+        return {"ok": bool(r.get("ok")), "symbol": req.symbol,
+                "reason": r.get("reason")}
+
+    @app.get("/api/wallet-labels")
+    def api_wallet_labels() -> dict[str, str]:
+        """Mapa {address: label} dos rótulos de wallet geridos no app
+        (migration 0023). Usado pelo combo de Wallets do topo. Somente leitura."""
+        try:
+            rows = state.db.query("SELECT address, label FROM wallet_labels")
+            return {r["address"]: r["label"] for r in rows}
+        except Exception:  # noqa: BLE001 — combo não pode derrubar a UI
+            return {}
+
+    @app.post("/control/wallet/{address}/label",
+              dependencies=[Depends(_control_auth)])
+    def set_wallet_label(address: str, req: WalletLabelRequest) -> dict[str, Any]:
+        """Define (ou remove, se vazio) o rótulo de uma wallet. Ato humano
+        autenticado. Endereço normalizado p/ minúsculas (casa com master_address)."""
+        addr = address.lower()
+        label = req.label.strip()
+        if label:
+            state.db.upsert("wallet_labels",
+                            {"address": addr, "label": label,
+                             "updated_at": utcnow()},
+                            ("address",))
+        else:
+            state.db.execute("DELETE FROM wallet_labels WHERE address = ?", (addr,))
+        return {"ok": True, "address": addr, "label": label}
+
     @app.get("/api/pnl/summary")
     def api_pnl_summary(
         strategy_id: str | None = None,
@@ -1790,8 +1900,26 @@ def build_app(state: GatewayState) -> FastAPI:
             rows = state.db.query(sql, params)
             row = dict(rows[0]) if rows else {}
             realized = float(row.get("realized_pnl") or 0)
-            positions = _scoped_positions(strategy_ids, network_filter, wallet)
-            unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+            # O PnL não-realizado é um SNAPSHOT das posições abertas AGORA — não é
+            # atribuível a um período passado. Se a janela termina antes do
+            # instante atual (ex.: "ontem", ou um custom que fecha no passado),
+            # somar o unrealized vazaria o mark-to-market de hoje para o período
+            # passado (sintoma: "ontem soma com hoje"). Só incluímos o unrealized
+            # quando a janela alcança o presente (`until` ausente ou >= agora).
+            include_unrealized = True
+            if until:
+                try:
+                    include_unrealized = (
+                        datetime.fromisoformat(until) >= datetime.now(timezone.utc)
+                    )
+                except ValueError:
+                    include_unrealized = True
+            if include_unrealized:
+                positions = _scoped_positions(strategy_ids, network_filter, wallet)
+                unrealized = sum(
+                    float(p.get("unrealized_pnl") or 0) for p in positions)
+            else:
+                unrealized = 0.0
             return {
                 "n_trades": int(row.get("n_trades") or 0),
                 "realized_pnl": realized,

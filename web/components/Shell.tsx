@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ENV_COOKIE, Environment, WALLET_COOKIE } from "@/lib/prefs";
-import { WalletOption } from "@/lib/copy-trade/data";
+import { WalletOption, setWalletLabel } from "@/lib/copy-trade/data";
 
 type Health = {
   ok: boolean;
@@ -40,6 +40,28 @@ export default function Shell({
   const [drawer, setDrawer] = useState(false);
   const [light, setLight] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
+  // Edição inline do rótulo da wallet selecionada (combo do topo).
+  const [editingLabel, setEditingLabel] = useState(false);
+  const [labelDraft, setLabelDraft] = useState("");
+  const [savingLabel, setSavingLabel] = useState(false);
+
+  // Nome atual da wallet selecionada = parte antes de " — 0x…" no label.
+  const selectedOpt = wallets.find((w) => w.value === wallet);
+  const currentName =
+    selectedOpt && selectedOpt.label.includes(" — ")
+      ? selectedOpt.label.split(" — ")[0]
+      : "";
+
+  async function saveLabel() {
+    if (savingLabel) return;
+    setSavingLabel(true);
+    const res = await setWalletLabel(wallet, labelDraft.trim());
+    setSavingLabel(false);
+    if (res.ok) {
+      setEditingLabel(false);
+      router.refresh();
+    }
+  }
 
   // Controle GLOBAL: grava o cookie (não-httpOnly) e recarrega os server
   // components. O valor exibido vem do servidor (props), então não lemos cookie
@@ -109,7 +131,7 @@ export default function Shell({
           <span className={`dot ${online ? "on" : "off"}`} /> ENGINE{" "}
           <strong>{online ? "ONLINE" : "OFFLINE"}</strong>
         </span>
-        {wallets.length > 1 && (
+        {wallets.length > 1 && !editingLabel && (
           <select
             className="statusbar-sel wallet-sel"
             aria-label="Wallet (master de trading)"
@@ -122,6 +144,55 @@ export default function Shell({
               </option>
             ))}
           </select>
+        )}
+        {wallets.length > 1 && wallet !== "all" && !editingLabel && (
+          <button
+            className="wallet-label-edit"
+            aria-label="Editar rótulo da wallet"
+            title="Editar rótulo da wallet"
+            onClick={() => {
+              setLabelDraft(currentName);
+              setEditingLabel(true);
+            }}
+          >
+            ✎
+          </button>
+        )}
+        {editingLabel && (
+          <span className="wallet-label-editor">
+            <input
+              className="statusbar-sel wallet-label-input"
+              aria-label="Rótulo da wallet"
+              placeholder="Rótulo (ex.: Hyperliquid 1)"
+              value={labelDraft}
+              autoFocus
+              maxLength={64}
+              disabled={savingLabel}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveLabel();
+                if (e.key === "Escape") setEditingLabel(false);
+              }}
+            />
+            <button
+              className="wallet-label-edit"
+              aria-label="Salvar rótulo"
+              title="Salvar"
+              disabled={savingLabel}
+              onClick={saveLabel}
+            >
+              ✓
+            </button>
+            <button
+              className="wallet-label-edit"
+              aria-label="Cancelar"
+              title="Cancelar"
+              disabled={savingLabel}
+              onClick={() => setEditingLabel(false)}
+            >
+              ✕
+            </button>
+          </span>
         )}
         <select
           className={`statusbar-sel env-sel env-${env}`}

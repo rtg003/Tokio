@@ -2806,3 +2806,58 @@ parâmetro OPCIONAL (`forced_close: bool = False`, aditivo). **COM migration**
 - Migration 0021 aplica: coluna `fills.forced_close` presente,
   `schema_migrations` registra `0021_fills_forced_close`.
 - `cd web && npm run build` verde (não toca web).
+
+---
+
+## UPDATE-0051 · 2026-07-14 · Status: PENDENTE
+
+**Origem**: lote de 7 ajustes de dashboard pedidos pelo operador (rtg003) em
+2026-07-14, incluindo a correção definitiva de um bug real de PnL por período.
+
+**Tipo**: ajustes de UI (Copy Trade + Trading View) + 4 mudanças de backend no
+gateway. **Não toca** `/intent`/`/cancel`/`handle_intent`/gates humanos/hot path
+→ §8.4.1 não se aplica (o fechamento de posição REUSA `handle_intent`, sem gate
+novo). `apply_fill`/`send_intent`/`OrderResult` sem mudança de assinatura. **COM
+migrations** (0022, 0023, aditivas), sem secret, sem `logic_version`.
+
+### Fix 1 — PnL por período somava o não-realizado de hoje (`server.py`)
+- Sintoma: com a janela "ontem" selecionada, o PnL de ontem parecia somar o de
+  hoje (~$50 fantasma). Raiz: `api_pnl_summary` somava SEMPRE o `unrealized_pnl`
+  (snapshot AO VIVO das posições abertas) ao `realized` já filtrado por período.
+- Fix: só inclui o não-realizado quando a janela **alcança o presente** (`until`
+  ausente ou `until >= agora`, UTC). Janela que fecha no passado ⇒
+  `unrealized = 0`. Realizado continua estritamente por período.
+
+### Fix 2 — Alavancagem/Margem por ordem e por trade (`server.py` + migration 0022)
+- `orders` não guardava alavancagem. Migration **0022** adiciona
+  `orders.leverage REAL` (aditiva; ordens antigas ficam NULL → UI mostra "—").
+- `handle_intent` grava a alavancagem EFETIVA (já teto-limitada) no `order_row`.
+- `/api/fills` herda a alavancagem da ordem-pai por `cloid`. A UI deriva a
+  **Margem = notional / alavancagem** e exibe ambas as colunas (após Preço) nas
+  tabelas de Trades/Ordens; a coluna **CLOID foi removida** dessas tabelas.
+
+### Fix 3 — Fechar UMA posição pela dashboard (`server.py`)
+- Novo `POST /control/position/close` (ato humano autenticado, com confirmação
+  na UI): acha a posição escopada, envia `reduce_only` market via `handle_intent`
+  (`sell` p/ long, `buy` p/ short). `_scoped_positions` passa a atribuir
+  `strategy_id` a cada posição (menor sid determinístico — a venue neta por
+  conta). Botão flat/minimalista na coluna após "Ativo" (ambas as telas).
+
+### Fix 4 — Rótulos de wallet no combo do topo (`server.py` + migration 0023)
+- A MetaMask NÃO expõe o nome da conta a sites; guardamos um rótulo por endereço
+  no SQLite (migration **0023**, tabela `wallet_labels`). `GET /api/wallet-labels`
+  + `POST /control/wallet/{addr}/label` (upsert/remove). O combo passa a exibir
+  "Hyperliquid 1 — 0x4124…", editável inline no topo (ato humano autenticado).
+
+### Outros ajustes de UI (sem backend)
+- Tabela de Traders: 8 linhas visíveis + altura de linha discretamente menor.
+- Fonte dos VALORES dos 6 primeiros cards discretamente menor (Copy Trade + TV).
+- KPI "PnL líquido" renomeado para "PnL" (ambas as telas); profit factor já em
+  2 casas (sem mudança).
+
+### Validação esperada
+- `.venv/bin/python -m pytest tests/ -q` verde (334 = 321 + 13 novos em
+  `tests/gateway/test_dashboard_0051.py`).
+- Migrations 0022/0023 aplicam: coluna `orders.leverage` + tabela
+  `wallet_labels` presentes; `schema_migrations` registra ambas.
+- `cd web && npm run build` verde (exit 0, sem erro de tipo/lint).

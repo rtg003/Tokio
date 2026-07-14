@@ -1,5 +1,6 @@
 import { fmtNum, fmtSigned, pnlClass } from "@/lib/format";
 import { Position } from "@/lib/trading-view/data";
+import ClosePositionButton from "./ClosePositionButton";
 
 export default function PositionsTable({ positions }: { positions: Position[] }) {
   const rows = (positions ?? [])
@@ -21,6 +22,7 @@ export default function PositionsTable({ positions }: { positions: Position[] })
             <thead>
               <tr>
                 <th>Ativo</th>
+                <th className="num" aria-label="Fechar"></th>
                 <th>Lado</th>
                 <th className="num">Tamanho</th>
                 <th className="num">Entrada</th>
@@ -36,6 +38,13 @@ export default function PositionsTable({ positions }: { positions: Position[] })
               {rows.map((p) => (
                 <tr key={p.symbol}>
                   <td>{p.symbol}</td>
+                  <td className="num pos-close-cell">
+                    <ClosePositionButton
+                      strategyId={p.strategy_id}
+                      symbol={p.symbol}
+                      env={p.network}
+                    />
+                  </td>
                   <td>
                     <span className={`side ${p.size > 0 ? "long" : "short"}`}>
                       {p.size > 0 ? "LONG" : "SHORT"}
