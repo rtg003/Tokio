@@ -1583,10 +1583,20 @@ Arquivos criados (todos fora do engine):
   `perpDexs`, ex.: `xyz:SPCX`), compara par vs referência, alerta Telegram + JSONL.
 - `skill/references/oracle_mismatch/watchlist.yaml` — o que vigiar (Hermes-owned;
   sem DB no MVP). v1: `xyz:SPCX`, `xyz:TSLA`, `xyz:COIN` (hl_peer) + BTC, ETH (cex).
+- `skill/references/oracle_mismatch/listing_watch.py` — detector de novos listings
+  (1x/dia, 09:00 SP). Compara o universe `xyz:` contra snapshot do dia anterior,
+  alerta Telegram quando símbolos novos 🆕 ou removidos ❌ aparecem. Silencioso sem
+  mudanças. Snapshot em `state/oracle_listings_snapshot.json` (gitignored).
 - `skill/references/oracle_mismatch/README.md` — contrato/runbook completo.
-- `skill/SKILL.md` — nova seção "Módulo Oracle Mismatch".
+- `skill/SKILL.md` — seção "Módulo Oracle Mismatch" + subseção listing watch.
 - `state/oracle_mismatch_state.json` — criado em runtime (gitignored); `state/`
   adicionado ao `.gitignore`.
+
+**Crontab do tokio (2 entradas):**
+```
+* * * * * cd /home/tokio/Tokio && .venv/bin/python skill/references/oracle_mismatch/scanner.py --once >> logs/oracle_mismatch-cron.log 2>&1
+0 12 * * * cd /home/tokio/Tokio && .venv/bin/python skill/references/oracle_mismatch/listing_watch.py >> logs/oracle_mismatch-listing.log 2>&1
+```
 
 **Modelo de detecção — NÃO simplificar de volta para comparação de nível.** O
 `hl_peer` é **TEMPORAL**: compara a **variação Δ%** do par numa janela (`window_s`,
@@ -1892,3 +1902,42 @@ margin é contada uma vez no perp e outra no spot.
 4. `margin_used` continua $442 (não muda).
 5. `tests/gateway/test_intent_regression.py` verde.
 6. PaperAdapter não quebra (sem `hold` no paper).
+
+## UPDATE-0047 · 2026-07-14 · Status: PENDENTE
+
+Origem: Hermes — fix do cron de backup SQLite + descoberta de DB inchado
+Tipo: operacao | infra
+
+Resumo: o script `tokio_sqlite_backup.sh` estava **quebrado** — tentava
+`shutil.copy2` num DB de 8 GB (timeout) + `gzip` pós-cópia (estourava o
+timeout do cron). Resultado: 11 backups `.db` não comprimidos (5–7.4 GB
+cada, owner root) acumulados em `data/backups/` = **47 GB** consumidos
+indevidamente. Disco da VPS em 39%. Além disso, o DB tem **8.4 GB**
+porque `discovery_cache` (29.245 rows) guarda payloads JSON de ~17 MB
+cada — **área do Cursor** (schema/código do engine).
+
+Ações tomadas pelo Hermes:
+1. **Limpei 46 GB** de backups `.db` não comprimidos (só mantive os 3
+   `.gz` válidos de 5–7/07). Disco caiu de 39% → 27%.
+2. **Reescrevi `tokio_sqlite_backup.sh`**: usa `sqlite3 .backup` (cópia
+   consistente online via API oficial, sem lock global) + `gzip -c` com
+   timeout 300s + limpeza automática de `.db` não comprimidos > 1 dia +
+   retenção 7 dias em `.gz`. Validado: DB de 7.8 GB → .gz de 1.2 GB em
+   ~30s. **Backup funcional agora.**
+3. **Reativei o cron "Monitor de drift do copy trade"** (estava disabled
+   desde 12/07).
+4. **Listing watch** (`listing_watch.py`) adicionado ao UPDATE-0044 e ao
+   `SKILL.md`/`README.md` do módulo Oracle Mismatch.
+
+Ações do Cursor:
+1. **Investigar `discovery_cache`**: 29.245 rows com payloads de ~17 MB
+   cada é o motivo do DB ter 8.4 GB. Considerar:
+   - TTL/cleanup automático de entries antigas (ex: > 7 dias).
+   - Compressão de payloads antes de gravar (zlib/gzip no Python).
+   - Ou remover `discovery_cache` inteiro se os scans recriam o cache
+     a cada run (verificar se o código lê mais do que escreve).
+2. O `VACUUM` também pode reduzir o file size após cleanup, mas precisa
+   do engine parado (lock). Agendar janela de manutenção se necessário.
+
+Validação: `bash ~/.hermes/scripts/tokio_sqlite_backup.sh` produz um
+`.db.gz` válido; `du -sh data/backups/` < 10 GB; `df -h /` < 30%.
