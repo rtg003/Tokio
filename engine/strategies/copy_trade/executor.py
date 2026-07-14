@@ -628,34 +628,47 @@ class CopyTradeExecutor:
         return float(meta.get("mid") or meta.get("mid_price") or 0.0)
 
     def _venue_cross_check(self, ledger: dict[str, Any]) -> None:
-        """Σ(ledger position per symbol) vs the real clearinghouse per symbol.
+        """Σ(ledger position per symbol) vs the real clearinghouse per symbol,
+        AGRUPADO por environment. Estratégias podem operar em redes diferentes ao
+        mesmo tempo (uma ct_* em testnet, outra em mainnet), então consultar a
+        venue com um único network fixo (`watch_network`, que é a rede do
+        trader-FONTE, não a nossa) reportava `venue: 0.0` falso. Cada grupo é
+        consultado na SUA rede via `environment_for_status`.
         Logs `reconcile.venue_mismatch` — respects §5.1 (does NOT correct by
         crossing strategies, since venue positions aren't attributable)."""
-        sids = [c.strategy_id for c in self.traders.values()
-                if self._trader_status(c.address) in ("TESTNET", "MAINNET")]
-        if not sids:
+        by_env: dict[str, list[str]] = {}
+        for cfg in self.traders.values():
+            if self._trader_status(cfg.address) not in ("TESTNET", "MAINNET"):
+                continue
+            env = environment_for_status(self._trader_status(cfg.address))
+            if env:
+                by_env.setdefault(env, []).append(cfg.strategy_id)
+        if not by_env:
             return
-        try:
-            venue = self.gateway.positions(sids, self.settings.copy_trade.watch_network)
-        except Exception:  # noqa: BLE001 — cross-check is best-effort
-            return
-        ledger_by_symbol: dict[str, float] = {}
-        for sid in sids:
-            for symbol, pos in (ledger.get(sid) or {}).get("positions", {}).items():
-                ledger_by_symbol[symbol] = ledger_by_symbol.get(symbol, 0.0) + \
-                    float((pos or {}).get("size", 0.0))
-        venue_by_symbol: dict[str, float] = {}
-        for p in venue:
-            sym = p.get("symbol") or p.get("coin")
-            if sym:
-                venue_by_symbol[sym] = venue_by_symbol.get(sym, 0.0) + \
-                    float(p.get("size", p.get("szi", 0.0)) or 0.0)
-        for symbol in set(ledger_by_symbol) | set(venue_by_symbol):
-            led = ledger_by_symbol.get(symbol, 0.0)
-            ven = venue_by_symbol.get(symbol, 0.0)
-            if abs(led - ven) > max(abs(led), abs(ven), 1e-9) * DRIFT_TOLERANCE:
-                self.logger.warning("reconcile.venue_mismatch",
-                                    {"symbol": symbol, "ledger_sum": led, "venue": ven})
+        for env, sids in by_env.items():
+            try:
+                venue = self.gateway.positions(sids, env)
+            except Exception:  # noqa: BLE001 — cross-check is best-effort
+                continue
+            ledger_by_symbol: dict[str, float] = {}
+            for sid in sids:
+                for symbol, pos in (ledger.get(sid) or {}).get("positions", {}).items():
+                    ledger_by_symbol[symbol] = ledger_by_symbol.get(symbol, 0.0) + \
+                        float((pos or {}).get("size", 0.0))
+            venue_by_symbol: dict[str, float] = {}
+            for p in venue:
+                sym = p.get("symbol") or p.get("coin")
+                if sym:
+                    venue_by_symbol[sym] = venue_by_symbol.get(sym, 0.0) + \
+                        float(p.get("size", p.get("szi", 0.0)) or 0.0)
+            for symbol in set(ledger_by_symbol) | set(venue_by_symbol):
+                led = ledger_by_symbol.get(symbol, 0.0)
+                ven = venue_by_symbol.get(symbol, 0.0)
+                if abs(led - ven) > max(abs(led), abs(ven), 1e-9) * DRIFT_TOLERANCE:
+                    self.logger.warning(
+                        "reconcile.venue_mismatch",
+                        {"symbol": symbol, "ledger_sum": led, "venue": ven,
+                         "environment": env})
 
     # -- drift check ------------------------------------------------------------
     def drift_check(self) -> list[dict[str, Any]]:

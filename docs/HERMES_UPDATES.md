@@ -2758,3 +2758,51 @@ migration**, sem secret, sem `logic_version`. `send_intent`/`apply_fill`/
   `tests/test_copy_trade.py::test_reconcile_stuck_after_three_attempts`.
 - `cd web && npm run build` verde (não toca web).
 - Em operação: HYPE não trava no cap; `reconcile.stuck` consultável em `events`.
+
+## UPDATE-0050 · 2026-07-14 · Status: PENDENTE
+
+**Origem**: dois defeitos reais achados na operação do trader `0x1a5db900…`
+(`ct_1a5db900`) em 2026-07-14 14:14–14:28 UTC, depois do deploy do UPDATE-0049.
+
+**Tipo**: correção de engine (ledger + gateway + executor). **Não toca**
+`/intent`/`/cancel`/`handle_intent`/gates humanos/hot path → §8.4.1 não se
+aplica. `send_intent`/`OrderResult` mantêm assinatura; `apply_fill` ganha só um
+parâmetro OPCIONAL (`forced_close: bool = False`, aditivo). **COM migration**
+(0021, aditiva), sem secret, sem `logic_version`.
+
+### Bug D — ADL/liquidação desincronizava o ledger virtual (`ledger.py` + `server.py` + migration 0021)
+- A Hyperliquid fez 6 ADLs no nosso HYPE (fills #265–#270, `cloid=null`,
+  `dir="Auto-Deleveraging"`). O `apply_fill` tratava o ADL como ordem normal e
+  fazia **flip-through-zero**: a posição long ~2.76 virou um **short fantasma**
+  (−14.64) no book virtual, enquanto a venue foi a FLAT. Isso reabria posição no
+  reconcile e poluía o realizado.
+- Fix: `on_own_fill` detecta `dir` (Auto-Deleveraging/Liquidation) e passa
+  `forced_close=True` ao `apply_fill`, que **clampa a posição em ZERO** quando o
+  fill fecharia mais do que temos — nunca vira posição oposta. O realizado
+  (`gross − fee`) é ortogonal ao clamp (não regride). A flag é persistida na
+  nova coluna `fills.forced_close` (migration **0021**, aditiva, default 0) e
+  reproduzida no `hydrate_from_db` do startup — senão o replay reconstruiria o
+  short fantasma.
+
+### Bug E — `_venue_cross_check` lia a rede errada (`executor.py`)
+- O cross-check consultava `positions()` com um network fixo (`watch_network`,
+  que é a rede do trader-FONTE, não a nossa), reportando `venue: 0.0` FALSO para
+  posições que existiam de fato na testnet (AAVE 12.16, HYPE).
+- Fix: agrupa as estratégias por `environment_for_status` e consulta cada grupo
+  na SUA rede (testnet/mainnet). O payload de `reconcile.venue_mismatch` agora
+  inclui `"environment"`. Respeita §5.1 (não corrige cruzando estratégias).
+
+### Impacto operacional
+- ADL/liquidação não gera mais short fantasma no ledger virtual — a posição vai
+  a zero como na venue, e o reconcile não reabre. Fills forçados ficam marcados
+  no DB (`fills.forced_close=1`) e o replay de startup reconstrói correto.
+- O `venue_cross_check` para de alarmar `venue: 0.0` falso em posições testnet;
+  cada estratégia é comparada contra a rede em que realmente opera.
+
+### Validação esperada
+- `.venv/bin/python -m pytest tests/ -q` verde (321 = 314 + 7 novos:
+  `tests/gateway/test_forced_close.py` [5] +
+  `tests/strategies/test_venue_cross_check_env.py` [2]).
+- Migration 0021 aplica: coluna `fills.forced_close` presente,
+  `schema_migrations` registra `0021_fills_forced_close`.
+- `cd web && npm run build` verde (não toca web).

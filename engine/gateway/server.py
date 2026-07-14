@@ -340,6 +340,13 @@ class GatewayState:
         tid = str(tid) if tid is not None else None
         fill_hash = fill.get("hash")
         closed_pnl = fill.get("closedPnl")
+        # ADL/liquidação: a HL manda `dir` no fill cru. Um fechamento FORÇADO pela
+        # venue não pode virar posição oposta no ledger virtual (short fantasma) —
+        # `forced_close` faz o `apply_fill` clampar em zero. paper/teste não têm.
+        fill_dir = str(fill.get("dir") or "")
+        is_forced_close = fill_dir in (
+            "Auto-Deleveraging", "Liquidation", "Auto-Deleveraging (Liquidation)",
+        )
         # Idempotência: se este `tid` já foi gravado, é re-entrega do WS — pular
         # ANTES do apply_fill, senão o ledger dobra a posição.
         if tid is not None and self.db.query(
@@ -362,7 +369,7 @@ class GatewayState:
             strategy_id = self.ledger.strategy_holding_symbol(symbol)
         realized = self.ledger.apply_fill(
             cloid=cloid, strategy_id=strategy_id, symbol=symbol, side=side,
-            price=price, size=size, fee=fee,
+            price=price, size=size, fee=fee, forced_close=is_forced_close,
         )
         # Sem dono único o ledger não computa realizado; usa o `closedPnl` da HL
         # (visão de sistema — strategy_id fica NULL, mas o PnL aparece).
@@ -416,6 +423,7 @@ class GatewayState:
             "master_address": getattr(fill_adapter, "account_address", None),
             "tid": tid,
             "fill_hash": fill_hash,
+            "forced_close": 1 if is_forced_close else 0,
             "ts": utcnow(),
         })
         if cloid:
@@ -1861,7 +1869,7 @@ def main() -> None:
     # runners subirem: sem isto, o reconcile de startup compara o alvo do trader
     # contra um book vazio e reabre todas as posições (dobra AAVE/HYPE etc.).
     hydrate_rows = db.query(
-        "SELECT cloid, strategy_id, symbol, side, price, size, fee "
+        "SELECT cloid, strategy_id, symbol, side, price, size, fee, forced_close "
         "FROM fills WHERE strategy_id IS NOT NULL ORDER BY id ASC"
     )
     state.ledger.hydrate_from_db(hydrate_rows)

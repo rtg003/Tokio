@@ -86,9 +86,18 @@ class Ledger:
         price: float,
         size: float,
         fee: float,
+        forced_close: bool = False,
     ) -> float | None:
         """Update the virtual book. Returns realized PnL (net of this fill's fee)
-        when the fill reduces/closes a position, else None."""
+        when the fill reduces/closes a position, else None.
+
+        `forced_close` marks a venue-driven close (ADL/liquidação, `dir` =
+        Auto-Deleveraging/Liquidation). A forced close NUNCA vira posição oposta:
+        se o fill "fecharia mais" do que temos virtualmente (ledger dessincroniza
+        com a venue em books rasos), a posição é clampada em ZERO em vez de fazer
+        flip-through-zero e criar um short fantasma — a venue foi a flat, não a
+        short. Só afeta o caso `abs(signed) >= abs(pos.size)`; PnL/closing ficam
+        idênticos (a correção é ortogonal ao realizado)."""
         sid = strategy_id or self.strategy_for_cloid(cloid)
         if sid is None:
             if self.logger:
@@ -112,11 +121,15 @@ class Ledger:
                 realized = gross - fee
                 pos.realized_pnl += realized
                 book.realized_pnl += realized
-                pos.size += signed
-                if abs(pos.size) < 1e-12:
+                if forced_close and abs(signed) >= abs(pos.size):
+                    # ADL/liquidação fechou tudo — a venue está flat, não short.
                     pos.size = 0.0
-                if abs(signed) > closing:  # flipped through zero
-                    pos.avg_entry = price
+                else:
+                    pos.size += signed
+                    if abs(pos.size) < 1e-12:
+                        pos.size = 0.0
+                    if abs(signed) > closing:  # flipped through zero (ordem nossa)
+                        pos.avg_entry = price
             pos.fees_paid += fee
             book.fees_paid += fee
         self._check_opposite_directions(symbol)
@@ -180,6 +193,7 @@ class Ledger:
                     price=float(row["price"]),
                     size=float(row["size"]),
                     fee=float(row["fee"] or 0.0),
+                    forced_close=bool(row.get("forced_close", 0)),
                 )
         finally:
             self.logger = saved_logger
