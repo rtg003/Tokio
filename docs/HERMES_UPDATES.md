@@ -2862,7 +2862,7 @@ migrations** (0022, 0023, aditivas), sem secret, sem `logic_version`.
   `wallet_labels` presentes; `schema_migrations` registra ambas.
 - `cd web && npm run build` verde (exit 0, sem erro de tipo/lint).
 
-## UPDATE-0052 · 2026-07-15 · Status: PENDENTE
+## UPDATE-0052 · 2026-07-15 · Status: APLICADO em 2026-07-15
 
 **Origem**: dois incidentes de produção (mesma raiz) + um pedido de UI do
 operador (rtg003) em 2026-07-15.
