@@ -2932,7 +2932,7 @@ NOVO (`adapter.cancel` env-aware), não uma mudança no `/cancel`. **Sem migrati
 
 ---
 
-## UPDATE-0053 · 2026-07-15 · Status: PENDENTE
+## UPDATE-0053 · 2026-07-15 · Status: APLICADO em 2026-07-15
 
 **Origem**: pedido do operador (rtg003) em 2026-07-15 — avaliar wallets
 específicas descobertas por fora do scan automático (indicação, análise
