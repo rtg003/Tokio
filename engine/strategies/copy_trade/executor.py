@@ -335,6 +335,24 @@ class CopyTradeExecutor:
 
         fill_time_ms = float(fill.get("time", t0 * 1000))
         latency_ms = max(0.0, t0 * 1000 - fill_time_ms)
+
+        # Guard anti-fechamento-fantasma: se este movimento REDUZ/fecha, confirmar
+        # na venue real ANTES de emitir. `_my_pos` otimista pode estar stale
+        # (fechamento manual pelo dashboard, reset/liquidação sem fill) e um
+        # `reduce_only` sobre posição inexistente vira "empty response" → stuck.
+        # Ressincroniza `_my_pos` à venue; os guards de step/min-notional abaixo
+        # então pulam o envio quando já estamos flat.
+        if abs(my_new) < abs(my_prev) or my_new == 0.0:
+            step = 10 ** (-sz_decimals) if sz_decimals is not None else 1e-12
+            venue = self._venue_position(strategy_id, symbol, environment)
+            if venue is not None and abs(venue - my_prev) >= step:
+                self.logger.info("decision.venue_resync",
+                                 {"symbol": symbol, "stale": my_prev, "venue": venue},
+                                 strategy_id=strategy_id, latency_ms=latency_ms)
+                self._my_pos[key] = venue
+                my_prev = venue
+                delta = my_new - my_prev
+
         decision = {
             "symbol": symbol, "target_fill_sz": signed_fill, "px": px,
             "prev_target": prev_target, "new_target": new_target,
@@ -543,6 +561,23 @@ class CopyTradeExecutor:
                         abs(desired - optimistic) < abs(desired - ledger_actual):
                     actual = optimistic
                 delta = desired - actual
+                # Guard anti-fechamento-fantasma (ver on_target_fill): quando o
+                # alvo REDUZ/fecha, confirmar na venue real antes de enviar.
+                # Ledger E otimista podem estar stale (fechamento manual pelo
+                # dashboard, reset/liquidação sem fill); um reduce_only sobre
+                # posição inexistente vira "empty response" → reconcile.stuck.
+                # Ressincroniza `actual` à venue; os guards abaixo pulam quando
+                # já não há o que fechar.
+                if abs(desired) < abs(actual) or desired == 0.0:
+                    venue = self._venue_position(sid, symbol, environment)
+                    if venue is not None and abs(venue) < abs(actual):
+                        self.logger.info(
+                            "drift.venue_resync",
+                            {"symbol": symbol, "stale": actual, "venue": venue},
+                            strategy_id=sid)
+                        self._my_pos[key] = venue
+                        actual = venue
+                        delta = desired - actual
                 # step / min-notional guards (same as on_target_fill)
                 if sz_decimals is not None and abs(delta) < 10 ** (-sz_decimals):
                     self._reconcile_attempts.pop(key, None)
@@ -669,6 +704,26 @@ class CopyTradeExecutor:
                         "reconcile.venue_mismatch",
                         {"symbol": symbol, "ledger_sum": led, "venue": ven,
                          "environment": env})
+
+    def _venue_position(self, sid: str, symbol: str,
+                        environment: str | None) -> float | None:
+        """Tamanho SINALIZADO real da NOSSA posição na venue p/ (sid, symbol).
+
+        Fonte de verdade para o guard anti-fechamento-fantasma: antes de emitir
+        qualquer `reduce_only` o executor consulta a venue (via gateway) em vez
+        de confiar cegamente no `_my_pos` otimista ou no ledger, que podem estar
+        stale (fechamento manual pelo dashboard; reset/liquidação sem fill).
+
+        `None`  ⇒ indisponível (exceção) — NÃO bloqueia, segue com a estimativa.
+        Símbolo ausente na resposta OK ⇒ `0.0` (posição realmente flat)."""
+        try:
+            venue = self.gateway.positions([sid], environment)
+        except Exception:  # noqa: BLE001 — indisponível ⇒ segue com estimativa
+            return None
+        for p in venue:
+            if (p.get("symbol") or p.get("coin")) == symbol:
+                return float(p.get("size", p.get("szi", 0.0)) or 0.0)
+        return 0.0
 
     # -- drift check ------------------------------------------------------------
     def drift_check(self) -> list[dict[str, Any]]:

@@ -1,5 +1,6 @@
 import { fmtDateTime, fmtNotional, fmtNum, fmtSigned, pnlClass, statusChip } from "@/lib/format";
 import { Fill, Order } from "@/lib/trading-view/data";
+import CancelOrderButton from "./CancelOrderButton";
 
 type Row = {
   kind: "ORDEM" | "TRADE";
@@ -17,6 +18,8 @@ type Row = {
   latency?: number | null;
   cloid: string;
   master?: string | null;
+  strategyId?: string | null;
+  network?: string | null;
 };
 
 const ts = (v: string | undefined | null) => (v ? new Date(v).getTime() : 0);
@@ -53,6 +56,8 @@ export default function TradesOrdersTable({
       latency: o.latency_ms,
       cloid: o.cloid,
       master: o.master_address,
+      strategyId: o.strategy_id,
+      network: o.network,
     }));
 
   const tradeRows: Row[] = (fills ?? [])
@@ -104,6 +109,7 @@ export default function TradesOrdersTable({
                 <th className="num">PnL líquido</th>
                 <th>Status</th>
                 <th className="num">Latência</th>
+                <th className="num" aria-label="Cancelar"></th>
               </tr>
             </thead>
             <tbody>
@@ -144,6 +150,18 @@ export default function TradesOrdersTable({
                     )}
                   </td>
                   <td className="num">{r.latency ? `${Math.round(r.latency)}ms` : "—"}</td>
+                  <td className="num pos-close-cell">
+                    {r.kind === "ORDEM" ? (
+                      <CancelOrderButton
+                        strategyId={r.strategyId}
+                        symbol={r.symbol}
+                        cloid={r.cloid}
+                        env={r.network}
+                      />
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

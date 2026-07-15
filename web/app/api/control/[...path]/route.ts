@@ -26,6 +26,9 @@ const ALLOWED_POST_PATTERNS = [
   /^position\/close$/,
   // rótulo amigável da wallet no combo do topo (upsert/remove) — ato humano.
   /^wallet\/0x[0-9a-fA-F]{40}\/label$/,
+  // cancelar UMA ordem em aberto via ícone da tabela — ato humano autenticado
+  // (com confirmação na UI).
+  /^order\/cancel$/,
   // HL agent wallets: prepare/activate provisioning + revoke (gateway gates
   // the control token; MAINNET still needs credentials configured server-side)
   /^hl\/agents\/(prepare|activate)$/,

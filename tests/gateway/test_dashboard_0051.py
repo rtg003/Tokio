@@ -162,6 +162,53 @@ def test_close_position_requires_token(settings, db) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Cancelar UMA ordem em aberto — endpoint /control/order/cancel (UPDATE-0052)  #
+# --------------------------------------------------------------------------- #
+def test_cancel_order_marks_cancelled(settings, db) -> None:
+    state, testnet = _testnet_state(settings, db)
+    register_strategy(db, "ct_cancel", module="copy_trade")
+    db.insert("orders", {
+        "cloid": "0xopen", "strategy_id": "ct_cancel", "symbol": "BTC",
+        "side": "buy", "type": "limit", "size": 0.02, "status": "acked",
+        "created_at": utcnow(),
+    })
+    calls: list[tuple] = []
+    orig_cancel = testnet.cancel
+    testnet.cancel = lambda *a, **k: (calls.append((a, k)), orig_cancel(*a, **k))[1]
+
+    with TestClient(build_app(state)) as c:
+        r = c.post("/control/order/cancel", headers=HDR, json={
+            "strategy_id": "ct_cancel", "symbol": "BTC",
+            "cloid": "0xopen", "env": "testnet",
+        }).json()
+    assert r["ok"] is True and r["cloid"] == "0xopen"
+    # adapter.cancel chamado com (symbol, None, cloid) no ambiente pedido
+    assert calls and calls[0][0] == ("BTC", None, "0xopen")
+    # status persistido vira 'cancelled'
+    row = db.query("SELECT status FROM orders WHERE cloid = '0xopen'")[0]
+    assert row["status"] == "cancelled"
+
+
+def test_cancel_order_unknown_strategy(settings, db) -> None:
+    state, _ = _testnet_state(settings, db)
+    with TestClient(build_app(state)) as c:
+        r = c.post("/control/order/cancel", headers=HDR, json={
+            "strategy_id": "nope", "symbol": "BTC",
+            "cloid": "0xopen", "env": "testnet",
+        }).json()
+    assert r["ok"] is False and r["reason"] == "strategy_desconhecida"
+
+
+def test_cancel_order_requires_token(settings, db) -> None:
+    state, _ = _testnet_state(settings, db)
+    with TestClient(build_app(state)) as c:
+        assert c.post("/control/order/cancel", json={
+            "strategy_id": "x", "symbol": "BTC",
+            "cloid": "0xopen", "env": "testnet",
+        }).status_code == 401
+
+
+# --------------------------------------------------------------------------- #
 # Rótulos de wallet                                                            #
 # --------------------------------------------------------------------------- #
 ADDR = "0x4124AbCdEf0000000000000000000000000000AB"

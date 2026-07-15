@@ -251,6 +251,31 @@ export async function closeSinglePosition(args: {
   }
 }
 
+// Client-side: cancela UMA ordem em aberto via ícone da tabela. Ato humano
+// autenticado (a UI confirma antes de chamar). `cloid` identifica a ordem;
+// `env` resolve o adapter correto no gateway.
+export async function cancelOrder(args: {
+  strategy_id: string;
+  symbol: string;
+  cloid: string;
+  env: TvEnv;
+}): Promise<{ ok: boolean; reason?: string | null }> {
+  try {
+    const res = await fetch(`/api/control/order/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, reason: data.reason ?? data.detail ?? "erro_cancelamento" };
+    }
+    return { ok: true, reason: data.reason ?? null };
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
 // -- escrita/polling do wizard (client-side, via proxies autenticados) ---------
 export type TvStrategyForm = {
   strategy_id: string;

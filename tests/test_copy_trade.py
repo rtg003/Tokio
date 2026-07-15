@@ -233,6 +233,9 @@ def test_partial_reduction_mirrors_proportionally(settings, db) -> None:
     # equity ratio); a 50% reduction by the trader halves our mirror too.
     ex, watcher, gw = make_executor(settings, db, mode="percent", value=1.0)
     watcher.emit(TARGET, fill("ETH", "B", 10.0, 2_000.0, start_pos=0.0))   # open
+    # venue reflete a posição aberta (guard anti-fechamento-fantasma consulta a
+    # venue antes de reduzir; sem isso entenderia "flat" e pularia o reduce).
+    gw.positions_response = [{"symbol": "ETH", "size": ex._my_pos[("ct_whale01", "ETH")]}]
     watcher.emit(TARGET, fill("ETH", "A", 5.0, 2_100.0, start_pos=10.0))   # -50%
     assert len(gw.intents) == 2
     open_size = gw.intents[0]["size"]
@@ -245,6 +248,7 @@ def test_partial_reduction_mirrors_proportionally(settings, db) -> None:
 def test_full_close_mirrors_flat(settings, db) -> None:
     ex, watcher, gw = make_executor(settings, db, value=1000.0)
     watcher.emit(TARGET, fill("ETH", "B", 10.0, 2_000.0, start_pos=0.0))
+    gw.positions_response = [{"symbol": "ETH", "size": ex._my_pos[("ct_whale01", "ETH")]}]
     watcher.emit(TARGET, fill("ETH", "A", 10.0, 2_050.0, start_pos=10.0))
     close = gw.intents[1]
     assert close["reduce_only"] is True
@@ -256,6 +260,7 @@ def test_below_min_notional_skipped_and_logged(settings, db) -> None:
     # percent mode so a tiny trim by the whale yields a tiny (non-zero) delta.
     ex, watcher, gw = make_executor(settings, db, mode="percent", value=1.0)
     watcher.emit(TARGET, fill("BTC", "B", 1.0, 50_000.0, start_pos=0.0))   # 0.01 BTC open ok
+    gw.positions_response = [{"symbol": "BTC", "size": ex._my_pos[("ct_whale01", "BTC")]}]
     # whale trims 1% -> our delta ~0.0001 BTC (~5 USD) < 10 USD minimum -> skip
     watcher.emit(TARGET, fill("BTC", "A", 0.01, 50_000.0, start_pos=1.0))
     assert len(gw.intents) == 1
@@ -375,12 +380,104 @@ def test_fixed_usdc_does_not_scale_when_trader_doubles(settings, db) -> None:
 def test_fixed_usdc_closes_when_trader_flattens(settings, db) -> None:
     ex, watcher, gw = make_executor(settings, db, value=100.0)
     watcher.emit(TARGET, fill("FARTCOIN", "B", 1.0, 1.0, start_pos=0.0))
+    # venue confirma a posição que abrimos -> guard anti-fantasma deixa fechar
+    gw.positions_response = [
+        {"symbol": "FARTCOIN", "size": ex._my_pos[("ct_whale01", "FARTCOIN")]}
+    ]
     watcher.emit(TARGET, fill("FARTCOIN", "A", 1.0, 1.0, start_pos=1.0))  # -> flat
     close = gw.intents[1]
     assert close["side"] == "sell"
     assert close["reduce_only"] is True
     assert close["size"] == pytest.approx(100.0)
     assert ex._my_pos[("ct_whale01", "FARTCOIN")] == 0.0
+
+
+# -- guard anti-fechamento-fantasma: valida a venue antes de reduce_only ------
+# (UPDATE-0052) `_my_pos`/ledger otimistas podem estar stale — fechamento
+# manual pelo dashboard (processo separado) ou reset/liquidação sem fill — e um
+# reduce_only sobre posição inexistente vira "empty response" -> reconcile.stuck.
+
+def test_on_target_fill_skips_phantom_close_when_venue_flat(settings, db) -> None:
+    """Cenário 1/2: abrimos, mas a venue já está FLAT (fechamento manual/reset).
+    Ao ver o trader zerar, o executor consulta a venue, ressincroniza `_my_pos`
+    a 0 e NÃO emite o reduce_only fantasma."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    watcher.emit(TARGET, fill("FARTCOIN", "B", 1.0, 1.0, start_pos=0.0))  # open
+    assert len(gw.intents) == 1
+    # venue permanece flat (positions_response = [] default): a posição sumiu
+    # (dashboard fechou / reset) sem que o executor soubesse.
+    watcher.emit(TARGET, fill("FARTCOIN", "A", 1.0, 1.0, start_pos=1.0))  # -> flat
+    assert len(gw.intents) == 1  # nenhum reduce_only fantasma
+    assert ex._my_pos[("ct_whale01", "FARTCOIN")] == 0.0  # ressincronizado
+    resync = db.query(
+        "SELECT event_type FROM events WHERE event_type = 'decision.venue_resync'"
+    )
+    assert resync
+
+
+def test_on_target_fill_closes_when_venue_confirms(settings, db) -> None:
+    """Controle: a venue CONFIRMA a posição -> o fechamento segue normal."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    watcher.emit(TARGET, fill("FARTCOIN", "B", 1.0, 1.0, start_pos=0.0))
+    gw.positions_response = [
+        {"symbol": "FARTCOIN", "size": ex._my_pos[("ct_whale01", "FARTCOIN")]}
+    ]
+    watcher.emit(TARGET, fill("FARTCOIN", "A", 1.0, 1.0, start_pos=1.0))  # -> flat
+    assert len(gw.intents) == 2
+    assert gw.intents[1]["reduce_only"] is True
+
+
+def test_on_target_fill_closes_when_venue_unavailable(settings, db) -> None:
+    """`positions()` lança -> helper devolve None -> NÃO bloqueia: fecha com a
+    estimativa (não podemos travar o fechamento por uma falha de leitura)."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    watcher.emit(TARGET, fill("FARTCOIN", "B", 1.0, 1.0, start_pos=0.0))
+
+    def boom(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("venue indisponivel")
+
+    gw.positions = boom  # type: ignore[assignment]
+    watcher.emit(TARGET, fill("FARTCOIN", "A", 1.0, 1.0, start_pos=1.0))  # -> flat
+    assert len(gw.intents) == 2
+    assert gw.intents[1]["reduce_only"] is True
+
+
+def test_reconcile_skips_phantom_close_when_venue_flat(settings, db) -> None:
+    """Reconcile: ledger mostra posição, trader zerou (desired=0), mas a venue
+    está FLAT -> ressincroniza, pula o envio e NÃO conta como reconcile.stuck."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {}  # trader flat -> desired = 0
+    gw.mids = {"FARTCOIN": 1.0}
+    # ledger stale: ainda acha que temos 100 unidades; venue está flat ([])
+    gw.ledger_response = {"ct_whale01": {"positions": {"FARTCOIN": {"size": -100.0}}}}
+    for _ in range(5):
+        ex.reconcile()
+    assert gw.intents == []  # nenhuma ordem fantasma
+    stuck = db.query(
+        "SELECT event_type FROM events WHERE event_type = 'reconcile.stuck'"
+    )
+    assert not stuck
+    resync = db.query(
+        "SELECT event_type FROM events WHERE event_type = 'drift.venue_resync'"
+    )
+    assert resync
+
+
+def test_reconcile_closes_when_venue_confirms(settings, db) -> None:
+    """Controle: ledger + venue concordam que temos a posição e o trader zerou
+    -> reconcile emite o reduce_only normalmente."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {}  # trader flat -> desired = 0
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {"FARTCOIN": {"size": -100.0}}}}
+    gw.positions_response = [{"symbol": "FARTCOIN", "size": -100.0}]  # venue confirma
+    ex.reconcile()
+    assert len(gw.intents) == 1
+    assert gw.intents[0]["side"] == "buy"  # fecha short comprando
+    assert gw.intents[0]["reduce_only"] is True
+    assert gw.intents[0]["size"] == pytest.approx(100.0)
 
 
 # -- reconcile: recovers missed fills, per trader -> per strategy -------------

@@ -2861,3 +2861,71 @@ migrations** (0022, 0023, aditivas), sem secret, sem `logic_version`.
 - Migrations 0022/0023 aplicam: coluna `orders.leverage` + tabela
   `wallet_labels` presentes; `schema_migrations` registra ambas.
 - `cd web && npm run build` verde (exit 0, sem erro de tipo/lint).
+
+## UPDATE-0052 · 2026-07-15 · Status: PENDENTE
+
+**Origem**: dois incidentes de produção (mesma raiz) + um pedido de UI do
+operador (rtg003) em 2026-07-15.
+
+**Tipo**: correção definitiva de bug no **executor** de copy trade (cliente) +
+1 endpoint de controle novo no gateway + ícone de cancelamento manual na UI
+(Copy Trade + Trading View). **Não toca** `/intent`/`/cancel`/`handle_intent`/
+`handle_cancel`/gates/hot path → INVARIANTE §8.4.1 preservada: a validação de
+venue é no executor (cliente), e o cancelamento manual é um endpoint de controle
+NOVO (`adapter.cancel` env-aware), não uma mudança no `/cancel`. **Sem migration**
+(nenhuma mudança de schema). Sem secret, sem `logic_version`.
+
+### Bug — `reduce_only` fantasma sobre posição que já não existe na venue
+
+- **Cenário 1 (0x2ae6/BTC, testnet):** o operador fecha a posição pelo botão do
+  dashboard (`/control/position/close` → `handle_intent`). O fill zera o **ledger
+  virtual**, mas o **executor é outro processo** e seu `_my_pos` otimista fica
+  stale com o tamanho antigo. Minutos depois o trader-fonte zera → `on_target_fill`
+  calcula `desired=0`, `my_prev` stale → tenta vender o que já não existe →
+  `reduce_only` → **"BTC: empty response"** (3× → `reconcile.stuck`).
+- **Cenário 2:** a posição some da venue sem fill capturado (reset de saldo na
+  testnet, liquidação/ADL não vista pelo WS) ⇒ o ledger TAMBÉM fica stale.
+- **Raiz:** `on_target_fill`/`reconcile` confiavam cegamente no `_my_pos`
+  otimista/ledger para saber se a posição existe; nunca cruzavam com a venue real
+  antes de emitir o fechamento. Como o executor é processo separado do gateway
+  (sem registry p/ push), a correção robusta é o executor **auto-curar-se**
+  consultando a venue.
+
+### Fix — validar a venue real ANTES de qualquer `reduce_only` (`executor.py`)
+- Helper novo `_venue_position(sid, symbol, env)`: tamanho SINALIZADO real da
+  nossa posição na venue via `gateway.positions([sid], env)`. Símbolo ausente na
+  resposta OK ⇒ `0.0` (flat); exceção ⇒ `None` (indisponível — **não bloqueia**,
+  segue com a estimativa).
+- `on_target_fill`: quando o movimento REDUZ/fecha, consulta a venue; se diverge
+  de `my_prev` (além de meio-step), loga `decision.venue_resync`, ressincroniza
+  `_my_pos` e recomputa `delta`. Os guards de step/min-notional já existentes
+  então pulam o envio quando já estamos flat.
+- `reconcile`: quando `desired` REDUZ/zera e a venue tem MENOS do que achamos,
+  loga `drift.venue_resync`, ajusta `actual`/`delta` e os guards limpam o
+  contador de tentativas — **não** vira `reconcile.stuck`.
+- Efeito: cenários 1 e 2 param de emitir `reduce_only` fantasma; o executor
+  auto-cura o `_my_pos` sem precisar de push do gateway. O ledger stale do
+  cenário 2 continua sinalizado por `reconcile.venue_mismatch` (observabilidade);
+  resync do **ledger** fica FORA de escopo (exigiria endpoint de escrita no book,
+  mexe em §5.1 — o guard de emissão já elimina o dano agudo).
+
+### UI — ícone flat de cancelar UMA ordem em aberto (Copy Trade + Trading View)
+- Novo `POST /control/order/cancel` (`server.py`, `Depends(_control_auth)`): ato
+  humano autenticado, env-aware. Valida a strategy, resolve o adapter de `env`,
+  chama `adapter.cancel(symbol, None, cloid)` e, no ok, grava
+  `orders.status='cancelled'`. Cancel é sempre redutor de risco ⇒ sem gate (mesmo
+  racional do botão de fechar).
+- Proxy `web/app/api/control/[...path]/route.ts`: allowlist `^order/cancel$`.
+- `cancelOrder(...)` em ambos `web/lib/{copy-trade,trading-view}/data.ts`.
+- Novo `CancelOrderButton.tsx` (ambas as telas, ícone de lixeira flat, reusa
+  `.pos-close-btn`, `window.confirm` antes de cancelar) na coluna de ação da
+  tabela "Trades e Ordens em Aberto"; renderizado só para linhas `ORDEM` (fills
+  não são canceláveis).
+
+### Validação esperada
+- `.venv/bin/python -m pytest tests/ -q` verde (342 = 334 base ajustada + 8
+  novos: 5 de validação de venue em `tests/test_copy_trade.py` + 3 de cancel em
+  `tests/gateway/test_dashboard_0051.py`).
+- `cd web && npm run build` verde (exit 0).
+- INVARIANTE §8.4.1: `/intent`/`/cancel`/`handle_intent`/`handle_cancel`/gates
+  intocados; validação de venue é no executor (cliente).

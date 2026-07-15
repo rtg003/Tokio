@@ -124,6 +124,15 @@ class ClosePositionRequest(BaseModel):
     env: str = Field(pattern="^(testnet|mainnet)$")
 
 
+class CancelOrderRequest(BaseModel):
+    # Cancela UMA ordem em aberto via ícone da tabela. Ato humano autenticado
+    # (dashboard). `cloid` identifica a ordem; `env` resolve o adapter correto.
+    strategy_id: str
+    symbol: str
+    cloid: str
+    env: str = Field(pattern="^(testnet|mainnet)$")
+
+
 class WalletLabelRequest(BaseModel):
     # Rótulo amigável exibido no combo de Wallets ("Hyperliquid 1 — 0x4124…").
     # Vazio remove o rótulo. Ato humano autenticado (dashboard).
@@ -1827,6 +1836,32 @@ def build_app(state: GatewayState) -> FastAPI:
             strategy_id=sid)
         return {"ok": bool(r.get("ok")), "symbol": req.symbol,
                 "reason": r.get("reason")}
+
+    @app.post("/control/order/cancel",
+              dependencies=[Depends(_control_auth)])
+    def cancel_single_order(req: CancelOrderRequest) -> dict[str, Any]:
+        """Cancela UMA ordem em aberto (ícone da tabela). Ato humano autenticado
+        (dashboard, com confirmação). Env-aware: resolve o adapter de `env` e
+        chama `adapter.cancel` — NÃO toca o hot path `/cancel`/`handle_cancel`
+        (INVARIANTE §8.4.1). Cancelamento é sempre redutor de risco, então
+        dispensa o gate (mesmo racional do botão de fechar posição)."""
+        sid = req.strategy_id
+        if not state.db.query("SELECT id FROM strategies WHERE id = ?", (sid,)):
+            return {"ok": False, "reason": "strategy_desconhecida"}
+        try:
+            adapter = state._adapter_for(req.env)
+            ok = bool(adapter.cancel(req.symbol, None, req.cloid))
+        except Exception as exc:  # noqa: BLE001 — best-effort; devolve o motivo
+            return {"ok": False, "cloid": req.cloid, "reason": str(exc)[:200]}
+        if ok:
+            state.db.update_order_status(req.cloid, "cancelled", closed_at=utcnow())
+        state.logger.info(
+            "order.cancel_manual",
+            {"cloid": req.cloid, "symbol": req.symbol, "env": req.env,
+             "ok": ok, "by": "dashboard_humano"},
+            strategy_id=sid)
+        return {"ok": ok, "cloid": req.cloid,
+                "reason": None if ok else "cancel_recusado"}
 
     @app.get("/api/wallet-labels")
     def api_wallet_labels() -> dict[str, str]:
