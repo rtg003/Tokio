@@ -40,6 +40,9 @@ const ALLOWED_POST_PATTERNS = [
   // TV-Executor: pausar, editar config (versionada) e excluir (cascade só do
   // módulo TV; preserva fills/orders; gateway recusa active/posição aberta).
   /^tv\/strategies\/[a-z0-9_]{3,48}\/(pause|config|delete)$/,
+  // Sugestões manuais: analisar wallets pelo pipeline de discovery (analyze, sem
+  // gravar) e força-salvar as selecionadas como SUGERIDO/origin="usuário".
+  /^suggestions\/(analyze|save)$/,
 ];
 
 function gatewayBase(): string {
@@ -92,6 +95,12 @@ export async function POST(
   try {
     const search = req.nextUrl.search ?? "";
     const body = await req.text();
+    // POSTs de controle podem encadear várias chamadas externas (ex.:
+    // hl/agents/activate submete o approveAgent à HL, lê extra_agents e
+    // recarrega o adapter). 5s cortava o fluxo no meio; 30s cobre o pior caso.
+    // suggestions/* roda o pipeline de discovery para até 10 wallets frias
+    // (~8-10s cada no throttle da venue) → 120s p/ não cortar no meio.
+    const timeoutMs = joined.startsWith("suggestions/") ? 120000 : 30000;
     const r = await fetch(`${gatewayBase()}/control/${joined}${search}`, {
       method: "POST",
       headers: {
@@ -100,10 +109,7 @@ export async function POST(
       },
       ...(body ? { body } : {}),
       cache: "no-store",
-      // POSTs de controle podem encadear várias chamadas externas (ex.:
-      // hl/agents/activate submete o approveAgent à HL, lê extra_agents e
-      // recarrega o adapter). 5s cortava o fluxo no meio; 30s cobre o pior caso.
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     return NextResponse.json(await r.json(), { status: r.status });
   } catch {

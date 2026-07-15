@@ -139,6 +139,18 @@ class WalletLabelRequest(BaseModel):
     label: str = Field(default="", max_length=64)
 
 
+class AnalyzeSuggestionsRequest(BaseModel):
+    # Análise manual de sugestões (tela "Sugestões"): 1..10 endereços que o
+    # operador quer avaliar pelo pipeline de discovery, SEM gravar. Ato humano.
+    addresses: list[str] = Field(min_length=1, max_length=10)
+
+
+class SaveSuggestionsRequest(BaseModel):
+    # Salvar as wallets selecionadas como SUGERIDO (origin="usuário"). Força-
+    # salvar: grava mesmo as que reprovam filtros (curadoria humana prevalece).
+    addresses: list[str] = Field(min_length=1, max_length=10)
+
+
 class AgentPrepareRequest(BaseModel):
     env: str = Field(pattern="^(testnet|mainnet)$")
     master_address: str
@@ -720,6 +732,70 @@ def _control_auth(x_control_token: str = Header(default="")) -> None:
     expected = os.environ.get("GATEWAY_CONTROL_TOKEN", "")
     if not expected or x_control_token != expected:
         raise HTTPException(status_code=401, detail="invalid control token")
+
+
+def _suggestion_extras(c: Any) -> dict[str, Any]:
+    """Mapeamento de `extras` de um Candidate p/ `upsert_candidate`, espelhando
+    `funnel.persist_scan` (l.1075-1099). Curadoria manual NUNCA grava
+    reject_reason (força-salvar mantém a wallet como SUGERIDO limpo)."""
+    import json
+
+    from engine.strategies.copy_trade.funnel import serialize_components
+    return {
+        "n_trades_30d": c.n_trades_30d,
+        "n_trades_7d": c.n_trades_7d,
+        "win_rate_30d": c.win_rate_30d,
+        "avg_holding_hours": c.median_hold_hours,
+        "avg_leverage": c.avg_leverage,
+        "equity": c.equity,
+        "top_assets": json.dumps(c.top_assets, ensure_ascii=False),
+        "last_activity": c.last_activity,
+        "windows_positive": c.windows_positive,
+        "history_truncated": 1 if c.history_truncated else 0,
+        "max_current_leverage": c.max_current_leverage,
+        "available_margin_pct": c.available_margin_pct,
+        "sim_net_pnl_usd": c.sim_net_pnl_usd,
+        "sim_expectancy_usd": c.sim_expectancy_usd,
+        "sim_max_dd_pct": c.sim_max_dd_pct,
+        "sim_factor": c.sim_factor,
+        "coverage_days": c.coverage_days,
+        "sim_half_old_net": c.sim_half_old_net,
+        "sim_half_new_net": c.sim_half_new_net,
+        "score_components": serialize_components(c.components)
+        if c.components is not None else None,
+    }
+
+
+def _suggestion_report(c: Any) -> dict[str, Any]:
+    """Serializa um Candidate analisado p/ o front. `passes_filters` é rótulo de
+    UI (não bloqueia salvar); `reject_reasons` lista os filtros que reprovariam."""
+    return {
+        "address": c.address,
+        "name": c.name,
+        "passes_filters": len(c.reject_reasons) == 0,
+        "score": c.score,
+        "cohort": c.cohort or None,
+        "reject_reasons": list(c.reject_reasons),
+        "rationale": list(c.rationale),
+        "metrics": {
+            "n_trades_30d": c.n_trades_30d,
+            "win_rate_30d": c.win_rate_30d,
+            "avg_leverage": c.avg_leverage,
+            "avg_holding_hours": c.median_hold_hours,
+            "equity": c.equity,
+            "twrr_30d": c.twrr_30d_pct,
+            "pnl_30d": c.windows_pnl.get("30d"),
+            "profit_factor": c.pf,
+            "max_drawdown": c.max_dd_90d_pct,
+            "liq_distance": c.liq_distance_pct,
+            "sim_net_pnl_usd": c.sim_net_pnl_usd,
+            "sim_stage4_net_usd": c.sim_stage4_net_usd,
+            "sim_expectancy_usd": c.sim_expectancy_usd,
+            "sim_max_dd_pct": c.sim_max_dd_pct,
+            "sim_factor": c.sim_factor,
+            "coverage_days": c.coverage_days,
+        },
+    }
 
 
 def build_app(state: GatewayState) -> FastAPI:
@@ -1862,6 +1938,89 @@ def build_app(state: GatewayState) -> FastAPI:
             strategy_id=sid)
         return {"ok": ok, "cloid": req.cloid,
                 "reason": None if ok else "cancel_recusado"}
+
+    def _suggestions_client() -> tuple[Any, dict[str, Any]]:
+        """Constrói o HLDataClient + cfg de discovery sob demanda (o GatewayState
+        não os carrega). Espelha `discovery_scheduler`. Cache <20h da HLDataClient
+        torna a reanálise do save barata."""
+        from engine.strategies.copy_trade import funnel
+        from engine.strategies.copy_trade.hl_data import HLDataClient
+
+        cfg = funnel.load_config()
+        col = cfg["collection"]
+        client = HLDataClient(
+            state.db, request_budget=int(col["request_budget"]),
+            min_interval_s=float(col.get("min_request_interval_s", 1.3)),
+            cache_ttl_hours=float(col["cache_ttl_hours"]))
+        return client, cfg
+
+    @app.post("/control/suggestions/analyze",
+              dependencies=[Depends(_control_auth)])
+    def analyze_suggestions(req: AnalyzeSuggestionsRequest) -> dict[str, Any]:
+        """Analisa 1..10 wallets pelo pipeline de discovery COMPLETO, SEM gravar.
+        Filtros são informativos (nunca short-circuit); toda wallet válida sai com
+        score/métricas. Ato humano autenticado (tela Sugestões)."""
+        from engine.strategies.copy_trade.funnel import analyze_single_wallet
+
+        client, cfg = _suggestions_client()
+        results: list[dict[str, Any]] = []
+        for addr in req.addresses:
+            try:
+                c = analyze_single_wallet(addr, client, cfg, state.logger)
+                results.append(_suggestion_report(c))
+            except ValueError:
+                results.append({
+                    "address": (addr or "").strip().lower(),
+                    "name": None, "passes_filters": False, "score": None,
+                    "cohort": None, "reject_reasons": ["endereco_invalido"],
+                    "rationale": [], "metrics": {},
+                })
+        approved = sum(1 for r in results if r["passes_filters"])
+        state.logger.info("suggestion.analyze",
+                          {"n": len(results), "passa_filtros": approved,
+                           "by": "dashboard_humano"})
+        return {"ok": True, "results": results,
+                "summary": {"total": len(results), "passa_filtros": approved,
+                            "reprova_filtros": len(results) - approved}}
+
+    @app.post("/control/suggestions/save",
+              dependencies=[Depends(_control_auth)])
+    def save_suggestions(req: SaveSuggestionsRequest) -> dict[str, Any]:
+        """Força-salvar: grava as wallets selecionadas como SUGERIDO com
+        origin="usuário", INCLUSIVE as que reprovam filtros (curadoria humana
+        prevalece). Só endereço inválido não é salvável. NÃO marca REJEITADO e
+        NÃO toca no gate de promoção. Ato humano autenticado."""
+        from engine.strategies.copy_trade.funnel import analyze_single_wallet
+        from engine.strategies.copy_trade.traders_store import upsert_candidate
+
+        client, cfg = _suggestions_client()
+        lv = int(cfg["logic_version"])
+        saved: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for addr in req.addresses:
+            try:
+                c = analyze_single_wallet(addr, client, cfg, state.logger)
+            except ValueError:
+                skipped.append({"address": (addr or "").strip().lower(),
+                                "reason": "endereco_invalido"})
+                continue
+            upsert_candidate(
+                state.db, address=c.address, name=c.name, score=c.score,
+                cohort=c.cohort or None, twrr_30d=c.twrr_30d_pct,
+                pnl_30d=c.windows_pnl.get("30d"), windows=c.windows_pnl,
+                profit_factor=c.pf, win_rate=c.win_rate,
+                max_drawdown=c.max_dd_90d_pct, liq_distance=c.liq_distance_pct,
+                origin="usuário", logic_version=lv,
+                extras=_suggestion_extras(c))
+            saved.append({"address": c.address, "score": c.score,
+                          "passes_filters": len(c.reject_reasons) == 0})
+        state.logger.info("suggestion.save",
+                          {"saved": [s["address"] for s in saved],
+                           "skipped": len(skipped), "origin": "usuário",
+                           "by": "dashboard_humano"})
+        return {"ok": True, "saved": saved, "skipped": skipped,
+                "summary": {"total": len(req.addresses), "salvos": len(saved),
+                            "ignorados": len(skipped)}}
 
     @app.get("/api/wallet-labels")
     def api_wallet_labels() -> dict[str, str]:

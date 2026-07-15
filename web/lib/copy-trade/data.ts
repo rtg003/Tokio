@@ -512,6 +512,111 @@ export async function cancelOrder(args: {
   }
 }
 
+// ---- Sugestões manuais (origin="usuário") ---------------------------------
+// Relatório de UMA wallet analisada pelo pipeline de discovery. `passes_filters`
+// é só um rótulo de UI — o operador pode salvar mesmo o que reprova (força-salvar).
+export type SuggestionMetrics = {
+  n_trades_30d?: number | null;
+  win_rate_30d?: number | null;
+  avg_leverage?: number | null;
+  avg_holding_hours?: number | null;
+  equity?: number | null;
+  twrr_30d?: number | null;
+  pnl_30d?: number | null;
+  profit_factor?: number | null;
+  max_drawdown?: number | null;
+  liq_distance?: number | null;
+  sim_net_pnl_usd?: number | null;
+  sim_stage4_net_usd?: number | null;
+  sim_expectancy_usd?: number | null;
+  sim_max_dd_pct?: number | null;
+  sim_factor?: number | null;
+  coverage_days?: number | null;
+};
+
+export type SuggestionReport = {
+  address: string;
+  name?: string | null;
+  passes_filters: boolean;
+  score: number | null;
+  cohort: string | null;
+  reject_reasons: string[];
+  rationale: string[];
+  metrics: SuggestionMetrics;
+};
+
+export type AnalyzeResponse = {
+  ok: boolean;
+  results: SuggestionReport[];
+  summary: { total: number; passa_filtros: number; reprova_filtros: number };
+  reason?: string;
+};
+
+export type SaveResponse = {
+  ok: boolean;
+  saved: { address: string; score: number | null; passes_filters: boolean }[];
+  skipped: { address: string; reason: string }[];
+  summary: { total: number; salvos: number; ignorados: number };
+  reason?: string;
+};
+
+// Client-side: analisa 1..10 wallets (NÃO grava). Pode demorar (~8-10s/wallet
+// fria); o proxy dá 120s de timeout p/ suggestions/*.
+export async function analyzeSuggestions(
+  addresses: string[],
+): Promise<AnalyzeResponse> {
+  try {
+    const res = await fetch(`/api/control/suggestions/analyze`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ addresses }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return {
+        ok: false, results: [],
+        summary: { total: 0, passa_filtros: 0, reprova_filtros: 0 },
+        reason: data.reason ?? data.detail ?? "erro_analise",
+      };
+    }
+    return data as AnalyzeResponse;
+  } catch {
+    return {
+      ok: false, results: [],
+      summary: { total: 0, passa_filtros: 0, reprova_filtros: 0 },
+      reason: "gateway_indisponivel",
+    };
+  }
+}
+
+// Client-side: força-salvar as wallets selecionadas como SUGERIDO (origin=usuário).
+export async function saveSuggestions(
+  addresses: string[],
+): Promise<SaveResponse> {
+  try {
+    const res = await fetch(`/api/control/suggestions/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ addresses }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return {
+        ok: false, saved: [], skipped: [],
+        summary: { total: addresses.length, salvos: 0, ignorados: 0 },
+        reason: data.reason ?? data.detail ?? "erro_salvar",
+      };
+    }
+    return data as SaveResponse;
+  } catch {
+    return {
+      ok: false, saved: [], skipped: [],
+      summary: { total: addresses.length, salvos: 0, ignorados: 0 },
+      reason: "gateway_indisponivel",
+    };
+  }
+}
+
 export async function getPositions(
   strategyIds: string[],
   network?: "testnet" | "mainnet" | null,

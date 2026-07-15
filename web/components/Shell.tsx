@@ -215,6 +215,7 @@ export default function Shell({
         <nav className="nav">
           {nav("/trading-view", "Trading View", "TV")}
           {nav("/copy-trade", "Copy Trade", "CT")}
+          {nav("/suggestions", "Sugestões", "★")}
           <a href="#" className="ghost" onClick={(e) => e.preventDefault()}>
             + nova estratégia
           </a>

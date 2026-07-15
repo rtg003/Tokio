@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import statistics
 import time
 import uuid
@@ -1045,6 +1046,84 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
                       funnel_stats=stats, rekt_sample=rekt,
                       requests_used=getattr(client, "requests_used", 0),
                       duration_s=round(time.monotonic() - t0, 1))
+
+
+_ADDRESS_RE = re.compile(r"^0x[0-9a-f]{40}$")
+
+
+# ----------------------------------------------------------------------------
+def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
+                          logger: Any | None = None) -> Candidate:
+    """Roda o pipeline de discovery COMPLETO para UMA wallet, SEM gravar.
+
+    Diferente do scan em massa (`for c in deep`), NUNCA dá short-circuit nos
+    filtros: `score`/`cohort`/`sim_*` são SEMPRE calculados quando há dados. Os
+    filtros que reprovariam ficam acumulados em `c.reject_reasons` (informativo);
+    `c.reject_reason` fica `None` — curadoria manual não marca REJEITADO e o
+    operador pode forçar salvar mesmo o que "reprova". Endereço inválido levanta
+    ValueError (erro do chamador); qualquer outra falha vira um único
+    `erro_na_analise` em `reject_reasons` (não derruba a análise dos demais).
+
+    Limita `fills_max_pages=2` numa CÓPIA do cfg para proteger o orçamento de
+    requests da venue (o scan em massa usa o valor cheio).
+    """
+    import copy as _copy
+
+    address = (address or "").strip().lower()
+    if not _ADDRESS_RE.match(address):
+        raise ValueError(f"endereço inválido: {address!r}")
+
+    cfg = _copy.deepcopy(cfg)
+    cfg["collection"]["fills_max_pages"] = 2
+
+    f8_share = cfg["hard_filters"].get("f8_min_liquid_volume_share")
+    f8_top_n = cfg["hard_filters"].get("f8_liquid_assets_top_n")
+    liquid = client.liquid_assets(int(f8_top_n)) \
+        if f8_share is not None and f8_top_n is not None else set()
+
+    c = Candidate(address=address)
+    now_ms = time.time() * 1000
+    reasons: list[str] = []
+    try:
+        f1 = precheck_activity(c, client, cfg, now_ms)
+        if f1:
+            reasons.append(f1)  # informativo — segue mesmo sem atividade recente
+        deep_dive(c, client, cfg, liquid, now_ms)  # roda compute_copy_sims
+        if not entry_rule_ok(c, cfg):
+            required = " e ".join(cfg["entry_rule"]["required_windows"])
+            reasons.append(
+                f"entrada: janelas {c.windows_positive} "
+                f"({required} obrigatória(s), mín. "
+                f"{cfg['entry_rule']['min_positive_windows']}/4)")
+        reasons += hard_filters_all(c, cfg, now_ms)
+        score_candidate(c, cfg)
+        assign_cohort(c, cfg)
+        min_score = float(cfg.get("score_adjustments", {}).get(
+            "min_score_for_suggestion", 0))
+        if min_score > 0 and c.score < min_score:
+            reasons.append(f"score {c.score:.1f} < mínimo {min_score:.0f}")
+        stage4 = cfg.get("copy_simulation")
+        if stage4:
+            if c.sim_stage4_net_usd is not None and c.sim_stage4_net_usd <= 0:
+                reasons.append(
+                    f"copy_sim_negativa: replay "
+                    f"{stage4.get('window_days', 60)}d com US$ "
+                    f"{cfg['hard_filters']['f11_mirror_capital_usd']:.0f} → net "
+                    f"US$ {c.sim_stage4_net_usd:.2f} (score {c.score:.1f})")
+            c.sim_factor = M.copy_sim_factor(
+                c.sim_stage4_net_usd if c.sim_stage4_net_usd is not None else 0.0,
+                float(cfg["hard_filters"]["f11_mirror_capital_usd"]),
+                floor=float(stage4.get("factor_floor", 0.5)),
+                cap=float(stage4.get("factor_cap", 1.2)))
+    except Exception as exc:  # noqa: BLE001 — 1 wallet ruim não derruba a análise
+        if logger:
+            logger.warning("suggestion.analyze_error",
+                           {"address": address, "error": str(exc)[:200]})
+        reasons = [f"erro_na_analise: {str(exc)[:200]}"]
+
+    c.reject_reasons = reasons
+    c.reject_reason = None  # informativo apenas; nunca marca REJEITADO
+    return c
 
 
 # ----------------------------------------------------------------------------

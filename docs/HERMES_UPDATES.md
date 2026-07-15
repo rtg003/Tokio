@@ -2929,3 +2929,84 @@ NOVO (`adapter.cancel` env-aware), não uma mudança no `/cancel`. **Sem migrati
 - `cd web && npm run build` verde (exit 0).
 - INVARIANTE §8.4.1: `/intent`/`/cancel`/`handle_intent`/`handle_cancel`/gates
   intocados; validação de venue é no executor (cliente).
+
+---
+
+## UPDATE-0053 · 2026-07-15 · Status: PENDENTE
+
+**Origem**: pedido do operador (rtg003) em 2026-07-15 — avaliar wallets
+específicas descobertas por fora do scan automático (indicação, análise
+própria) sem esperar elas aparecerem num scan de leaderboard.
+
+**Tipo**: tela NOVA **"Sugestões"** (Copy Trade) + 1 função de análise no funil
++ 2 endpoints de controle no gateway. **Não toca** hot path
+(`/intent`/`/cancel`/`handle_intent`/`handle_cancel`) nem as assinaturas de
+`deep_dive`/`compute_copy_sims`/`score_candidate`/`assign_cohort`/
+`hard_filters_all`/`upsert_candidate` → INVARIANTE §8.4.1 preservada. **Sem
+migration** (`origin` já é TEXT livre; `SUGERIDO` já é status válido). Sem
+secret, sem `logic_version` novo.
+
+### O quê — análise manual em dois passos, sem efeito colateral no passo 1
+O operador cola de 1 a 10 endereços (0x…). Fluxo:
+1. **Analisar** — roda o pipeline de discovery COMPLETO por wallet (deep dive →
+   simulação de cópia → hard filters → score → coorte) e devolve o relatório.
+   **NÃO grava nada.**
+2. **Salvar** — o operador seleciona quais manter; as selecionadas são gravadas
+   como `SUGERIDO` com `origin="usuário"` (distinguível das automáticas, que
+   nascem com `origin="discovery"`).
+
+### DECISÃO DO OPERADOR (crítica) — filtros são só informativos na análise manual
+Para sugestões manuais, os gates automáticos (F1/entry_rule/hard_filters/
+min_score/copy_sim) são **apenas informativos**: a wallet é analisada por
+completo (score + métricas + coorte + simulação) **MESMO que "reprove"**, e o
+operador pode **forçar salvar** qualquer wallet selecionada. A análise manual
+NUNCA dá short-circuit; a curadoria humana prevalece sobre os filtros. Único
+caso NÃO salvável: endereço inválido.
+
+### Backend — `analyze_single_wallet` (`engine/strategies/copy_trade/funnel.py`)
+- Função pública nova que replica as etapas do loop de scan para UMA wallet,
+  **sem persistir e SEM short-circuit**: acumula os filtros que reprovariam em
+  `c.reject_reasons` (informativo) e deixa `c.reject_reason=None` (nunca marca
+  REJEITADO). `score`/`cohort`/`sim_*` são SEMPRE calculados quando há dados.
+- Endereço inválido ⇒ `ValueError`; qualquer outra falha (orçamento/rede) vira
+  um único `erro_na_analise` em `reject_reasons` (1 wallet ruim não derruba as
+  demais). Reusa as funções existentes sem alterá-las.
+- Protege o orçamento da venue: `fills_max_pages=2` numa CÓPIA do cfg (o scan
+  em massa usa o valor cheio, 4).
+
+### Gateway (`engine/gateway/server.py`) — 2 endpoints `Depends(_control_auth)`
+- `POST /control/suggestions/analyze`: itera os endereços, chama
+  `analyze_single_wallet`, serializa via `_suggestion_report`; endereço inválido
+  vira report `endereco_invalido` (sem 500). Retorna `{ok, results, summary}`.
+  **NÃO grava.**
+- `POST /control/suggestions/save`: **força-salvar** — grava TODA wallet enviada
+  (o front manda só as selecionadas) via `upsert_candidate(..., origin="usuário",
+  score=c.score, extras=_suggestion_extras(c))`, inclusive as que reprovam
+  filtros; só endereço inválido vai para `skipped`. Não marca REJEITADO e NÃO
+  toca no gate humano de promoção (SUGERIDO→TESTNET/MAINNET). Sem gate de risco
+  (não emite ordem; curadoria de candidatos).
+- Models `AnalyzeSuggestionsRequest`/`SaveSuggestionsRequest` (`Field(min_length=1,
+  max_length=10)`). Helpers `_suggestion_extras`/`_suggestion_report` espelham o
+  mapeamento de `extras` de `persist_scan`.
+
+### Web
+- Proxy `web/app/api/control/[...path]/route.ts`: allowlist
+  `^suggestions/(analyze|save)$` + timeout condicional (120s para `suggestions/*`,
+  30s para o resto — múltiplas wallets frias custam ~8-10s cada).
+- Data layer `web/lib/copy-trade/data.ts`: `analyzeSuggestions`/`saveSuggestions`
+  + tipos `SuggestionReport`/`AnalyzeResponse`/`SaveResponse`.
+- Tela `web/app/(app)/suggestions/page.tsx` + `SuggestionForm.tsx`
+  (entrada 1-10 endereços, "Analisar") + `SuggestionResults.tsx` (tabela com
+  score/coorte/métricas, badge informativo dos filtros reprovados, checkbox em
+  TODAS exceto inválidas, "Salvar selecionadas" com confirmação de força-salvar).
+- Link "Sugestões" no grupo **Estratégias** do `Shell.tsx`.
+
+### Validação esperada
+- `.venv/bin/python -m pytest tests/ -q` verde (356 = 342 base + 14 novos:
+  4 em `tests/test_analyze_single.py` + 10 em `tests/gateway/test_suggestions.py`).
+  Teste-chave: wallet que reprova um hard filter ainda sai com `score` presente
+  e `reject_reason=None`; e o save força-salva ela como `SUGERIDO`/`origin=
+  "usuário"` com score preservado, sem REJEITADO.
+- `cd web && npm run build` verde (exit 0).
+- INVARIANTE §8.4.1: hot path e assinaturas do funil intocados; `analyze` não
+  escreve em `traders`.
