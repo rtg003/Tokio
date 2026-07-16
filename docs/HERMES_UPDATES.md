@@ -3311,7 +3311,7 @@ Status segue **PENDENTE** até a re-validação do Hermes.
 
 ---
 
-## UPDATE-0058 · 2026-07-16 · Status: PENDENTE
+## UPDATE-0058 · 2026-07-16 · Status: APLICADO em 2026-07-16
 
 **Origem**: Cursor/CONSTRUTOR — Fase 3/3 (final) da arquitetura definitiva p/
 amostras truncadas. Fases 1 (UPDATE-0056) e 2 (UPDATE-0057) já APLICADAS e
