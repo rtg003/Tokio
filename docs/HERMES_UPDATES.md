@@ -3206,7 +3206,7 @@ Fase 3 = badges/avisos na UI.
   `metrics_confidence == sampled`, sim_* nulas e filtros longitudinais em
   `indeterminate_reasons` (nunca reprovação definitiva sobre horas de dado).
 
-## UPDATE-0057 · 2026-07-16 · Status: PENDENTE
+## UPDATE-0057 · 2026-07-16 · Status: APLICADO em 2026-07-16
 
 **Origem**: Cursor/CONSTRUTOR — Fase 2/3 da arquitetura definitiva p/ amostras
 truncadas (Fase 1 = UPDATE-0056, validada em produção pelo Hermes). Fecha as
