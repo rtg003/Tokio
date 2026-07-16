@@ -2809,7 +2809,7 @@ parâmetro OPCIONAL (`forced_close: bool = False`, aditivo). **COM migration**
 
 ---
 
-## UPDATE-0051 · 2026-07-14 · Status: PENDENTE
+## UPDATE-0051 · 2026-07-14 · Status: APLICADO em 2026-07-16
 
 **Origem**: lote de 7 ajustes de dashboard pedidos pelo operador (rtg003) em
 2026-07-14, incluindo a correção definitiva de um bug real de PnL por período.
@@ -3013,7 +3013,7 @@ caso NÃO salvável: endereço inválido.
 
 ---
 
-## UPDATE-0054 · 2026-07-15 · Status: PENDENTE
+## UPDATE-0054 · 2026-07-15 · Status: APLICADO em 2026-07-16
 
 **Origem**: 5 pedidos do operador (rtg003) em 2026-07-15 sobre a tabela de
 Traders (Copy Trade) e o reprocessamento do Discovery.
