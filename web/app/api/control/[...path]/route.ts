@@ -43,6 +43,9 @@ const ALLOWED_POST_PATTERNS = [
   // Sugestões manuais: analisar wallets pelo pipeline de discovery (analyze, sem
   // gravar) e força-salvar as selecionadas como SUGERIDO/origin="usuário".
   /^suggestions\/(analyze|save)$/,
+  // UPDATE-0059 (backfill): reclassifica linhas legadas (metrics_confidence NULL)
+  // pelo pipeline individual, preservando status/copy_pinned. Ato humano.
+  /^discovery\/reclassify$/,
 ];
 
 function gatewayBase(): string {
@@ -100,7 +103,9 @@ export async function POST(
     // recarrega o adapter). 5s cortava o fluxo no meio; 30s cobre o pior caso.
     // suggestions/* roda o pipeline de discovery para até 10 wallets frias
     // (~8-10s cada no throttle da venue) → 120s p/ não cortar no meio.
-    const timeoutMs = joined.startsWith("suggestions/") ? 120000 : 30000;
+    // discovery/reclassify reprocessa 1..N wallets legadas pelo mesmo pipeline.
+    const longRun = joined.startsWith("suggestions/") || joined === "discovery/reclassify";
+    const timeoutMs = longRun ? 120000 : 30000;
     const r = await fetch(`${gatewayBase()}/control/${joined}${search}`, {
       method: "POST",
       headers: {

@@ -150,3 +150,92 @@ def test_save_is_idempotent(client, gateway_state, fake_analyze) -> None:
 def test_save_requires_token(client, fake_analyze) -> None:
     r = client.post("/control/suggestions/save", json={"addresses": [GOOD]})
     assert r.status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# UPDATE-0059 — reclassify: backfill de confiança legada (metrics_confidence    #
+# NULL) SEM tocar status/copy_pinned/origin                                     #
+# --------------------------------------------------------------------------- #
+def test_reclassify_backfills_confidence_preserving_gate(client, gateway_state,
+                                                         fake_analyze) -> None:
+    """Uma linha LEGADA (metrics_confidence NULL) promovida a TESTNET pelo
+    operador é reclassificada: grava confiança nova + sample_* MAS preserva
+    status/copy_pinned/origin (upsert_candidate nunca toca a promoção humana)."""
+    from engine.strategies.copy_trade.traders_store import (set_status,
+                                                            upsert_candidate)
+    db = gateway_state.db
+    upsert_candidate(db, address=GOOD, origin="usuário", score=50.0)
+    set_status(db, GOOD, "TESTNET", by="dashboard-humano", human_gate=True)
+    before = db.query("SELECT metrics_confidence, status, copy_pinned, origin "
+                      "FROM traders WHERE address = ?", (GOOD,))[0]
+    assert before["metrics_confidence"] is None   # legado
+    assert before["status"] == "TESTNET"
+    assert before["copy_pinned"] == 1
+
+    r = client.post("/control/discovery/reclassify",
+                    json={"addresses": [GOOD]}, headers=HDR)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["reclassified"] == 1
+
+    after = db.query(
+        "SELECT metrics_confidence, status, copy_pinned, origin, "
+        "sample_sim_net_usd, sample_sim_window_days "
+        "FROM traders WHERE address = ?", (GOOD,))[0]
+    assert after["metrics_confidence"] == "complete"   # confiança nova gravada
+    assert after["status"] == "TESTNET"                # gate humano intacto
+    assert after["copy_pinned"] == 1                   # pin preservado
+    assert after["origin"] == "usuário"                # curadoria não vira discovery
+    assert after["sample_sim_net_usd"] is not None     # família sample_* persistida
+    assert after["sample_sim_window_days"] is not None
+
+
+def test_reclassify_does_not_downgrade_complete(client, gateway_state,
+                                                fake_analyze) -> None:
+    """Guarda anti-sobrescrita: uma linha já `complete` não é rebaixada — só o
+    legado (NULL) é alvo do backfill."""
+    from engine.strategies.copy_trade.traders_store import upsert_candidate
+    db = gateway_state.db
+    # endereço SEM perfil no FakeClient → nova análise dá `insufficient`; como já
+    # está gravado `complete`, a guarda anti-sobrescrita preserva a linha.
+    unknown = "0x" + "ab" * 20
+    upsert_candidate(db, address=unknown, origin="discovery", score=40.0,
+                     extras={"metrics_confidence": "complete"})
+    r = client.post("/control/discovery/reclassify",
+                    json={"addresses": [unknown]}, headers=HDR)
+    assert r.status_code == 200
+    row = r.json()["results"][0]
+    assert row["reclassified"] is False
+    assert row["reason"] == "metricas_completas_preservadas"
+
+
+def test_reclassify_no_addresses_targets_only_operational_null(
+        client, gateway_state, fake_analyze) -> None:
+    """Sem `addresses`, o backfill alcança SÓ linhas legadas (metrics_confidence
+    NULL) em status operacional — REJEITADO fica FORA do escopo."""
+    from engine.strategies.copy_trade.traders_store import (set_status,
+                                                            upsert_candidate)
+    db = gateway_state.db
+    # legado operacional (SALVO) → alvo
+    upsert_candidate(db, address=GOOD, origin="discovery", score=50.0)
+    set_status(db, GOOD, "SALVO", by="dashboard-humano", human_gate=True)
+    # legado REJEITADO → fora do escopo
+    upsert_candidate(db, address=DEPOSIT, origin="discovery", score=10.0)
+    set_status(db, DEPOSIT, "REJEITADO", by="discovery_test")
+
+    r = client.post("/control/discovery/reclassify", json={}, headers=HDR)
+    assert r.status_code == 200
+    body = r.json()
+    addrs = {row["address"] for row in body["results"]}
+    assert GOOD in addrs          # SALVO legado é reclassificado
+    assert DEPOSIT not in addrs   # REJEITADO nunca entra no backfill
+    # REJEITADO segue NULL (não tocado)
+    dep = db.query("SELECT metrics_confidence FROM traders WHERE address = ?",
+                   (DEPOSIT,))[0]
+    assert dep["metrics_confidence"] is None
+
+
+def test_reclassify_requires_token(client, fake_analyze) -> None:
+    r = client.post("/control/discovery/reclassify", json={"addresses": [GOOD]})
+    assert r.status_code == 401

@@ -543,6 +543,18 @@ export type HyperTrackerAggregate = {
   exposure_ratio: number | null;
 };
 
+// UPDATE-0059: simulação AMOSTRAL sobre o span REALMENTE coberto. Quando a
+// confiança ≠ complete as sim_* longitudinais (`metrics.*`) ficam nulas (inv.
+// 0056), mas ESTE bloco reporta honestamente "SIM ~$X em Yd" + projeção /30d.
+export type SampleMetrics = {
+  sim_net_usd: number | null;
+  expectancy_usd: number | null;
+  max_dd_pct: number | null;
+  window_days: number | null;
+  net_per_day: number | null;
+  closed_trades: number | null;
+};
+
 export type SuggestionReport = {
   address: string;
   name?: string | null;
@@ -560,6 +572,8 @@ export type SuggestionReport = {
   metrics_warnings?: string[];
   indeterminate_reasons?: string[];
   hypertracker?: HyperTrackerAggregate | null;
+  // UPDATE-0059: simulação amostral (paralela às sim_* longitudinais).
+  sample_metrics?: SampleMetrics | null;
   metrics: SuggestionMetrics;
 };
 
@@ -632,6 +646,37 @@ export async function saveSuggestions(
       summary: { total: addresses.length, salvos: 0, ignorados: 0 },
       reason: "gateway_indisponivel",
     };
+  }
+}
+
+export type ReclassifyResponse = {
+  ok: boolean;
+  reclassified: number;
+  summary?: { total: number; reclassificados: number; preservados_ou_erro: number };
+  results?: { address: string; reclassified: boolean; metrics_confidence?: string | null; reason?: string }[];
+  reason?: string;
+};
+
+// UPDATE-0059 (backfill): reprocessa linhas legadas (metrics_confidence NULL)
+// p/ classificá-las honestamente, PRESERVANDO status/copy_pinned. `addresses`
+// opcional: sem ele, o backend alcança todas as NULL em status operacional.
+// Pode demorar (~8-10s/wallet fria); o proxy dá 120s p/ discovery/reclassify.
+export async function reclassify(
+  addresses?: string[],
+): Promise<ReclassifyResponse> {
+  try {
+    const res = await fetch(`/api/control/discovery/reclassify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(addresses && addresses.length ? { addresses } : {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, reclassified: 0, reason: data.reason ?? data.detail ?? "erro_reclassify" };
+    }
+    return data as ReclassifyResponse;
+  } catch {
+    return { ok: false, reclassified: 0, reason: "gateway_indisponivel" };
   }
 }
 

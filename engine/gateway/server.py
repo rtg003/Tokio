@@ -151,6 +151,13 @@ class SaveSuggestionsRequest(BaseModel):
     addresses: list[str] = Field(min_length=1, max_length=10)
 
 
+class ReclassifyRequest(BaseModel):
+    # UPDATE-0059 (backfill): reprocessa linhas legadas (metrics_confidence NULL)
+    # p/ classificá-las honestamente, PRESERVANDO status/copy_pinned. `addresses`
+    # opcional: se ausente, reclassifica todas as NULL em status operacional.
+    addresses: list[str] | None = Field(default=None, max_length=50)
+
+
 class AgentPrepareRequest(BaseModel):
     env: str = Field(pattern="^(testnet|mainnet)$")
     master_address: str
@@ -772,6 +779,13 @@ def _suggestion_extras(c: Any) -> dict[str, Any]:
         "ht_total_equity": getattr(c, "ht_total_equity", None),
         "ht_perp_pnl": getattr(c, "ht_perp_pnl", None),
         "ht_exposure_ratio": getattr(c, "ht_exposure_ratio", None),
+        # UPDATE-0059: simulação AMOSTRAL (família paralela; a guarda anti-
+        # sobrescrita não se aplica — sempre gravada quando presente).
+        "sample_sim_net_usd": getattr(c, "sample_sim_net_usd", None),
+        "sample_sim_expectancy_usd": getattr(c, "sample_sim_expectancy_usd", None),
+        "sample_sim_max_dd_pct": getattr(c, "sample_sim_max_dd_pct", None),
+        "sample_sim_window_days": getattr(c, "sample_sim_window_days", None),
+        "sample_sim_net_per_day": getattr(c, "sample_sim_net_per_day", None),
         "score_components": serialize_components(c.components)
         if c.components is not None else None,
     }
@@ -805,6 +819,17 @@ def _suggestion_report(c: Any) -> dict[str, Any]:
             "perp_pnl": getattr(c, "ht_perp_pnl", None),
             "exposure_ratio": getattr(c, "ht_exposure_ratio", None),
         },
+        # UPDATE-0059: simulação AMOSTRAL sobre o span REALMENTE coberto. Quando
+        # `sampled`, as sim_* longitudinais em `metrics` ficam nulas (inv. 0056),
+        # mas ESTE bloco reporta honestamente "SIM ~$X em Yd" + projeção /30d.
+        "sample_metrics": {
+            "sim_net_usd": getattr(c, "sample_sim_net_usd", None),
+            "expectancy_usd": getattr(c, "sample_sim_expectancy_usd", None),
+            "max_dd_pct": getattr(c, "sample_sim_max_dd_pct", None),
+            "window_days": getattr(c, "sample_sim_window_days", None),
+            "net_per_day": getattr(c, "sample_sim_net_per_day", None),
+            "closed_trades": getattr(c, "sample_closed_trades", None),
+        } if getattr(c, "sample_sim_window_days", None) is not None else None,
         "metrics": {
             "n_trades_30d": c.n_trades_30d,
             "win_rate_30d": c.win_rate_30d,
@@ -2066,6 +2091,72 @@ def build_app(state: GatewayState) -> FastAPI:
         return {"ok": True, "saved": saved, "skipped": skipped,
                 "summary": {"total": len(req.addresses), "salvos": len(saved),
                             "ignorados": len(skipped)}}
+
+    @app.post("/control/discovery/reclassify",
+              dependencies=[Depends(_control_auth)])
+    def reclassify_traders(req: ReclassifyRequest) -> dict[str, Any]:
+        """UPDATE-0059 (backfill): reprocessa linhas LEGADAS (metrics_confidence
+        NULL) pelo pipeline individual p/ classificá-las honestamente, gravando
+        confiança/idade/amostra + sample_*. PRESERVA status/copy_pinned
+        (upsert_candidate nunca os toca). Não reprova ninguém. Ato humano
+        autenticado (X-Control-Token). Se `addresses` vier vazio, alcança todas as
+        NULL em status operacional (TESTNET/MAINNET/SALVO/SUGERIDO)."""
+        from engine.strategies.copy_trade.funnel import analyze_single_wallet
+        from engine.strategies.copy_trade.traders_store import (
+            upsert_candidate, would_downgrade_metrics)
+
+        if req.addresses:
+            targets = [a.strip().lower() for a in req.addresses if a and a.strip()]
+        else:
+            rows = state.db.query(
+                "SELECT address FROM traders WHERE metrics_confidence IS NULL "
+                "AND status IN ('TESTNET','MAINNET','SALVO','SUGERIDO') "
+                "ORDER BY address")
+            targets = [r["address"] for r in rows]
+
+        client, cfg = _suggestions_client()
+        lv = int(cfg["logic_version"])
+        results: list[dict[str, Any]] = []
+        for addr in targets:
+            try:
+                c = analyze_single_wallet(addr, client, cfg, state.logger)
+            except ValueError:
+                results.append({"address": (addr or "").strip().lower(),
+                                "reclassified": False, "reason": "endereco_invalido"})
+                continue
+            # Guarda anti-sobrescrita: uma linha COMPLETA nunca é rebaixada
+            # (NULL nunca bloqueia — é justamente o caso legado que queremos tratar).
+            existing = state.db.query(
+                "SELECT metrics_confidence, origin FROM traders WHERE address = ?",
+                (c.address,))
+            existing_conf = existing[0]["metrics_confidence"] if existing else None
+            new_conf = getattr(c, "metrics_confidence", "complete")
+            if would_downgrade_metrics(existing_conf, new_conf):
+                results.append({"address": c.address, "reclassified": False,
+                                "metrics_confidence": existing_conf,
+                                "reason": "metricas_completas_preservadas"})
+                continue
+            # Preserva o origin atual (curadoria "usuário" não vira "discovery");
+            # upsert_candidate NUNCA toca status/copy_pinned (promoção humana).
+            keep_origin = (existing[0]["origin"] if existing
+                           and existing[0]["origin"] else "discovery")
+            upsert_candidate(
+                state.db, address=c.address, name=c.name, score=c.score,
+                cohort=c.cohort or None, twrr_30d=c.twrr_30d_pct,
+                pnl_30d=c.windows_pnl.get("30d"), windows=c.windows_pnl,
+                profit_factor=c.pf, win_rate=c.win_rate,
+                max_drawdown=c.max_dd_90d_pct, liq_distance=c.liq_distance_pct,
+                origin=keep_origin, logic_version=lv, extras=_suggestion_extras(c))
+            results.append({"address": c.address, "reclassified": True,
+                            "metrics_confidence": new_conf})
+        reclassified = sum(1 for r in results if r.get("reclassified"))
+        state.logger.info("discovery.reclassify",
+                          {"alvos": len(targets), "reclassificados": reclassified,
+                           "by": "dashboard_humano"})
+        return {"ok": True, "reclassified": reclassified,
+                "summary": {"total": len(targets), "reclassificados": reclassified,
+                            "preservados_ou_erro": len(targets) - reclassified},
+                "results": results}
 
     @app.get("/api/wallet-labels")
     def api_wallet_labels() -> dict[str, str]:

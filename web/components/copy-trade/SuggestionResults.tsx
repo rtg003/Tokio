@@ -47,6 +47,35 @@ function Longitudinal({
   );
 }
 
+// UPDATE-0059: célula de SIM NET honesta. Quando a confiança é COMPLETA usamos a
+// sim LONGITUDINAL (sim_stage4_net_usd). Quando não é, a longitudinal vem nula
+// (inv. 0056) — então mostramos a simulação AMOSTRAL "~$X (Yd)" em vez de "—".
+function SimNetCell({ r, complete }: { r: SuggestionReport; complete: boolean }) {
+  if (complete && r.metrics.sim_stage4_net_usd != null) {
+    return <>{usd(r.metrics.sim_stage4_net_usd)}</>;
+  }
+  const s = r.sample_metrics;
+  if (s && s.sim_net_usd != null && s.window_days != null) {
+    const proj =
+      s.net_per_day != null
+        ? ` · projeção ~${usd(s.net_per_day * 30)}/30d`
+        : "";
+    return (
+      <span
+        style={{ opacity: 0.7, fontStyle: "italic" }}
+        title={
+          `Simulação sobre a amostra REALMENTE coberta (${s.window_days.toFixed(1)}d), ` +
+          `não a janela de 30/60d — as sim_* longitudinais ficam nulas quando a ` +
+          `confiança não é COMPLETA (amostra, não medição).${proj}`
+        }
+      >
+        ~{usd(s.sim_net_usd)} ({num(s.window_days, 1, "d")})
+      </span>
+    );
+  }
+  return <>—</>;
+}
+
 // Wallet inválida não é salvável; qualquer outra pode ser força-salva.
 function isInvalid(r: SuggestionReport): boolean {
   return r.reject_reasons.includes("endereco_invalido");
@@ -140,6 +169,47 @@ function DetailPanel({ r }: { r: SuggestionReport }) {
           </dl>
         </section>
       </div>
+
+      {/* UPDATE-0059: simulação AMOSTRAL — só faz sentido quando a longitudinal
+          está indeterminada (confiança ≠ complete). É medição sobre o span
+          coberto + projeção /30d EXPLICITAMENTE informativa (nunca é filtro). */}
+      {!isComplete(r.metrics_confidence) &&
+        r.sample_metrics &&
+        r.sample_metrics.window_days != null && (
+          <div className="sug-detail-block">
+            <h4>
+              Simulação amostral{" "}
+              <span className="empty" style={{ padding: 0 }}>
+                (sobre o span coberto — projeção, não medição de 30/60d)
+              </span>
+            </h4>
+            <dl className="sug-detail-sample">
+              <div>
+                <dt>SIM net (amostra)</dt>
+                <dd>
+                  {usd(r.sample_metrics.sim_net_usd)} em{" "}
+                  {num(r.sample_metrics.window_days, 1, "d")}
+                </dd>
+              </div>
+              <div>
+                <dt>Projeção /30d (informativa)</dt>
+                <dd>
+                  {r.sample_metrics.net_per_day != null
+                    ? `~${usd(r.sample_metrics.net_per_day * 30)}/30d se o ritmo se mantiver`
+                    : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Expectância (amostra)</dt>
+                <dd>{usd(r.sample_metrics.expectancy_usd)}</dd>
+              </div>
+              <div>
+                <dt>Max DD (amostra)</dt>
+                <dd>{num(r.sample_metrics.max_dd_pct, 1, "%")}</dd>
+              </div>
+            </dl>
+          </div>
+        )}
 
       {/* Filtros INDETERMINADOS ≠ reprovações (Fase 1) */}
       {r.indeterminate_reasons && r.indeterminate_reasons.length > 0 && (
@@ -330,16 +400,13 @@ export default function SuggestionResults({
                     <td className="num">{num(r.score, 1)}</td>
                     <td>{r.cohort ?? "—"}</td>
                     <td className="num">
-                      <Longitudinal
-                        text={usd(r.metrics.sim_stage4_net_usd)}
-                        complete={complete}
-                      />
+                      <SimNetCell r={r} complete={complete} />
                     </td>
-                    <td className="num">
-                      <Longitudinal
-                        text={num(r.metrics.twrr_30d, 1, "%")}
-                        complete={complete}
-                      />
+                    <td
+                      className="num"
+                      title="TWRR 30d vem do portfolio (série completa) — medição, não amostra."
+                    >
+                      {num(r.metrics.twrr_30d, 1, "%")}
                     </td>
                     <td className="num">
                       <Longitudinal
@@ -347,11 +414,11 @@ export default function SuggestionResults({
                         complete={complete}
                       />
                     </td>
-                    <td className="num">
-                      <Longitudinal
-                        text={num(r.metrics.max_drawdown, 1, "%")}
-                        complete={complete}
-                      />
+                    <td
+                      className="num"
+                      title="Max DD vem do portfolio (série completa) — medição, não amostra."
+                    >
+                      {num(r.metrics.max_drawdown, 1, "%")}
                     </td>
                     <td className="num">
                       <Longitudinal

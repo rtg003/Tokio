@@ -25,6 +25,13 @@ export const CONFIDENCE_META: Record<string, Meta> = {
     chip: "rej",
     tip: "Poucos trades fechados na amostra — não há base para métricas de 30/60d nem para simulações. Filtros longitudinais ficam INDETERMINADOS.",
   },
+  // UPDATE-0059: linha LEGADA analisada antes da classificação de confiança
+  // (metrics_confidence NULL). Não é um veredito — é "ainda não reavaliado".
+  legacy: {
+    label: "NÃO REAVALIADO",
+    chip: "dry",
+    tip: "Analisada antes da classificação de confiança (migração 0024). Não sabemos se as métricas longitudinais são completas ou amostra truncada — clique em Reanalisar para reclassificar preservando status/config.",
+  },
 };
 
 // Tooltip canônico sobre o truncamento da API em ~2.000 fills.
@@ -35,6 +42,12 @@ export const TRUNCATION_TIP =
 
 export function isComplete(confidence: string | null | undefined): boolean {
   return (confidence ?? "complete") === "complete";
+}
+
+// UPDATE-0059: linha legada (sem classificação de confiança). Só a tabela
+// principal tem essas linhas; o relatório de Sugestões sempre traz confidence.
+export function isLegacy(confidence: string | null | undefined): boolean {
+  return confidence === null || confidence === undefined || confidence === "";
 }
 
 // Fonte da idade da wallet, inferida dos campos do relatório: HyperTracker
@@ -58,7 +71,8 @@ export default function ConfidenceBadge({
 }: {
   confidence: string | null | undefined;
 }) {
-  const meta = CONFIDENCE_META[confidence ?? "complete"] ?? CONFIDENCE_META.complete;
+  const key = isLegacy(confidence) ? "legacy" : (confidence as string);
+  const meta = CONFIDENCE_META[key] ?? CONFIDENCE_META.complete;
   return (
     <span className={`chip ${meta.chip}`} title={meta.tip}>
       {meta.label}

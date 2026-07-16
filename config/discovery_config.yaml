@@ -43,10 +43,11 @@ collection:
 manual_analysis:
   recent_fill_limit: 2000                       # userFills devolve ~2.000 fills (teto da API); acima disso a amostra recente cobre só horas em traders hiperativos
   longitudinal_window_days: 60                  # janela do userFillsByTime paginado (ASC) usada para cobrir o histórico
-  longitudinal_max_pages: 6                     # páginas do userFillsByTime (~2.000 fills/página) na coleta longitudinal
-  max_requests_per_wallet: 12                   # teto informativo de requests HTTP por wallet analisada (1 recent + páginas + portfolio/clearinghouse/precheck)
+  longitudinal_max_pages: 15                    # UPDATE-0059: páginas do userFillsByTime (~2.000 fills/página); subiu de 6→15 p/ cobrir mais fundo o histórico não-truncado de hiperativos
+  max_requests_per_wallet: 20                   # UPDATE-0059: teto informativo de requests HTTP por wallet (subiu 12→20 p/ acompanhar longitudinal_max_pages)
   min_sample_days_for_longitudinal_metrics: 25  # span mínimo da amostra p/ métricas 30/60d serem "complete"; abaixo disso ⇒ "sampled"
   min_sample_closed_fills: 30                   # mínimo de trades fechados na amostra; abaixo disso ⇒ "insufficient"
+  min_sample_days_for_sample_sim: 1.0           # UPDATE-0059: span mínimo (dias) p/ rodar a simulação AMOSTRAL (sample_*); abaixo disso os campos ficam nulos
 
 # v8: fontes ADICIONAIS de candidatos (opcionais, atrás de flag, sem
 # dependência dura). HL público continua a fonte de verdade: terceiros só

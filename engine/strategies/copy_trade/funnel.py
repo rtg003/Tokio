@@ -122,6 +122,15 @@ class Candidate:
     ht_total_equity: float | None = None          # totalEquity agregado
     ht_perp_pnl: float | None = None              # perpPnl agregado
     ht_exposure_ratio: float | None = None        # exposureRatio agregado
+    # UPDATE-0059: simulação AMOSTRAL sobre o span REALMENTE coberto pela amostra
+    # (família paralela às sim_* longitudinais; o gate NÃO as nulifica). Honesta:
+    # "SIM ~$X em Yd". As sim_* longitudinais seguem nulas quando sampled (inv. 0056).
+    sample_sim_net_usd: float | None = None
+    sample_sim_expectancy_usd: float | None = None
+    sample_sim_max_dd_pct: float | None = None
+    sample_sim_window_days: float | None = None
+    sample_sim_net_per_day: float | None = None   # net/dia p/ projeção informativa
+    sample_closed_trades: int | None = None        # nº de closes na amostra coberta
     weekly_stability: float = 0.5
     is_top20_alltime: bool = False
     # resultado
@@ -573,6 +582,30 @@ def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
                 latency_slippage_pct=lat, max_copy_leverage=max_lev,
                 window_days=half, now_ms=half_end)
             setattr(c, attr, h.net_pnl_usd if h is not None else None)
+
+    # UPDATE-0059: simulação AMOSTRAL sobre o span que a amostra DE FATO cobre
+    # (família paralela). Roda em AMBOS os caminhos; o gate tri-estado NÃO a
+    # nulifica. No caso `complete` coincide com a janela cheia. Honesta:
+    # reportamos "SIM ~$X em Yd" em vez de "—" para wallets sampled.
+    ma = cfg.get("manual_analysis") or {}
+    min_sample_days = float(ma.get("min_sample_days_for_sample_sim", 1.0))
+    sample_window = c.fills_sample_days or 0.0
+    if sample_window >= min_sample_days:
+        lat_s = float(stage4.get("latency_slippage_pct", 0)) if stage4 else 0.0
+        sample_sim = M.simulate_copy(
+            fills, c.equity, capital,
+            taker_fee_pct=float(cost["taker_fee_pct"]),
+            slippage_pct=float(cost["slippage_pct"]),
+            latency_slippage_pct=lat_s, max_copy_leverage=max_lev,
+            window_days=sample_window, now_ms=now_ms)
+        if sample_sim is not None:
+            c.sample_sim_net_usd = sample_sim.net_pnl_usd
+            c.sample_sim_expectancy_usd = sample_sim.expectancy_usd
+            c.sample_sim_max_dd_pct = sample_sim.max_dd_pct
+            c.sample_sim_window_days = sample_window
+            c.sample_closed_trades = sample_sim.n_closed
+            c.sample_sim_net_per_day = (
+                sample_sim.net_pnl_usd / max(sample_window, 1e-9))
 
 
 def utcnow_from_ms(ms: float) -> str:
@@ -1337,15 +1370,54 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
                      "sim_max_dd_pct", "sim_factor", "sim_copy_notional_usd",
                      "sim_half_old_net", "sim_half_new_net"):
             setattr(c, attr, None)
+        # UPDATE-0059 (Parte D): anota o veredito AMOSTRAL nos filtros de sim
+        # movidos p/ INDETERMINADO (F17/F19). Puramente textual — não reprova
+        # nem aprova; confronta os sample_* com o MESMO limiar do filtro só p/
+        # informar se, NO RITMO ATUAL, a amostra passaria (✓) ou não (✗).
+        hf_gate = cfg.get("hard_filters", {})
+        f17_thr = _float_or_none(hf_gate.get("f17_min_sim_net_usd"))
+        f19_thr = _float_or_none(hf_gate.get("f19_max_sim_dd_pct"))
+
+        def _sample_annotate(code: str, reason: str) -> str:
+            win = c.sample_sim_window_days
+            if code == "F17" and c.sample_sim_net_usd is not None and win:
+                thr = ""
+                if f17_thr is not None:
+                    ok = "✓" if c.sample_sim_net_usd >= f17_thr else "✗"
+                    thr = f" (≥ ${f17_thr:g} {ok} no ritmo atual)"
+                return (f"{reason} — amostral: US$ {c.sample_sim_net_usd:+.2f} "
+                        f"em {win:.1f}d{thr}")
+            if code == "F19" and c.sample_sim_max_dd_pct is not None and win:
+                thr = ""
+                if f19_thr is not None:
+                    ok = "✓" if c.sample_sim_max_dd_pct <= f19_thr else "✗"
+                    thr = f" (< {f19_thr:g}% {ok})"
+                return (f"{reason} — amostral: DD {c.sample_sim_max_dd_pct:.1f}%"
+                        f"{thr}")
+            return reason
+
         keep, indet = [], []
         for r in reasons:
             code = r.split(":", 1)[0]
-            (indet if code in _LONGITUDINAL_CODES else keep).append(r)
+            if code in _LONGITUDINAL_CODES:
+                if code in ("F17", "F19"):
+                    r = _sample_annotate(code, r)
+                indet.append(r)
+            else:
+                keep.append(r)
         reasons, c.indeterminate_filters = keep, indet
         c.metrics_warnings.append(
             f"métricas longitudinais {c.metrics_confidence} — amostra cobre "
             f"~{(c.fills_sample_days or 0):.1f}d ({c.fills_sample_count} fills); "
             f"filtros/sims que exigem 30/60d completos ficam INDETERMINADOS")
+        # UPDATE-0059 (Parte C): projeção /30d INFORMATIVA no rationale (nunca é
+        # filtro). Deixa explícito que é extrapolação da amostra, não medição.
+        if c.sample_sim_net_per_day is not None and c.sample_sim_window_days:
+            c.rationale.append(
+                f"cópia amostral: US$ {c.sample_sim_net_usd:+.2f} em "
+                f"{c.sample_sim_window_days:.1f}d "
+                f"(≈ US$ {c.sample_sim_net_per_day * 30:+.0f}/30d se o ritmo se "
+                f"mantiver — projeção, não medição)")
 
     if truncated:
         recent_capped = " (bateu o teto de ~%d)" % recent_limit \
@@ -1445,6 +1517,13 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             "wallet_age_days": c.wallet_age_days,
             "fills_sample_days": c.fills_sample_days,
             "fills_sample_count": c.fills_sample_count,
+            # UPDATE-0059: simulação amostral (família paralela). A guarda
+            # anti-sobrescrita lê só metrics_confidence — NÃO se aplica a estes.
+            "sample_sim_net_usd": c.sample_sim_net_usd,
+            "sample_sim_expectancy_usd": c.sample_sim_expectancy_usd,
+            "sample_sim_max_dd_pct": c.sample_sim_max_dd_pct,
+            "sample_sim_window_days": c.sample_sim_window_days,
+            "sample_sim_net_per_day": c.sample_sim_net_per_day,
             # Parte 2 (reclassify): persiste os 7 componentes normalizados [0,1]
             # + adjustments p/ recomputar o score sem refazer o deep dive.
             "score_components": serialize_components(c.components)

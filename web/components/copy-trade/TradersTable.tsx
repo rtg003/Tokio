@@ -1,25 +1,71 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { fmtDateTime, fmtNum, fmtSigned, pnlClass, shortAddr } from "@/lib/format";
-import { Trader } from "@/lib/copy-trade/data";
+import { Trader, reclassify } from "@/lib/copy-trade/data";
 import StatusSelect from "@/components/copy-trade/StatusSelect";
 import ConfidenceBadge, {
   ageSource,
   isComplete,
+  isLegacy,
 } from "@/components/copy-trade/ConfidenceBadge";
 
-// Métrica LONGITUDINAL (30/60d): quando a confiança persistida não é COMPLETA, o
-// valor não é exibido como exato — sinaliza aproximação (UPDATE-0058, Fase 3).
-function Lon({ children, complete }: { children: React.ReactNode; complete: boolean }) {
-  if (complete || children === "—") return <>{children}</>;
+// Métrica LONGITUDINAL FILLS-DERIVED (WR/PF/sim/trades): quando a confiança
+// persistida não é COMPLETA — ou é LEGADA (não reavaliada) — o valor não pode
+// ser exibido como exato; sinaliza aproximação (UPDATE-0058/0059). NB: PnL 30d/
+// TWRR/Max DD vêm do portfolio (não-truncado) e NÃO passam por aqui (Parte A).
+function Lon({
+  children,
+  complete,
+  legacy = false,
+}: {
+  children: React.ReactNode;
+  complete: boolean;
+  legacy?: boolean;
+}) {
+  if ((complete && !legacy) || children === "—") return <>{children}</>;
   return (
     <span
       style={{ opacity: 0.7, fontStyle: "italic" }}
-      title="Confiança não é COMPLETA — valor longitudinal APROXIMADO (amostra recente)."
+      title={
+        legacy
+          ? "Linha LEGADA (não reavaliada) — o valor longitudinal pode ser amostra truncada. Clique em Reanalisar para reclassificar."
+          : "Confiança não é COMPLETA — valor longitudinal APROXIMADO (amostra recente)."
+      }
     >
       ~{children}
     </span>
+  );
+}
+
+// UPDATE-0059 (backfill): botão por linha p/ reclassificar uma wallet legada
+// (metrics_confidence NULL) pelo pipeline individual, PRESERVANDO status/config.
+// Otimista: em sucesso, refaz o fetch do server component (router.refresh()).
+function ReclassifyButton({ address }: { address: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(false);
+  async function run() {
+    if (busy) return;
+    setBusy(true);
+    setErr(false);
+    const res = await reclassify([address]);
+    setBusy(false);
+    if (res.ok && res.reclassified > 0) router.refresh();
+    else setErr(true);
+  }
+  return (
+    <button
+      type="button"
+      className="btn btn-ghost btn-sm"
+      disabled={busy}
+      onClick={run}
+      title="Reprocessa esta wallet pelo pipeline de discovery e classifica a confiança, preservando status e configuração."
+      style={{ marginTop: 4 }}
+    >
+      {busy ? "reanalisando…" : err ? "falhou ↻" : "Reanalisar"}
+    </button>
   );
 }
 
@@ -289,15 +335,27 @@ export default function TradersTable({
                 const score = Math.max(0, Math.min(100, Number(t.score ?? 0)));
                 const nameClass = traderNameClass(t.status);
                 const complete = isComplete(t.metrics_confidence);
+                const legacy = isLegacy(t.metrics_confidence);
                 return (
                   <tr key={t.address}>
                     <td className="num">{i + 1}</td>
-                    <td className={`num ${pnlClass(t.sim_net_pnl_usd)}`}>
-                      <Lon complete={complete}>
-                        {t.sim_net_pnl_usd === null || t.sim_net_pnl_usd === undefined
-                          ? "—"
-                          : `$${fmtSigned(t.sim_net_pnl_usd, 2)}`}
-                      </Lon>
+                    <td className={`num ${pnlClass(t.sim_net_pnl_usd ?? t.sample_sim_net_usd)}`}>
+                      {t.sim_net_pnl_usd !== null && t.sim_net_pnl_usd !== undefined ? (
+                        <Lon complete={complete} legacy={legacy}>
+                          {`$${fmtSigned(t.sim_net_pnl_usd, 2)}`}
+                        </Lon>
+                      ) : t.sample_sim_net_usd !== null &&
+                        t.sample_sim_net_usd !== undefined &&
+                        t.sample_sim_window_days ? (
+                        <span
+                          style={{ opacity: 0.7, fontStyle: "italic" }}
+                          title={`Simulação AMOSTRAL sobre o span coberto (${fmtNum(t.sample_sim_window_days, 1)}d) — as sim_* longitudinais ficam nulas quando a confiança não é COMPLETA (amostra, não medição).${t.sample_sim_net_per_day != null ? ` Projeção ~$${fmtSigned(t.sample_sim_net_per_day * 30, 0)}/30d.` : ""}`}
+                        >
+                          ~${fmtSigned(t.sample_sim_net_usd, 2)} ({fmtNum(t.sample_sim_window_days, 1)}d)
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td>
                       <span className={`trader-name ${nameClass}`}>{t.name ?? shortAddr(t.address)}</span>
@@ -327,33 +385,38 @@ export default function TradersTable({
                       )}
                     </td>
                     <td className="num">
-                      <Lon complete={complete}>
+                      <Lon complete={complete} legacy={legacy}>
                         {t.win_rate === null || t.win_rate === undefined
                           ? "—"
                           : `${fmtNum(t.win_rate * 100, 0)}%`}
                       </Lon>
                     </td>
                     <td className="num">
-                      <Lon complete={complete}>
+                      <Lon complete={complete} legacy={legacy}>
                         {t.profit_factor === null || t.profit_factor === undefined
                           ? "—"
                           : fmtNum(t.profit_factor, 2)}
                       </Lon>
                     </td>
-                    <td className={`num ${pnlClass(t.pnl_30d)}`}>
-                      <Lon complete={complete}>
-                        {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : `$${fmtSigned(t.pnl_30d, 2)}`}
-                      </Lon>
+                    {/* UPDATE-0059 (Parte A): PnL 30d vem do portfolio (série
+                        completa) — medição, não amostra. Nunca marcado com ~. */}
+                    <td
+                      className={`num ${pnlClass(t.pnl_30d)}`}
+                      title="PnL 30d vem do portfolio (série completa) — medição, não amostra."
+                    >
+                      {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : `$${fmtSigned(t.pnl_30d, 2)}`}
+                    </td>
+                    {/* UPDATE-0059 (Parte A): Max DD vem do portfolio — medição. */}
+                    <td
+                      className="num"
+                      title="Max DD vem do portfolio (série completa) — medição, não amostra."
+                    >
+                      {t.max_drawdown === null || t.max_drawdown === undefined
+                        ? "—"
+                        : `−${fmtNum(t.max_drawdown, 1)}%`}
                     </td>
                     <td className="num">
-                      <Lon complete={complete}>
-                        {t.max_drawdown === null || t.max_drawdown === undefined
-                          ? "—"
-                          : `−${fmtNum(t.max_drawdown, 1)}%`}
-                      </Lon>
-                    </td>
-                    <td className="num">
-                      <Lon complete={complete}>{t.n_trades_30d ?? "—"}</Lon>
+                      <Lon complete={complete} legacy={legacy}>{t.n_trades_30d ?? "—"}</Lon>
                     </td>
                     <td className="num">
                       {t.avg_holding_hours === null || t.avg_holding_hours === undefined
@@ -363,13 +426,8 @@ export default function TradersTable({
                     <td className="addr">{topAssets.length ? topAssets.join(" ") : "—"}</td>
                     <td className="addr">{fmtDateTime(t.last_activity)}</td>
                     <td>
-                      {t.metrics_confidence ? (
-                        <ConfidenceBadge confidence={t.metrics_confidence} />
-                      ) : (
-                        <span className="chip dry" title="Métrica legada — confiança não classificada (linha anterior à Fase 1). Re-analise pela tela de Sugestões para classificar.">
-                          n/classif.
-                        </span>
-                      )}
+                      <ConfidenceBadge confidence={t.metrics_confidence} />
+                      {legacy && <ReclassifyButton address={t.address} />}
                     </td>
                     <td
                       className="num"
@@ -408,22 +466,24 @@ export default function TradersTable({
                         equity={t.equity}
                       />
                     </td>
-                    <td className={`num ${pnlClass(t.twrr_30d)}`}>
-                      <Lon complete={complete}>
-                        {t.twrr_30d === null || t.twrr_30d === undefined
-                          ? "—"
-                          : `${fmtNum(t.twrr_30d, 1)}%`}
-                      </Lon>
+                    {/* UPDATE-0059 (Parte A): TWRR 30d vem do portfolio — medição. */}
+                    <td
+                      className={`num ${pnlClass(t.twrr_30d)}`}
+                      title="TWRR 30d vem do portfolio (série completa) — medição, não amostra."
+                    >
+                      {t.twrr_30d === null || t.twrr_30d === undefined
+                        ? "—"
+                        : `${fmtNum(t.twrr_30d, 1)}%`}
                     </td>
                     <td className={`num ${pnlClass(t.sim_expectancy_usd)}`}>
-                      <Lon complete={complete}>
+                      <Lon complete={complete} legacy={legacy}>
                         {t.sim_expectancy_usd === null || t.sim_expectancy_usd === undefined
                           ? "—"
                           : `$${fmtSigned(t.sim_expectancy_usd, 2)}`}
                       </Lon>
                     </td>
                     <td className="num">
-                      <Lon complete={complete}>
+                      <Lon complete={complete} legacy={legacy}>
                         {t.sim_max_dd_pct === null || t.sim_max_dd_pct === undefined
                           ? "—"
                           : `−${fmtNum(t.sim_max_dd_pct, 1)}%`}
@@ -445,7 +505,7 @@ export default function TradersTable({
                         : `${fmtNum(t.available_margin_pct, 0)}%`}
                     </td>
                     <td className="num">
-                      <Lon complete={complete}>
+                      <Lon complete={complete} legacy={legacy}>
                         {t.sim_half_new_net === null || t.sim_half_new_net === undefined
                           ? "—"
                           : `${t.sim_half_old_net === null || t.sim_half_old_net === undefined ? "n/d" : `$${fmtSigned(t.sim_half_old_net, 0)}`} / $${fmtSigned(t.sim_half_new_net, 0)}`}

@@ -271,3 +271,109 @@ def test_hybrid_merges_recent_and_longitudinal() -> None:
     assert c.fills_sample_count == len(recent) + len(older)   # 80 fills únicos
     assert c.fills_sample_days is not None and c.fills_sample_days > 40
     assert c.metrics_confidence == "complete"
+
+
+# ---------------------------------------------------------------------------
+# UPDATE-0059: simulação AMOSTRAL (sample_*) + fontes não-truncadas + projeção
+# ---------------------------------------------------------------------------
+SAMPLED = "0x" + "88" * 20   # 40 closes em ~6d (hiperativo-like) ⇒ sampled
+SAMPLED_WEAK = "0x" + "99" * 20  # idem, mas cópia NÃO rende ⇒ F17/F19 disparam
+
+
+def _sampled_client(pnl_each: float = 800.0, addr: str = SAMPLED) -> FakeClient:
+    """Amostra recente com trades fechados suficientes (≥30) cobrindo ~6d — a
+    janela longitudinal (25d+) NÃO é coberta ⇒ metrics_confidence == 'sampled'."""
+    fills = swing_fills(n=40, pnl_each=pnl_each,
+                        start_ms=NOW_MS - 6 * DAY_MS, interval_h=3.6)
+    return FakeClient([], {addr: {"fills": fills,
+                                  "clearinghouse": healthy_clearinghouse()}})
+
+
+def test_sampled_wallet_has_sample_sim_but_null_longitudinal_sims() -> None:
+    """Parte B: wallet `sampled` mantém as sim_* longitudinais NULAS (invariante
+    0056) MAS ganha a família paralela `sample_*` sobre o span REALMENTE coberto
+    pela amostra (~6d), com net/dia p/ projeção."""
+    c = analyze_single_wallet(SAMPLED, _sampled_client(), CFG)
+    assert c.metrics_confidence == "sampled"
+    # invariante 0056: sim_* longitudinais seguem nulas quando sampled
+    assert c.sim_net_pnl_usd is None
+    assert c.sim_stage4_net_usd is None
+    assert c.sim_max_dd_pct is None
+    # família paralela sample_* preenchida sobre o span coberto
+    assert c.sample_sim_net_usd is not None
+    assert c.sample_sim_window_days is not None
+    assert 5.0 <= c.sample_sim_window_days <= 7.5
+    assert c.sample_sim_net_per_day is not None
+    assert c.sample_closed_trades is not None and c.sample_closed_trades > 0
+    # coerência: net/dia == net / janela
+    assert abs(c.sample_sim_net_per_day
+               - c.sample_sim_net_usd / c.sample_sim_window_days) < 1e-6
+
+
+def test_sampled_wallet_keeps_portfolio_measurements() -> None:
+    """Parte A: métricas de PORTFÓLIO (não-truncadas) — TWRR 30d, Max DD 90d e
+    PnL 90d — são MEDIÇÕES reais e o gate tri-estado NÃO as nulifica em
+    `sampled`."""
+    c = analyze_single_wallet(SAMPLED, _sampled_client(), CFG)
+    assert c.metrics_confidence == "sampled"
+    assert c.twrr_30d_pct is not None
+    assert c.max_dd_90d_pct is not None
+    assert "90d" in c.windows_pnl
+
+
+def test_sampled_wallet_rationale_has_informative_projection() -> None:
+    """Parte C: quando `sampled`, o rationale ganha uma linha de PROJEÇÃO /30d
+    explicitamente informativa (nunca um filtro)."""
+    c = analyze_single_wallet(SAMPLED, _sampled_client(), CFG)
+    proj = [r for r in c.rationale if "cópia amostral" in r]
+    assert proj, "esperava a linha de projeção /30d no rationale"
+    assert "projeção, não medição" in proj[0]
+    assert "/30d" in proj[0]
+
+
+def test_sampled_indeterminate_sim_filters_carry_sample_verdict() -> None:
+    """Parte D: F17/F19 (filtros de simulação) migram p/ indeterminate_filters
+    QUANDO disparam, anotados com o veredito AMOSTRAL confrontado ao MESMO
+    limiar do filtro — puramente textual, nunca reprova nem aprova."""
+    c = analyze_single_wallet(SAMPLED_WEAK,
+                              _sampled_client(pnl_each=3.0, addr=SAMPLED_WEAK),
+                              CFG)
+    assert c.metrics_confidence == "sampled"
+    # a cópia fraca faz F17 disparar → vai p/ indeterminado, NÃO p/ reject
+    f17 = [r for r in c.indeterminate_filters if r.startswith("F17")]
+    assert f17, "esperava F17 entre os filtros indeterminados"
+    assert "amostral:" in f17[0], "F17 indeterminado deve trazer o veredito amostral"
+    assert "no ritmo atual" in f17[0]
+    assert not any(r.startswith("F17") for r in c.reject_reasons)
+    assert c.reject_reason is None
+
+
+def test_short_sample_span_yields_no_sample_sim() -> None:
+    """Amostra que cobre MENOS que `min_sample_days_for_sample_sim` (1d) NÃO
+    produz sample_* — não simulamos cópia sobre minutos/horas de dado."""
+    # 40 closes em ~0.4d (hold + interval curtíssimos) — span < 1d
+    fills = swing_fills(n=40, pnl_each=800.0, hold_h=0.1,
+                        start_ms=NOW_MS - 0.4 * DAY_MS, interval_h=0.24)
+    addr = "0x" + "aa" * 19 + "01"
+    c = analyze_single_wallet(addr, FakeClient([], {addr: {
+        "fills": fills, "clearinghouse": healthy_clearinghouse()}}), CFG)
+    assert (c.fills_sample_days or 0.0) < 1.0
+    assert c.sample_sim_net_usd is None
+    assert c.sample_sim_window_days is None
+    assert c.sample_closed_trades is None
+
+
+def test_complete_wallet_has_sample_sim_and_intact_longitudinal_sims() -> None:
+    """`complete`: a família `sample_*` também é preenchida (coincide com a
+    janela cheia) e as sim_* longitudinais permanecem INTACTAS (não nuladas)."""
+    c = analyze_single_wallet(GOOD, make_client(), CFG)
+    assert c.metrics_confidence == "complete"
+    # sim_* longitudinais intactas
+    assert c.sim_stage4_net_usd is not None
+    # sample_* presentes e coerentes com a janela cheia (~55d)
+    assert c.sample_sim_net_usd is not None
+    assert c.sample_sim_window_days is not None
+    assert c.sample_sim_window_days == c.fills_sample_days
+    # complete não tem projeção nem filtros indeterminados
+    assert c.indeterminate_filters == []
+    assert not any("projeção informativa" in r for r in c.rationale)

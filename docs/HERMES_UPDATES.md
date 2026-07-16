@@ -3362,3 +3362,68 @@ uma amostra `sampled`/`insufficient`. Nenhuma ação nova de backend é necessá
   linha expansível separando HyperTracker × Hyperliquid e indeterminados ×
   reprovações; salvar e confirmar as colunas *Confiança*/*Idade* na tabela de
   traders. Status **PENDENTE** até o aval visual do Hermes.
+
+## UPDATE-0059 · 2026-07-16 · Status: PENDENTE
+
+**Discovery: métricas amostrais + fontes não-truncadas + backfill de confiança
+legada.** Fecha duas lacunas que deixavam sugestões inúteis para decidir.
+
+### Problema
+1. **`sampled` (hiperativos):** o gate tri-estado (UPDATE-0056) nulifica TODAS as
+   `sim_*`, então SIM NET/PF/Expectância/Max DD viravam "—". Mas duas fontes NÃO
+   sofrem truncamento e ficavam escondidas: (a) o **portfolio** (`allTime`/`month`
+   pnlHistory/accountValueHistory) devolve a série COMPLETA independente do nº de
+   fills → PnL 30d/TWRR/Max DD/janelas são MEDIÇÕES reais; (b) dá pra **simular a
+   cópia sobre o span que a amostra DE FATO cobriu** e reportar honestamente.
+2. **`n/classif.` (legado, ~1.700 linhas, `metrics_confidence IS NULL`):**
+   analisadas antes da migração 0024; o operador não sabia se eram confiáveis.
+
+### O que mudou
+- **(A) Portfolio como fonte não-truncada:** PnL 30d/TWRR/Max DD/janelas deixam de
+  ser marcadas com `~` na UI (são medição, não amostra). Sem mudança de backend
+  (o gate nunca tocou esses campos; só nulifica `sim_*`). Corrige a exibição
+  excessivamente cautelosa introduzida no UPDATE-0058 (item 3) para essas 3.
+- **(B) Simulação AMOSTRAL paralela (`sample_*`):** `compute_copy_sims` roda UMA
+  `M.simulate_copy` sobre o span coberto (`fills_sample_days`, clampeado por
+  `manual_analysis.min_sample_days_for_sample_sim=1.0`) e grava
+  `sample_sim_net_usd`/`expectancy_usd`/`max_dd_pct`/`window_days`/`net_per_day`
+  + `sample_closed_trades` (nº de closes na amostra; campo de relatório, sem
+  coluna). Roda em AMBOS os caminhos (scan+individual). As `sim_*` LONGITUDINAIS
+  continuam nulas quando `sampled` (INVARIANTE 0056 mantida) — `sample_*` é família
+  paralela que o gate NÃO nulifica.
+- **(C) Projeção /30d informativa no `rationale`:** quando `sampled`, anexa
+  "cópia amostral: US$ +X em Yd (≈ US$ +Z/30d se o ritmo se mantiver — projeção,
+  não medição)". Nenhum filtro lê.
+- **(D) F17/F19 indeterminados anotados:** ao mover p/ `indeterminate_filters`,
+  confronta os `sample_*` com o MESMO limiar do filtro e anexa o veredito (ex.:
+  "F17: … — amostral: US$ +86.58 em 5.8d (≥ $10 ✓ no ritmo atual)" / "F19: … —
+  amostral: DD 14.1% (< 25% ✓)"). Puramente textual — não reprova nem aprova.
+- **(E) Backfill:** novo `POST /control/discovery/reclassify` (auth de controle).
+  Body opcional `{"addresses":[…]}`; sem ele, alcança todas as linhas
+  `metrics_confidence IS NULL` em status TESTNET/MAINNET/SALVO/SUGERIDO. Reprocessa
+  via `analyze_single_wallet` e grava confiança/idade/amostra + `sample_*`,
+  **PRESERVANDO status/copy_pinned/origin** (guarda `would_downgrade_metrics`; NULL
+  nunca bloqueia). O scan diário reclassifica o restante naturalmente. UI: badge
+  "NÃO REAVALIADO" (cinza) + botão *Reanalisar* por linha.
+- **(F) Migração `0025_sample_sims.sql` (aditiva):** 5 colunas `sample_sim_*`.
+  Persistidas em `persist_scan` e `_suggestion_extras`; a guarda anti-sobrescrita
+  NÃO se aplica a elas.
+- **(G) `sample_metrics` na API + UI:** `_suggestion_report` ganha o bloco
+  `sample_metrics`; a UI mostra `~$86 (5.8d)` em vez de "—".
+- **(H) Fontes mais fundas:** `manual_analysis.longitudinal_max_pages 6→15`,
+  `max_requests_per_wallet 12→20`. Scan em massa (`collection.*`) inalterado.
+
+### Invariantes
+- Hot path §8.4.1 intacto; `M.simulate_copy` com assinatura INALTERADA;
+  `reclassify` NUNCA muda status/copy_pinned; `sim_*` longitudinais seguem nulas
+  quando `sampled`.
+
+### Validação
+- `.venv/bin/python -m pytest tests/ -q` verde (389 + novos de `sample_*`/reclassify).
+- `web`: `npx tsc --noEmit` limpo; `npx next build` verde.
+- **Pós-deploy (Hermes, rede/credenciais):** rodar
+  `POST /control/discovery/reclassify` p/ as ~8 wallets em status operacional;
+  re-analisar `0x3bca`/`0x68f8`/`0xb7e0` e confirmar PnL 30d EXATO (sem `~`),
+  `sample_*` preenchido ("SIM ~$X em Yd" + projeção /30d no rationale), `sim_*`
+  longitudinais nulas e F17/F19 indeterminados anotados. Status **PENDENTE** até
+  a re-validação do Hermes.
