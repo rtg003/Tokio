@@ -3205,3 +3205,62 @@ Fase 3 = badges/avisos na UI.
   `wallet_age_days` real, `fills_sample_days` << 30/60d p/ hiperativos,
   `metrics_confidence == sampled`, sim_* nulas e filtros longitudinais em
   `indeterminate_reasons` (nunca reprovação definitiva sobre horas de dado).
+
+## UPDATE-0057 · 2026-07-16 · Status: PENDENTE
+
+**Origem**: Cursor/CONSTRUTOR — Fase 2/3 da arquitetura definitiva p/ amostras
+truncadas (Fase 1 = UPDATE-0056, validada em produção pelo Hermes). Fecha as
+Partes 2/7/8 da spec: idade AUTORITATIVA via HyperTracker, enriquecimento
+agregado em colunas próprias e guarda anti-sobrescrita na PERSISTÊNCIA (a Fase 1
+só corrigia backend/API em memória; nada era gravado com confiança).
+
+**Tipo**: backend + persistência do módulo copy_trade (`engine/`) + 1 migration
+ADITIVA. **Não toca** hot path (`/intent`/`/cancel`/`handle_intent`/
+`handle_cancel`) nem as assinaturas de `deep_dive`/`fills_by_time`/`fills_recent`/
+`compute_copy_sims`/`M.simulate_copy`/`score_candidate`/`hard_filters_all`/
+`upsert_candidate`/`set_status` → INVARIANTE §8.4.1 preservada. Sem secret novo
+(reusa `HYPERTRACKER_API_KEY`), sem `logic_version` novo. Migration só ADD COLUMN.
+
+### Mudanças
+1. **Migration `0024_metrics_confidence.sql` (ADITIVA)**: novas colunas em
+   `traders` — `metrics_confidence`, `wallet_age_days`, `fills_sample_days`,
+   `fills_sample_count` (Parte 8) + `ht_earliest_activity_ms`, `ht_total_equity`,
+   `ht_perp_pnl`, `ht_exposure_ratio` (Parte 7). Linhas legadas ficam NULL.
+2. **HyperTracker por wallet** (`hl_data.py hypertracker_wallet`): novo método
+   read-only p/ `/api/external/wallets` (mesmo padrão Bearer do
+   `_hypertracker_leaderboard`). SOFT dependency: sem chave/erro → `{}` (a HL
+   segue como verdade das métricas de trading; nunca derruba a análise).
+3. **Idade AUTORITATIVA (Parte 2)** (`funnel.py`): na análise individual, a idade
+   vem do `earliestActivityAt` do HyperTracker quando presente; senão do
+   `portfolio.allTime` (Fase 1); senão do fill mais antigo da amostra. O
+   `fill_windows_from_portfolio` passou a só preencher `wallet_age_days` quando
+   ainda None (não sobrescreve a fonte autoritativa). F16 continua julgando por
+   idade — agora mais confiável.
+4. **Enriquecimento agregado (Parte 7)** (`funnel.py _apply_hypertracker_enrichment`):
+   `ht_total_equity`/`ht_perp_pnl`/`ht_exposure_ratio` em campos SEPARADOS do
+   `Candidate` — NUNCA substituem as métricas HL. Só a análise individual popula
+   (respeita o orçamento de requests do HyperTracker); o scan em massa não gasta
+   request por wallet aqui e não toca as colunas `ht_*` (nunca as zera).
+5. **Guarda anti-sobrescrita (Parte 8)** (`traders_store.would_downgrade_metrics`
+   + `funnel.persist_scan` + `server.save_suggestions`): uma linha com métricas
+   `complete` NUNCA é rebaixada por `sampled`/`insufficient` (o trader que virou
+   hiperativo e num scan futuro só rende horas de dado conserva os dados bons).
+   Linhas legadas (confiança NULL) não bloqueiam. O `persist_scan` passou a
+   gravar `metrics_confidence`/`wallet_age_days`/`fills_sample_*` em coluna.
+6. **API** (`server.py`): `_suggestion_report` ganhou o bloco `hypertracker`
+   (earliest_activity_ms/total_equity/perp_pnl/exposure_ratio); `_suggestion_extras`
+   persiste confiança/idade/amostra + ht_* no força-salvar (aditivo).
+
+### Validação
+- `.venv/bin/python -m pytest tests/ -q` verde (378 = 372 base + 6 novos:
+  3 em `tests/test_analyze_single.py` — idade-via-HyperTracker, ISO-parse,
+  fallback-allTime; 3 em `tests/test_traders_store.py` — lógica da guarda,
+  preserva-complete-de-downgrade, atualiza-quando-não-é-downgrade).
+  `FakeClient` ganhou `hypertracker_wallet` (default `{}`).
+- Migration 0024 aplica limpa (8 colunas presentes); INVARIANTE §8.4.1
+  preservada; §5.1/§5.2 tudo dentro do módulo copy_trade.
+- **Pós-deploy (rede/credenciais)**: re-analisar `0x3bca…`, `0x68f8…`,
+  `0xb7e0…` — `wallet_age_days` vindo do HyperTracker (`earliestActivityAt`),
+  `hypertracker.total_equity`/`perp_pnl`/`exposure_ratio` preenchidos, e
+  confirmar que um re-scan `sampled` NÃO sobrescreve as métricas `complete` já
+  persistidas (log `discovery.preserve_complete_metrics`).

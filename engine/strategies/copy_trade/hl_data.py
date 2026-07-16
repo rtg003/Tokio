@@ -287,6 +287,41 @@ class HLDataClient:
                     out.append(a)
         return out
 
+    def hypertracker_wallet(self, address: str) -> dict[str, Any]:
+        """UPDATE-0057 (Fase 2): agregado do HyperTracker p/ UMA wallet
+        (`/api/external/wallets`). Fonte AUTORITATIVA da idade da conta
+        (`earliestActivityAt`) + enriquecimento agregado (equity/pnl/exposição)
+        guardado em campos SEPARADOS — nunca substitui as métricas de trading da
+        Hyperliquid (que seguem como verdade).
+
+        SOFT dependency: sem `HYPERTRACKER_API_KEY` no ambiente, ou qualquer
+        erro de rede/HTTP, retorna `{}` — a análise segue com a idade via
+        `portfolio.allTime` (Fase 1) e sem enriquecimento. Só a análise
+        INDIVIDUAL chama isto; o scan em massa não gasta request por wallet aqui.
+        """
+        import os
+
+        api_key = os.environ.get("HYPERTRACKER_API_KEY", "")
+        if not api_key:
+            return {}
+        try:
+            data = self._request(
+                f"ht_wallet:{address}",
+                lambda: self._http.get(
+                    "https://ht-api.coinmarketman.com/api/external/wallets",
+                    params={"address": address},
+                    headers={"Authorization": f"Bearer {api_key}",
+                             "Accept": "application/json"},
+                ))
+        except Exception:  # noqa: BLE001 — soft dependency, nunca derruba a análise
+            logger.warning("discovery.hypertracker_wallet_error address=%s", address)
+            return {}
+        # A API pode embrulhar em {"data": {...}} ou {"data": [{...}]}.
+        payload: Any = data.get("data", data) if isinstance(data, dict) else data
+        if isinstance(payload, list):
+            payload = payload[0] if payload else {}
+        return payload if isinstance(payload, dict) else {}
+
     def _hypertracker_leaderboard(self, api_key: str, *,
                                   max_addresses: int) -> list[str]:
         """Leaderboard perp-only do HyperTracker (free tier: 100 req/dia).

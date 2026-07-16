@@ -22,6 +22,18 @@ AUTOMATED_TRANSITIONS = {
 }
 
 
+def would_downgrade_metrics(existing_confidence: str | None,
+                            new_confidence: str | None) -> bool:
+    """UPDATE-0057 (Fase 2, Parte 8) — guarda anti-sobrescrita.
+
+    True quando uma linha com métricas COMPLETAS persistidas seria substituída
+    por métricas amostradas/insuficientes (ex.: um trader que virou hiperativo
+    e num scan futuro só rende horas de dado). Linhas legadas (confiança NULL)
+    NUNCA bloqueiam — a Fase 1 ainda não gravava confiança, então tratamos NULL
+    como "desconhecido" e permitimos a atualização normal."""
+    return existing_confidence == "complete" and (new_confidence or "complete") != "complete"
+
+
 def strategy_id_for(address: str, name: str | None = None) -> str:
     slug = (name or address[2:10]).lower().replace(" ", "_")
     return f"ct_{slug}"

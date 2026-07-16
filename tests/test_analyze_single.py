@@ -193,6 +193,55 @@ def test_few_closed_fills_is_insufficient() -> None:
     assert c.sim_stage4_net_usd is None
 
 
+# ---------------------------------------------------------------------------
+# UPDATE-0057 (Fase 2): idade via HyperTracker (Parte 2) + enriquecimento
+# agregado em campos separados (Parte 7)
+# ---------------------------------------------------------------------------
+HT = "0x" + "77" * 20   # wallet com agregado HyperTracker
+
+
+def test_wallet_age_from_hypertracker_is_authoritative() -> None:
+    """Parte 2: com `earliestActivityAt` do HyperTracker, a idade vem DELE
+    (~200d) e NÃO do portfolio.allTime (~90d). Enriquecimento agregado
+    (equity/pnl/exposição) fica em campos SEPARADOS, sem tocar as métricas HL."""
+    earliest_ms = NOW_MS - 200 * DAY_MS
+    client = FakeClient([], {HT: {
+        "fills": swing_fills(pnl_each=800),
+        "clearinghouse": healthy_clearinghouse(),
+        "hypertracker": {"earliestActivityAt": earliest_ms,
+                         "totalEquity": 123_456.0, "perpPnl": 7_890.0,
+                         "exposureRatio": 0.42}}})
+    c = analyze_single_wallet(HT, client, CFG)
+    assert c.wallet_age_days is not None and 195 <= c.wallet_age_days <= 205
+    assert c.ht_earliest_activity_ms is not None
+    assert c.ht_total_equity == 123_456.0
+    assert c.ht_perp_pnl == 7_890.0
+    assert c.ht_exposure_ratio == 0.42
+
+
+def test_hypertracker_iso_timestamp_is_parsed() -> None:
+    """`earliestActivityAt` como string ISO-8601 também é aceita."""
+    from datetime import datetime, timezone
+    earliest = datetime.fromtimestamp(
+        (NOW_MS - 150 * DAY_MS) / 1000, tz=timezone.utc).isoformat()
+    client = FakeClient([], {HT: {
+        "fills": swing_fills(pnl_each=800),
+        "clearinghouse": healthy_clearinghouse(),
+        "hypertracker": {"earliestActivityAt": earliest}}})
+    c = analyze_single_wallet(HT, client, CFG)
+    assert c.wallet_age_days is not None and 145 <= c.wallet_age_days <= 155
+
+
+def test_hypertracker_absent_falls_back_to_alltime() -> None:
+    """Sem bloco HyperTracker (default {}), a idade cai no portfolio.allTime
+    (~90d) e os campos ht_* ficam None — comportamento da Fase 1 preservado."""
+    client = make_client()
+    c = analyze_single_wallet(GOOD, client, CFG)
+    assert 85 <= (c.wallet_age_days or 0) <= 95
+    assert c.ht_total_equity is None
+    assert c.ht_earliest_activity_ms is None
+
+
 def test_hybrid_merges_recent_and_longitudinal() -> None:
     """Coleta híbrida: fills_recent (recentes) + fills_by_time (mais antigos,
     disjuntos) são UNIDOS/deduplicados — a amostra cobre a janela inteira."""

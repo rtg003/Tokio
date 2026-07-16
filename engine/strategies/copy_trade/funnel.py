@@ -24,6 +24,7 @@ from engine.strategies.copy_trade.traders_store import (
     list_traders,
     set_status,
     upsert_candidate,
+    would_downgrade_metrics,
 )
 
 CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "discovery_config.yaml"
@@ -49,6 +50,10 @@ class DataClient(Protocol):
     def active_addresses(self, *, window_hours: int = 48,
                          max_addresses: int = 200,
                          min_notional_usd: float = 1000) -> list[str]: ...
+    # UPDATE-0057 (Fase 2): agregado por wallet do HyperTracker. OPCIONAL — a
+    # análise individual só chama via `hasattr`; clientes sintéticos/legados sem
+    # o método simplesmente não recebem enriquecimento.
+    def hypertracker_wallet(self, address: str) -> dict[str, Any]: ...
 
 
 # ----------------------------------------------------------------------------
@@ -110,6 +115,13 @@ class Candidate:
     metrics_confidence: str = "complete"          # complete | sampled | insufficient
     metrics_warnings: list[str] = field(default_factory=list)
     indeterminate_filters: list[str] = field(default_factory=list)
+    # UPDATE-0057 (Fase 2): enriquecimento AGREGADO do HyperTracker em campos
+    # SEPARADOS (nunca substituem as métricas HL). Só a análise individual os
+    # popula (respeita o orçamento de requests do HyperTracker).
+    ht_earliest_activity_ms: float | None = None  # earliestActivityAt (idade autoritativa)
+    ht_total_equity: float | None = None          # totalEquity agregado
+    ht_perp_pnl: float | None = None              # perpPnl agregado
+    ht_exposure_ratio: float | None = None        # exposureRatio agregado
     weekly_stability: float = 0.5
     is_top20_alltime: bool = False
     # resultado
@@ -164,7 +176,11 @@ def fill_windows_from_portfolio(c: Candidate, portfolio: dict[str, Any],
     acct_hist = _series(portfolio, "allTime", "accountValueHistory")
     earliest = min([t for t, _ in pnl_hist] + [t for t, _ in acct_hist],
                    default=None)
-    if earliest is not None:
+    # UPDATE-0057 (Fase 2): allTime é FALLBACK da idade — se uma fonte mais
+    # autoritativa já preencheu wallet_age_days (HyperTracker earliestActivityAt),
+    # não sobrescrevemos. No scan em massa o campo chega None → allTime preenche
+    # (comportamento da Fase 1 preservado).
+    if earliest is not None and c.wallet_age_days is None:
         c.wallet_age_days = max((now_ms - earliest) / DAY_MS, 0.0)
     for days, key in ((60, "60d"), (90, "90d")):
         cutoff = now_ms - days * DAY_MS
@@ -1138,6 +1154,42 @@ _LONGITUDINAL_CODES = ("F2", "F2b", "F4", "F5", "F6", "F8", "F9",
                        "F15", "F17", "F18", "F19", "copy_sim_negativa")
 
 
+def _ht_to_ms(value: Any) -> float | None:
+    """UPDATE-0057: normaliza `earliestActivityAt` do HyperTracker p/ epoch em ms.
+    Aceita número (segundos ou ms) ou string ISO-8601. None/inválido → None."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        v = float(value)
+        return v * 1000.0 if v < 1e12 else v   # < 1e12 ⇒ está em segundos
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")).timestamp() * 1000.0
+    except (ValueError, TypeError):
+        return None
+
+
+def _apply_hypertracker_enrichment(c: Candidate, htw: dict[str, Any],
+                                   now_ms: float) -> None:
+    """UPDATE-0057 (Fase 2, Partes 2 e 7): copia o agregado do HyperTracker p/
+    campos SEPARADOS do Candidate (nunca sobrescreve as métricas HL). Quando
+    `earliestActivityAt` está presente, é a fonte AUTORITATIVA de
+    `wallet_age_days` (definida ANTES do deep dive p/ o allTime não a
+    sobrescrever)."""
+    if not htw:
+        return
+    ems = _ht_to_ms(htw.get("earliestActivityAt", htw.get("earliest_activity_at")))
+    if ems is not None:
+        c.ht_earliest_activity_ms = ems
+        c.wallet_age_days = max((now_ms - ems) / DAY_MS, 0.0)
+    c.ht_total_equity = _float_or_none(
+        htw.get("totalEquity", htw.get("total_equity")))
+    c.ht_perp_pnl = _float_or_none(htw.get("perpPnl", htw.get("perp_pnl")))
+    c.ht_exposure_ratio = _float_or_none(
+        htw.get("exposureRatio", htw.get("exposure_ratio")))
+
+
 def _merge_fills(*sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """UPDATE-0056: união dedup de fills de fontes distintas (userFills recente
     + userFillsByTime paginado). Chave = `tid` (trade id) se presente, senão a
@@ -1217,6 +1269,19 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
     c.fills_complete = not lon_trunc
     truncated = lon_trunc
     c.history_truncated = truncated
+    # UPDATE-0057 (Fase 2, Partes 2/7): enriquecimento HyperTracker (agregado por
+    # wallet). Roda ANTES do deep dive p/ que a idade autoritativa
+    # (earliestActivityAt) tenha prioridade sobre o fallback allTime. Soft
+    # dependency: só quando a fonte está ligada e o cliente expõe o método.
+    ht_cfg = (cfg.get("sources") or {}).get("hypertracker") or {}
+    if ht_cfg.get("enabled") and hasattr(client, "hypertracker_wallet"):
+        try:
+            _apply_hypertracker_enrichment(
+                c, client.hypertracker_wallet(address) or {}, now_ms)
+        except Exception as exc:  # noqa: BLE001 — enriquecimento nunca derruba a análise
+            if logger:
+                logger.warning("suggestion.hypertracker_error",
+                               {"address": address, "error": str(exc)[:200]})
     try:
         f1 = precheck_activity(c, client, cfg, now_ms)
         if f1:
@@ -1253,6 +1318,15 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
             logger.warning("suggestion.analyze_error",
                            {"address": address, "error": str(exc)[:200]})
         reasons = [f"erro_na_analise: {str(exc)[:200]}"]
+
+    # UPDATE-0057 (Fase 2, Parte 2): último fallback da idade — se nem o
+    # HyperTracker nem o portfolio.allTime deram a idade, usa o fill mais antigo
+    # da amostra (subestima, mas evita None que faria o F16 pular por completo).
+    if c.wallet_age_days is None and c.prefetched_fills:
+        ftimes = [float(f["time"]) for f in c.prefetched_fills
+                  if f.get("time") is not None]
+        if ftimes:
+            c.wallet_age_days = max((now_ms - min(ftimes)) / DAY_MS, 0.0)
 
     # UPDATE-0056: gate de confiança (só na análise individual). Quando o
     # histórico longitudinal está incompleto NÃO afirmamos veredito sobre horas
@@ -1301,7 +1375,7 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
         # set_status e nunca rebaixa. Apenas registramos no report que o
         # pinned reprovaria nos filtros (informativo, sem efeito colateral).
         pin_rows = db.query(
-            "SELECT copy_pinned, origin FROM traders WHERE address = ?",
+            "SELECT copy_pinned, origin, metrics_confidence FROM traders WHERE address = ?",
             (c.address.lower(),))
         row_exists = bool(pin_rows)
         is_pinned = bool(pin_rows and pin_rows[0]["copy_pinned"] == 1)
@@ -1321,6 +1395,18 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
         if row_exists and no_deep_data:
             if logger:
                 logger.info("discovery.reprocess_no_data", {"address": c.address})
+            continue
+
+        # UPDATE-0057 (Fase 2, Parte 8) — guarda anti-sobrescrita: uma linha com
+        # métricas COMPLETAS nunca é rebaixada por métricas amostradas/insuf.
+        # (o trader que virou hiperativo num scan futuro só renderia horas de
+        # dado). Preservamos a linha inteira — métricas E status/reject anteriores
+        # — em vez de afirmar veredito sobre amostra curta.
+        existing_conf = pin_rows[0]["metrics_confidence"] if row_exists else None
+        if would_downgrade_metrics(existing_conf, c.metrics_confidence):
+            if logger:
+                logger.info("discovery.preserve_complete_metrics",
+                            {"address": c.address, "novo": c.metrics_confidence})
             continue
 
         if protected and c.reject_reason:
@@ -1351,6 +1437,14 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             "coverage_days": c.coverage_days,
             "sim_half_old_net": c.sim_half_old_net,
             "sim_half_new_net": c.sim_half_new_net,
+            # UPDATE-0057 (Fase 2): grava os sinais de confiança/idade/amostra em
+            # colunas próprias (a guarda anti-sobrescrita acima lê metrics_confidence
+            # da linha existente). NÃO grava ht_* — o scan em massa não os computa,
+            # então essas colunas ficam intactas (nunca zeradas pelo scan diário).
+            "metrics_confidence": c.metrics_confidence,
+            "wallet_age_days": c.wallet_age_days,
+            "fills_sample_days": c.fills_sample_days,
+            "fills_sample_count": c.fills_sample_count,
             # Parte 2 (reclassify): persiste os 7 componentes normalizados [0,1]
             # + adjustments p/ recomputar o score sem refazer o deep dive.
             "score_components": serialize_components(c.components)

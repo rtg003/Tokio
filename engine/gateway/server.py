@@ -761,6 +761,17 @@ def _suggestion_extras(c: Any) -> dict[str, Any]:
         "coverage_days": c.coverage_days,
         "sim_half_old_net": c.sim_half_old_net,
         "sim_half_new_net": c.sim_half_new_net,
+        # UPDATE-0057 (Fase 2): confiança/idade/amostra + enriquecimento
+        # HyperTracker em colunas próprias. A análise individual É quem computa
+        # os ht_* (o scan em massa não), então o força-salvar os persiste.
+        "metrics_confidence": getattr(c, "metrics_confidence", "complete"),
+        "wallet_age_days": getattr(c, "wallet_age_days", None),
+        "fills_sample_days": getattr(c, "fills_sample_days", None),
+        "fills_sample_count": getattr(c, "fills_sample_count", 0),
+        "ht_earliest_activity_ms": getattr(c, "ht_earliest_activity_ms", None),
+        "ht_total_equity": getattr(c, "ht_total_equity", None),
+        "ht_perp_pnl": getattr(c, "ht_perp_pnl", None),
+        "ht_exposure_ratio": getattr(c, "ht_exposure_ratio", None),
         "score_components": serialize_components(c.components)
         if c.components is not None else None,
     }
@@ -786,6 +797,14 @@ def _suggestion_report(c: Any) -> dict[str, Any]:
         "fills_complete": getattr(c, "fills_complete", True),
         "metrics_warnings": list(getattr(c, "metrics_warnings", [])),
         "indeterminate_reasons": list(getattr(c, "indeterminate_filters", [])),
+        # UPDATE-0057 (Fase 2): enriquecimento AGREGADO do HyperTracker (campos
+        # SEPARADOS; nunca substituem as métricas HL do bloco `metrics`).
+        "hypertracker": {
+            "earliest_activity_ms": getattr(c, "ht_earliest_activity_ms", None),
+            "total_equity": getattr(c, "ht_total_equity", None),
+            "perp_pnl": getattr(c, "ht_perp_pnl", None),
+            "exposure_ratio": getattr(c, "ht_exposure_ratio", None),
+        },
         "metrics": {
             "n_trades_30d": c.n_trades_30d,
             "win_rate_30d": c.win_rate_30d,
@@ -2000,7 +2019,8 @@ def build_app(state: GatewayState) -> FastAPI:
         prevalece). Só endereço inválido não é salvável. NÃO marca REJEITADO e
         NÃO toca no gate de promoção. Ato humano autenticado."""
         from engine.strategies.copy_trade.funnel import analyze_single_wallet
-        from engine.strategies.copy_trade.traders_store import upsert_candidate
+        from engine.strategies.copy_trade.traders_store import (
+            upsert_candidate, would_downgrade_metrics)
 
         client, cfg = _suggestions_client()
         lv = int(cfg["logic_version"])
@@ -2012,6 +2032,22 @@ def build_app(state: GatewayState) -> FastAPI:
             except ValueError:
                 skipped.append({"address": (addr or "").strip().lower(),
                                 "reason": "endereco_invalido"})
+                continue
+            # UPDATE-0057 (Fase 2, Parte 8): mesmo o força-salvar não sobrescreve
+            # métricas COMPLETAS persistidas por amostradas/insuficientes. Só
+            # garante a curadoria (origin="usuário") preservando os dados bons.
+            existing = state.db.query(
+                "SELECT metrics_confidence FROM traders WHERE address = ?",
+                (c.address,))
+            existing_conf = existing[0]["metrics_confidence"] if existing else None
+            if would_downgrade_metrics(existing_conf,
+                                       getattr(c, "metrics_confidence", "complete")):
+                state.db.execute(
+                    "UPDATE traders SET origin = 'usuário', updated_at = ? "
+                    "WHERE address = ?", (utcnow(), c.address))
+                saved.append({"address": c.address, "score": c.score,
+                              "passes_filters": len(c.reject_reasons) == 0,
+                              "metrics_preserved": True})
                 continue
             upsert_candidate(
                 state.db, address=c.address, name=c.name, score=c.score,

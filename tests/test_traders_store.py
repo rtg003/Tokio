@@ -11,6 +11,7 @@ from engine.strategies.copy_trade.traders_store import (
     unpin_trader,
     update_exec_config,
     upsert_candidate,
+    would_downgrade_metrics,
     write_cohort_snapshot,
 )
 
@@ -200,3 +201,72 @@ def test_rescan_pinned_rejecting_keeps_status_and_reason(db) -> None:
     assert r["copy_pinned"] == 1
     # métricas foram atualizadas
     assert r["score"] == 42.0
+
+
+# ---------------------------------------------------------------------------
+# UPDATE-0057 (Fase 2, Parte 8): guarda anti-sobrescrita de métricas completas
+# ---------------------------------------------------------------------------
+def test_would_downgrade_metrics_logic() -> None:
+    """`complete` → `sampled`/`insufficient` é rebaixamento; o resto não.
+    Linha legada (confiança NULL) NUNCA bloqueia (permite atualização)."""
+    assert would_downgrade_metrics("complete", "sampled") is True
+    assert would_downgrade_metrics("complete", "insufficient") is True
+    assert would_downgrade_metrics("complete", "complete") is False
+    assert would_downgrade_metrics("sampled", "insufficient") is False
+    assert would_downgrade_metrics("sampled", "complete") is False
+    # legado (NULL) e alvo default (None ⇒ trata como complete) nunca bloqueiam
+    assert would_downgrade_metrics(None, "sampled") is False
+    assert would_downgrade_metrics("complete", None) is False
+
+
+def test_persist_scan_preserves_complete_metrics_from_downgrade(db) -> None:
+    """Parte 8: um re-scan que só rende amostra (`sampled`) NÃO sobrescreve uma
+    linha com métricas COMPLETAS persistidas — o trader que virou hiperativo
+    conserva os dados bons em vez de ganhar métricas sobre horas de dado."""
+    from engine.strategies.copy_trade.funnel import Candidate, ScanResult, persist_scan
+
+    # linha existente com métricas COMPLETAS e sim_net bom
+    upsert_candidate(db, address=ADDR, score=90.0,
+                     extras={"metrics_confidence": "complete",
+                             "sim_net_pnl_usd": 1234.0, "n_trades_30d": 40,
+                             "coverage_days": 55.0})
+
+    # re-scan devolve o mesmo trader agora AMOSTRADO (hiperativo) com sim nulo
+    c = Candidate(address=ADDR, score=12.0)
+    c.metrics_confidence = "sampled"
+    c.coverage_days = 0.2
+    c.n_trades_30d = 5
+    c.sim_net_pnl_usd = None
+    result = ScanResult(scan_id="t2", approved=[c], rejected=[],
+                        funnel_stats={}, rekt_sample=[])
+    persist_scan(db, result, {"logic_version": 9})
+
+    r = list_traders(db)[0]
+    # métricas completas preservadas — o scan amostrado foi ignorado
+    assert r["metrics_confidence"] == "complete"
+    assert r["sim_net_pnl_usd"] == 1234.0
+    assert r["score"] == 90.0
+
+
+def test_persist_scan_updates_when_not_downgrade(db) -> None:
+    """Controle: quando a nova amostra é igualmente COMPLETA, o upsert normal
+    atualiza as métricas (a guarda só protege contra rebaixamento)."""
+    from engine.strategies.copy_trade.funnel import Candidate, ScanResult, persist_scan
+
+    upsert_candidate(db, address=ADDR, score=90.0,
+                     extras={"metrics_confidence": "complete",
+                             "sim_net_pnl_usd": 1234.0, "n_trades_30d": 40,
+                             "coverage_days": 55.0})
+    c = Candidate(address=ADDR, score=77.0)
+    c.metrics_confidence = "complete"
+    c.coverage_days = 60.0
+    c.n_trades_30d = 50
+    c.sim_net_pnl_usd = 999.0
+    result = ScanResult(scan_id="t3", approved=[c], rejected=[],
+                        funnel_stats={}, rekt_sample=[])
+    persist_scan(db, result, {"logic_version": 9})
+
+    r = list_traders(db)[0]
+    assert r["score"] == 77.0
+    assert r["sim_net_pnl_usd"] == 999.0
+    assert r["metrics_confidence"] == "complete"

@@ -128,6 +128,12 @@ class FakeClient:
         self.requests_used += 1
         return {"BTC", "ETH", "SOL"}
 
+    def hypertracker_wallet(self, address):
+        # UPDATE-0057 (Fase 2): agregado por wallet. Default {} (sem
+        # enriquecimento → idade via portfolio.allTime, comportamento da Fase 1).
+        self.requests_used += 1
+        return self._p(address).get("hypertracker", {})
+
 
 GOOD = "0x" + "aa" * 20     # swing saudável — deve APROVAR
 SCALP = "0x" + "bb" * 20    # scalper: v3 aprovava com score baixo; v7 REPROVA
