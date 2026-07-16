@@ -23,6 +23,29 @@ INFO_URL = "https://api.hyperliquid.xyz/info"
 DAY_MS = 86_400_000
 
 
+def _parse_ht_wallet(data: Any, address: str) -> dict[str, Any]:
+    """UPDATE-0057 (correção pós-validação Hermes): desembrulha a resposta do
+    `/api/external/wallets`. O envelope REAL é
+    ``{"totalCount": N, "items": [{"address": ..., ...}]}`` — casa o item pelo
+    endereço (case-insensitive); sem match ou lista vazia → ``{}``.
+
+    Mantém o fallback para os formatos legados ``{"data": {...}}`` /
+    ``{"data": [{...}]}`` / lista por robustez (helper puro, sem HTTP →
+    testável isoladamente em `tests/test_hl_data.py`)."""
+    if isinstance(data, dict) and "items" in data:
+        items = data.get("items") or []
+        return next(
+            (it for it in items
+             if isinstance(it, dict)
+             and str(it.get("address", "")).lower() == address.lower()),
+            {},
+        )
+    payload: Any = data.get("data", data) if isinstance(data, dict) else data
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+    return payload if isinstance(payload, dict) else {}
+
+
 class RequestBudgetExceeded(RuntimeError):
     """Orçamento da varredura esgotado — o funil encerra graciosamente."""
 
@@ -309,18 +332,14 @@ class HLDataClient:
                 f"ht_wallet:{address}",
                 lambda: self._http.get(
                     "https://ht-api.coinmarketman.com/api/external/wallets",
-                    params={"address": address},
+                    params={"address": address, "limit": 1},
                     headers={"Authorization": f"Bearer {api_key}",
                              "Accept": "application/json"},
                 ))
         except Exception:  # noqa: BLE001 — soft dependency, nunca derruba a análise
             logger.warning("discovery.hypertracker_wallet_error address=%s", address)
             return {}
-        # A API pode embrulhar em {"data": {...}} ou {"data": [{...}]}.
-        payload: Any = data.get("data", data) if isinstance(data, dict) else data
-        if isinstance(payload, list):
-            payload = payload[0] if payload else {}
-        return payload if isinstance(payload, dict) else {}
+        return _parse_ht_wallet(data, address)
 
     def _hypertracker_leaderboard(self, api_key: str, *,
                                   max_addresses: int) -> list[str]:

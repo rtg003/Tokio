@@ -220,16 +220,33 @@ def test_wallet_age_from_hypertracker_is_authoritative() -> None:
 
 
 def test_hypertracker_iso_timestamp_is_parsed() -> None:
-    """`earliestActivityAt` como string ISO-8601 também é aceita."""
+    """Partes 2/7 com os valores REAIS observados pelo Hermes em produção
+    (`0x3bca`): `earliestActivityAt` como string ISO-8601 (`"2024-08-21T…Z"`)
+    dirige `wallet_age_days` (NÃO o portfolio.allTime ~90d) e o enriquecimento
+    agregado (equity/pnl/exposição) fica em campos SEPARADOS — a `equity` de
+    trading segue vindo da Hyperliquid (clearinghouse), sem substituição."""
     from datetime import datetime, timezone
-    earliest = datetime.fromtimestamp(
-        (NOW_MS - 150 * DAY_MS) / 1000, tz=timezone.utc).isoformat()
+    earliest_iso = "2024-08-21T21:12:00.118Z"
+    earliest_ms = datetime.fromisoformat(
+        earliest_iso.replace("Z", "+00:00")).timestamp() * 1000
+    expected_age = (NOW_MS - earliest_ms) / DAY_MS
     client = FakeClient([], {HT: {
         "fills": swing_fills(pnl_each=800),
         "clearinghouse": healthy_clearinghouse(),
-        "hypertracker": {"earliestActivityAt": earliest}}})
+        "hypertracker": {"address": HT,
+                         "earliestActivityAt": earliest_iso,
+                         "totalEquity": 11_076_826.57,
+                         "perpPnl": 1_233_610.11,
+                         "exposureRatio": 13.45}}})
     c = analyze_single_wallet(HT, client, CFG)
-    assert c.wallet_age_days is not None and 145 <= c.wallet_age_days <= 155
+    assert c.wallet_age_days is not None
+    assert abs(c.wallet_age_days - expected_age) <= 1.0
+    # enriquecimento agregado (HyperTracker) em campos separados:
+    assert c.ht_total_equity == 11_076_826.57
+    assert c.ht_perp_pnl == 1_233_610.11
+    assert c.ht_exposure_ratio == 13.45
+    # equity de trading NÃO é substituída — segue da Hyperliquid (clearinghouse):
+    assert c.equity == 50_000
 
 
 def test_hypertracker_absent_falls_back_to_alltime() -> None:

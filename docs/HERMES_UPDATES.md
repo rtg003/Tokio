@@ -3264,3 +3264,47 @@ ADITIVA. **Não toca** hot path (`/intent`/`/cancel`/`handle_intent`/
   `hypertracker.total_equity`/`perp_pnl`/`exposure_ratio` preenchidos, e
   confirmar que um re-scan `sampled` NÃO sobrescreve as métricas `complete` já
   persistidas (log `discovery.preserve_complete_metrics`).
+
+### Correção 2026-07-16 (pós-validação Hermes) — envelope do HyperTracker
+
+A validação de produção do Hermes **reprovou parcialmente** o UPDATE-0057 (segue
+**PENDENTE**): Fase 1 (UPDATE-0056) OK, Parte 8 (guarda anti-sobrescrita) OK em
+banco isolado, mas **Partes 2/7 FALHARAM** — nas 3 wallets (`0x3bca`/`0x68f8`/
+`0xb7e0`) o bloco `hypertracker` veio todo `null` e `wallet_age_days` continuou
+vindo do fallback `portfolio.allTime`, não do `earliestActivityAt`.
+
+**Root cause**: `hl_data.py hypertracker_wallet` desembrulhava esperando
+`{"data": {...}}`/`{"data": [{...}]}`. O endpoint real `/api/external/wallets`
+devolve um envelope DIFERENTE:
+```json
+{"totalCount": 1, "items": [{"address": "0x…", "earliestActivityAt": "2024-08-21T21:12:00.118Z",
+                             "totalEquity": 11076826.57, "perpPnl": 1233610.11, "exposureRatio": 13.45}]}
+```
+Sem chave `data`, `data.get("data", data)` devolvia o ENVELOPE inteiro; o
+`_apply_hypertracker_enrichment` procurava `earliestActivityAt` no nível errado
+e não achava nada → enriquecimento silenciosamente vazio. O `FakeClient` dos
+testes mascarava o bug por representar a saída JÁ desembrulhada.
+
+**Correção (mínima e cirúrgica)** — só o desembrulho muda; o resto do caminho
+(`_apply_hypertracker_enrichment` lendo as chaves camelCase; `_ht_to_ms`
+parseando a string ISO) já estava correto:
+1. `hl_data.py`: novo helper de módulo PURO (sem HTTP) `_parse_ht_wallet(data,
+   address)` — casa o item pelo endereço (case-insensitive) dentro de `items`;
+   sem match/lista vazia → `{}`; mantém fallback p/ os formatos legados
+   (`{"data": …}`/lista) por robustez. `hypertracker_wallet` passou a
+   `params={"address": address, "limit": 1}` e a `return _parse_ht_wallet(data,
+   address)`.
+2. `tests/test_hl_data.py` (NOVO): teste PURO do parser com o envelope EXATO do
+   Hermes (`0x3bca`) + casos defensivos (endereço divergente/`items` vazio/
+   `items: null`) + regressão dos formatos legados.
+3. `tests/test_analyze_single.py`: um teste HT ajustado p/ os valores REAIS do
+   Hermes (earliest `2024-08-21`, equity `11.076.826,57`, perp `1.233.610,11`,
+   exposure `13,45`), assertando `wallet_age_days` via `earliestActivityAt` e
+   `equity` de trading intacta (segue da Hyperliquid, sem substituição).
+
+**Validação**: `.venv/bin/python -m pytest tests/ -q` verde (389 = 378 base + 11
+de `test_hl_data.py`). INVARIANTE §8.4.1 preservada (só o corpo de
+`hypertracker_wallet` muda; assinatura igual). Sem migration/config nova.
+**Pós-deploy (rede/credenciais)**: re-analisar `0x3bca`/`0x68f8`/`0xb7e0` e
+confirmar `hypertracker.*` preenchido + `wallet_age_days` via HyperTracker.
+Status segue **PENDENTE** até a re-validação do Hermes.
