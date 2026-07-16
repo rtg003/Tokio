@@ -66,3 +66,13 @@ pairs:
     ref_kind: cex
     ref: { venue: binance, symbol: ETHUSDT }
     enabled: true
+
+  # === HIP-3 semicondutor chinês — CXMT (novo listing 2026-07-14) ===
+  # DRAM chinês, oráculo de fonte única, book fino. Peers: fabricantes
+  # de memória globais (MU, SKHX, SMSN, KIOXIA, WDC).
+  - pair_id: hip3-cxmt
+    hl_symbol: "xyz:CXMT"
+    price_type: oracle
+    ref_kind: hl_peer
+    peer_group: ["xyz:MU", "xyz:SKHX", "xyz:SMSN", "xyz:KIOXIA", "xyz:WDC"]
+    enabled: true
