@@ -21,6 +21,7 @@ import yaml
 from engine.core.db import Database, utcnow
 from engine.strategies.copy_trade import metrics as M
 from engine.strategies.copy_trade.traders_store import (
+    list_traders,
     set_status,
     upsert_candidate,
 )
@@ -931,6 +932,21 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     stats["fallback_leaderboard_extra"] = len(fallback)
     deep = _interleave_after(base_deep, selected_external,
                              int(col.get("external_interleave_after", 100))) + fallback
+
+    # UPDATE-0054: reprocessamento diário dos traders JÁ SALVOS. Injeta os
+    # não-rejeitados (SUGERIDO/SALVO/TESTNET/MAINNET) que NÃO caíram no deep desta
+    # rodada, para que copiados/salvos tenham as métricas recalculadas todo dia
+    # mesmo fora do leaderboard. Prepend garante que processam primeiro — estouro
+    # de orçamento nunca os pula. REJEITADO fica fora (sem recuperação automática).
+    reprocess_set: set[str] = set()
+    if col.get("reprocess_saved_traders", True):
+        saved = list_traders(db, {"SUGERIDO", "SALVO", "TESTNET", "MAINNET"})
+        already = {c.address for c in deep}
+        reprocess_only = [Candidate(address=r["address"]) for r in saved
+                          if r["address"] not in already]
+        reprocess_set = {c.address for c in reprocess_only}
+        deep = reprocess_only + deep
+        stats["reprocessados"] = len(reprocess_only)
     stats["aprofundados"] = len(deep)
 
     # coorte de controle: perdedores consistentes (espelho invertido, barato)
@@ -950,14 +966,19 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
 
     for c in deep:
         try:
-            # F1 primeiro e barato (1 request): reprova sem gastar o deep dive
+            # F1 primeiro e barato (1 request): reprova sem gastar o deep dive.
+            # UPDATE-0054: para traders reprocessados (já salvos), NÃO damos
+            # short-circuit — seguimos ao deep dive para recalcular métricas; o
+            # motivo do F1 fica só informativo em reject_reasons.
             f1_reason = precheck_activity(c, client, cfg, now_ms)
-            if f1_reason:
+            if f1_reason and c.address not in reprocess_set:
                 c.reject_reason = f1_reason
                 c.reject_reasons = [f1_reason]
                 rejected.append(c)
                 stats["reprovados_F1"] = stats.get("reprovados_F1", 0) + 1
                 continue
+            if f1_reason:
+                c.reject_reasons = [f1_reason]
             deep_dive(c, client, cfg, liquid, now_ms)
         except RequestBudgetExceeded:
             stats["interrompidos_por_orcamento"] = len(deep) - len(approved) - len(rejected)
@@ -1139,11 +1160,30 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
         # janelas, simulações) mas NUNCA escreve reject_reason, nunca chama
         # set_status e nunca rebaixa. Apenas registramos no report que o
         # pinned reprovaria nos filtros (informativo, sem efeito colateral).
-        pin_rows = db.query("SELECT copy_pinned FROM traders WHERE address = ?",
-                            (c.address.lower(),))
+        pin_rows = db.query(
+            "SELECT copy_pinned, origin FROM traders WHERE address = ?",
+            (c.address.lower(),))
+        row_exists = bool(pin_rows)
         is_pinned = bool(pin_rows and pin_rows[0]["copy_pinned"] == 1)
+        # UPDATE-0054: sugestões manuais (origin="usuário", UPDATE-0053) são
+        # curadoria humana e NUNCA podem ser rebaixadas pelo reprocessamento —
+        # protegidas como se estivessem pinned (só atualizam métricas).
+        is_manual = bool(pin_rows and pin_rows[0]["origin"] == "usuário")
+        protected = is_pinned or is_manual
 
-        if is_pinned and c.reject_reason:
+        # UPDATE-0054 — guarda anti-wipe: reprocessados que reprovaram no F1 rodam
+        # o deep dive, mas se a wallet não tem fills recentes o deep dive volta
+        # vazio. Fazer upsert com métricas todas nulas APAGARIA as métricas boas
+        # de uma linha existente. Se a linha já existe e o candidato veio sem
+        # dados de deep dive, pulamos o upsert (preserva o histórico).
+        no_deep_data = (c.coverage_days is None and not c.n_trades_30d
+                        and c.sim_net_pnl_usd is None)
+        if row_exists and no_deep_data:
+            if logger:
+                logger.info("discovery.reprocess_no_data", {"address": c.address})
+            continue
+
+        if protected and c.reject_reason:
             # métricas continuam sendo upsertadas abaixo, mas reject_reason
             # não persiste; o status/reject_reason anteriores ficam intactos.
             pinned_would_reject = c.reject_reason
@@ -1176,8 +1216,9 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             "score_components": serialize_components(c.components)
             if c.components is not None else None,
         }
-        # pinned: NUNCA escreve reject_reason — o valor anterior fica intacto.
-        if not is_pinned:
+        # protegido (pinned/manual): NUNCA escreve reject_reason — o valor
+        # anterior fica intacto.
+        if not protected:
             extras["reject_reason"] = c.reject_reason
         upsert_candidate(
             db, address=c.address, name=c.name, score=c.score if not c.reject_reason else None,
@@ -1188,12 +1229,13 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             logic_version=lv,
             extras=extras,
         )
-        if is_pinned:
-            # NUNCA chama set_status em pinned — status e reject_reason
-            # anteriores permanecem intactos. Apenas log informativo.
+        if protected:
+            # NUNCA chama set_status em protegido (pinned/manual) — status e
+            # reject_reason anteriores permanecem intactos. Apenas log informativo.
             if pinned_would_reject and logger:
                 logger.info("discovery.pinned_would_reject",
-                            {"address": c.address, "reason": pinned_would_reject})
+                            {"address": c.address, "reason": pinned_would_reject,
+                             "manual": is_manual})
             continue
         if c.reject_reason:
             set_status(db, c.address, "REJEITADO", by=f"discovery_v{lv}", logger=logger)

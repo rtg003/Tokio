@@ -627,3 +627,153 @@ def test_v14_cheap_cut_last_activity_days_cuts_inactive(db) -> None:
     result = run_scan(FakeClient(rows, dict(profiles)), db, cfg, now_ms=NOW_MS)
     assert result.funnel_stats["corte_barato_inativos"] == 1
     assert SCALP not in {c.address for c in result.approved}
+
+
+# ============================================================================
+# UPDATE-0054 — reprocessamento diário dos traders JÁ SALVOS (fora do leaderboard)
+# ============================================================================
+import copy as _copy  # noqa: E402
+
+from engine.strategies.copy_trade.traders_store import (  # noqa: E402
+    set_status,
+    upsert_candidate,
+)
+
+# Endereços de traders salvos que NÃO aparecem no leaderboard sintético — só
+# entram no funil via injeção de reprocessamento.
+SAVED_OK = "0x" + "71" * 20        # saudável → aprova
+SAVED_PIN_FAIL = "0x" + "72" * 20  # reprova F10, mas TESTNET (pinned)
+SAVED_MANUAL = "0x" + "73" * 20    # reprova F10, SUGERIDO origin="usuário"
+SAVED_DISC = "0x" + "74" * 20      # reprova F10, SUGERIDO origin="discovery"
+SAVED_NOFILLS = "0x" + "75" * 20   # sem fills → deep dive vazio (anti-wipe)
+SAVED_REJ = "0x" + "76" * 20       # REJEITADO → fora do escopo
+
+
+def _good_profile() -> dict[str, Any]:
+    return {"fills": swing_fills(pnl_each=800),
+            "clearinghouse": healthy_clearinghouse()}
+
+
+def _deposit_fail_profile() -> dict[str, Any]:
+    """Mesmo perfil do DEPOSIT: recente (passa F1) mas inflado por aporte (F10)."""
+    flat_curve = [[NOW_MS - (90 - d) * DAY_MS, 49_000.0 + d * 135] for d in range(91)]
+    return {"fills": swing_fills(n=45, pnl_each=20.0, start_ms=NOW_MS - 45 * DAY_MS),
+            "curve": flat_curve,
+            "ledger": [{"time": NOW_MS - 15 * DAY_MS,
+                        "delta": {"type": "deposit", "usdc": 40_000}}]}
+
+
+def _client_with(extra: dict[str, dict[str, Any]]) -> FakeClient:
+    """make_client() + perfis extra em endereços FORA do leaderboard."""
+    c = make_client()
+    for addr, prof in extra.items():
+        c.profiles[addr.lower()] = prof
+    return c
+
+
+def _seed(db, address: str, *, status: str, origin: str = "discovery",
+          score: float | None = None) -> None:
+    """Insere um trader salvo direto na tabela `traders` (fora do leaderboard)."""
+    upsert_candidate(db, address=address, origin=origin, score=score)
+    if status != "SUGERIDO":
+        set_status(db, address, status, by="dashboard-humano", human_gate=True)
+
+
+def _row(db, address: str) -> dict[str, Any]:
+    return db.query("SELECT * FROM traders WHERE address = ?", (address.lower(),))[0]
+
+
+def test_reprocess_injects_saved_trader_outside_leaderboard(db) -> None:
+    """SALVO fora do leaderboard é reprocessado: métricas recalculadas."""
+    _seed(db, SAVED_OK, status="SALVO", score=None)
+    client = _client_with({SAVED_OK: _good_profile()})
+
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    assert result.funnel_stats["reprocessados"] >= 1
+    assert SAVED_OK in {c.address for c in result.approved}
+
+    persist_scan(db, result, CFG, client=client)
+    row = _row(db, SAVED_OK)
+    assert row["status"] == "SALVO"          # nunca rebaixado
+    assert row["score"] is not None          # métricas atualizadas
+
+
+def test_reprocess_pinned_never_demoted(db) -> None:
+    """TESTNET (copy_pinned=1) que reprova F10 segue TESTNET, sem reject_reason."""
+    _seed(db, SAVED_PIN_FAIL, status="TESTNET")
+    client = _client_with({SAVED_PIN_FAIL: _deposit_fail_profile()})
+
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    persist_scan(db, result, CFG, client=client)
+
+    row = _row(db, SAVED_PIN_FAIL)
+    assert row["status"] == "TESTNET"
+    assert row["reject_reason"] is None
+    assert row["n_trades_30d"] is not None   # deep dive rodou (métricas frescas)
+
+
+def test_reprocess_manual_suggestion_protected(db) -> None:
+    """Q2: SUGERIDO origin='usuário' que reprova NUNCA vira REJEITADO."""
+    _seed(db, SAVED_MANUAL, status="SUGERIDO", origin="usuário")
+    client = _client_with({SAVED_MANUAL: _deposit_fail_profile()})
+
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    persist_scan(db, result, CFG, client=client)
+
+    row = _row(db, SAVED_MANUAL)
+    assert row["status"] == "SUGERIDO"       # curadoria humana prevalece
+    assert row["reject_reason"] is None
+    assert row["n_trades_30d"] is not None
+
+
+def test_reprocess_discovery_suggestion_still_demotes(db) -> None:
+    """Comportamento preservado: SUGERIDO origin='discovery' que reprova → REJEITADO."""
+    _seed(db, SAVED_DISC, status="SUGERIDO", origin="discovery")
+    client = _client_with({SAVED_DISC: _deposit_fail_profile()})
+
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    persist_scan(db, result, CFG, client=client)
+
+    row = _row(db, SAVED_DISC)
+    assert row["status"] == "REJEITADO"
+    assert row["reject_reason"] and row["reject_reason"].startswith("F10")
+
+
+def test_reprocess_rejected_out_of_scope(db) -> None:
+    """REJEITADO não é reincluído no scan (sem recuperação automática)."""
+    _seed(db, SAVED_REJ, status="SUGERIDO", origin="discovery")
+    set_status(db, SAVED_REJ, "REJEITADO", by="discovery_v14")
+    client = _client_with({SAVED_REJ: _good_profile()})
+
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    assert result.funnel_stats.get("reprocessados", 0) == 0
+    assert SAVED_REJ not in {c.address for c in result.approved}
+
+
+def test_reprocess_anti_wipe_preserves_metrics(db) -> None:
+    """Trader salvo reprocessado SEM fills (deep dive vazio) mantém métricas."""
+    _seed(db, SAVED_NOFILLS, status="SALVO", score=42.0)
+    # grava métricas prévias que NÃO podem ser zeradas
+    upsert_candidate(db, address=SAVED_NOFILLS, origin="discovery", score=42.0,
+                     extras={"n_trades_30d": 33, "sim_net_pnl_usd": 111.0})
+    client = _client_with({})  # sem perfil → fills vazios
+
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    persist_scan(db, result, CFG, client=client)
+
+    row = _row(db, SAVED_NOFILLS)
+    assert row["score"] == 42.0              # não foi apagado
+    assert row["n_trades_30d"] == 33
+    assert row["sim_net_pnl_usd"] == 111.0
+
+
+def test_reprocess_flag_off_disables_injection(db) -> None:
+    """reprocess_saved_traders=false → nenhum salvo é injetado."""
+    _seed(db, SAVED_OK, status="SALVO", score=None)
+    client = _client_with({SAVED_OK: _good_profile()})
+    cfg = _copy.deepcopy(CFG)
+    cfg["collection"]["reprocess_saved_traders"] = False
+
+    result = run_scan(client, db, cfg, now_ms=NOW_MS)
+    assert result.funnel_stats.get("reprocessados", 0) == 0
+    assert SAVED_OK not in {c.address for c in result.approved}

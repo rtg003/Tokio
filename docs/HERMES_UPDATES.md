@@ -3010,3 +3010,74 @@ caso NÃO salvável: endereço inválido.
 - `cd web && npm run build` verde (exit 0).
 - INVARIANTE §8.4.1: hot path e assinaturas do funil intocados; `analyze` não
   escreve em `traders`.
+
+---
+
+## UPDATE-0054 · 2026-07-15 · Status: PENDENTE
+
+**Origem**: 5 pedidos do operador (rtg003) em 2026-07-15 sobre a tabela de
+Traders (Copy Trade) e o reprocessamento do Discovery.
+
+**Tipo**: 4 ajustes de UI (`web/`) + 1 mudança de comportamento do Discovery
+(`engine/`). **Não toca** hot path (`/intent`/`/cancel`/`handle_intent`/
+`handle_cancel`) nem as assinaturas de `deep_dive`/`score_candidate`/
+`hard_filters_all`/`upsert_candidate`/`set_status` → INVARIANTE §8.4.1
+preservada. **Sem migration**, sem secret, sem `logic_version` novo.
+
+### UI — `web/components/copy-trade/TradersTable.tsx`
+1. **Clique na wallet copia o endereço completo.** Novo subcomponente cliente
+   `CopyAddr` no lugar do `<span className="sub addr">`: `onClick` →
+   `navigator.clipboard.writeText(address)`, feedback transitório "copiado ✓"
+   (~1,2s), acessível por teclado (Enter/Espaço). Ação local de clipboard —
+   não envia dados.
+2. **Coorte encurtada + link.** A coluna Coorte passa a mostrar só a 1ª parte
+   (`String(t.cohort).split(" · ")[0]`, ex.: "Dolphin · Money Printer" →
+   "Dolphin") como `<a target="_blank" rel="noopener noreferrer">` para
+   `https://app.coinmarketman.com/hypertracker/wallet/<endereço>`.
+3. **Reordenação das colunas** (thead + tbody em conjunto), decisão do operador:
+   `# · SIM NET · Trader · Score · Coorte · Win rate · PF · PnL 30d · Max DD ·
+   Trades 30d · Hold méd. · Ativos · Últ. atividade · Status · TWRR 30d · SIM
+   EXP · SIM DD · Alav. méd. · Alav. atual · Margem disp. · Metades A · Equity ·
+   Janelas · Sizing · Dist. liq. · Origem · Lógica`. Só muda a ordem visual; o
+   `ACCESSORS` (ordenação por rótulo) é independente da ordem das colunas.
+
+### UI — `web/app/globals.css`
+4. `.select-status.status-mainnet` passa de vermelho (`--neg`) para **verde
+   claro** (`--pos`/`--pos-soft`, mesmo tom de `.env-sel.env-mainnet`). Novos
+   estilos `.addr-copy`/`.addr-copied` (item 1) e `.cohort-link` (item 2).
+
+### Backend — reprocessamento diário dos traders salvos (`funnel.py`)
+5. **Traders JÁ SALVOS são reprocessados TODO dia**, inclusive os copiados —
+   antes o scan só partia do leaderboard/fontes externas e nunca reincluía quem
+   estava salvo fora do leaderboard. Sem mudança no scheduler (pega carona no
+   scan diário das 05:00 SP).
+   - `run_scan`: se `collection.reprocess_saved_traders` (novo, default `true`),
+     injeta via `list_traders(db, {SUGERIDO,SALVO,TESTNET,MAINNET})` os salvos
+     que não caíram no `deep` desta rodada; **prepend** (processam primeiro →
+     estouro de orçamento nunca os pula); `stats["reprocessados"]`. **REJEITADO
+     fica fora** (sem recuperação automática — decisão do operador).
+   - Loop de aprofundamento: para reprocessados, o **F1 não dá short-circuit** —
+     segue ao deep dive para recalcular métricas (o motivo do F1 fica só
+     informativo). Copiado inativo tem métricas recalculadas em vez de derrubado.
+   - `persist_scan`: além de `copy_pinned`, lê `origin`. **Sugestões manuais**
+     (`origin="usuário"`, UPDATE-0053) são protegidas como pinned
+     (`protected = is_pinned or is_manual`) — o reprocessamento NUNCA as rebaixa
+     para REJEITADO, só atualiza métricas (respeita o força-salvar). SUGERIDO
+     `origin="discovery"` continua podendo ser rebaixado.
+   - **Guarda anti-wipe** (bug latente corrigido de passagem): se a linha já
+     existe e o candidato voltou sem dados de deep dive (`coverage_days is None
+     and not n_trades_30d and sim_net_pnl_usd is None`), o upsert de métricas é
+     pulado (log `discovery.reprocess_no_data`) — preserva o histórico em vez de
+     zerar. Candidatos novos seguem inseridos normalmente.
+   - `config/discovery_config.yaml`: nova chave `collection.reprocess_saved_traders:
+     true` (documentada em `docs/discovery_logic_v9.md`; permite desligar).
+
+### Validação
+- `.venv/bin/python -m pytest tests/ -q` verde (363 = 356 base + 7 novos em
+  `tests/test_discovery_funnel.py`: injeção, pinned-nunca-rebaixa,
+  manual-protegido, discovery-rebaixa, REJEITADO-fora-de-escopo, anti-wipe,
+  flag-off). Ajuste de 1 teste pré-existente
+  (`test_rescan_pinned_rejecting_keeps_status_and_reason`) para popular dados de
+  deep dive no candidato sintético (a guarda anti-wipe exige métricas frescas).
+- `cd web && npm run build` verde (exit 0).
+- INVARIANTE §8.4.1 preservada; §5.1/§5.2 tudo dentro do módulo copy_trade.

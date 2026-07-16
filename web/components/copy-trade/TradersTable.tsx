@@ -136,6 +136,38 @@ function traderNameClass(status: string): string {
   return "";
 }
 
+// Endereço abreviado clicável: copia o endereço COMPLETO para a área de
+// transferência (ação local, não envia dados). Feedback transitório ~1,2s.
+function CopyAddr({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard indisponível — silencioso */
+    }
+  }
+  return (
+    <span
+      className={`sub addr addr-copy ${copied ? "addr-copied" : ""}`}
+      role="button"
+      tabIndex={0}
+      title="clique para copiar o endereço completo"
+      onClick={copy}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          copy();
+        }
+      }}
+    >
+      {copied ? "copiado ✓" : shortAddr(address)}
+    </span>
+  );
+}
+
 export default function TradersTable({
   traders,
   env,
@@ -206,12 +238,14 @@ export default function TradersTable({
                 <Th label="Coorte" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Win rate" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="PF" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <Th label="TWRR 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="PnL 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Max DD" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <Th label="Status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Trades 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Hold méd." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Ativos" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Últ. atividade" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="TWRR 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="SIM EXP" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="SIM DD" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Alav. méd." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -220,8 +254,6 @@ export default function TradersTable({
                 <Th label="Metades A" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Equity" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Janelas" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <Th label="Ativos" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <Th label="Últ. atividade" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Sizing" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Dist. liq." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Origem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -243,7 +275,7 @@ export default function TradersTable({
                     </td>
                     <td>
                       <span className={`trader-name ${nameClass}`}>{t.name ?? shortAddr(t.address)}</span>
-                      <span className="sub addr">{shortAddr(t.address)}</span>
+                      <CopyAddr address={t.address} />
                     </td>
                     <td>
                       <span
@@ -253,7 +285,21 @@ export default function TradersTable({
                         <i style={{ width: `${score}%` }} />
                       </span>
                     </td>
-                    <td>{t.cohort ?? "—"}</td>
+                    <td>
+                      {t.cohort ? (
+                        <a
+                          className="cohort-link"
+                          href={`https://app.coinmarketman.com/hypertracker/wallet/${t.address}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={`Abrir ${t.cohort} no Coinmarketman`}
+                        >
+                          {String(t.cohort).split(" · ")[0]}
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td className="num">
                       {t.win_rate === null || t.win_rate === undefined
                         ? "—"
@@ -264,11 +310,6 @@ export default function TradersTable({
                         ? "—"
                         : fmtNum(t.profit_factor, 2)}
                     </td>
-                    <td className={`num ${pnlClass(t.twrr_30d)}`}>
-                      {t.twrr_30d === null || t.twrr_30d === undefined
-                        ? "—"
-                        : `${fmtNum(t.twrr_30d, 1)}%`}
-                    </td>
                     <td className={`num ${pnlClass(t.pnl_30d)}`}>
                       {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : `$${fmtSigned(t.pnl_30d, 2)}`}
                     </td>
@@ -277,6 +318,14 @@ export default function TradersTable({
                         ? "—"
                         : `−${fmtNum(t.max_drawdown, 1)}%`}
                     </td>
+                    <td className="num">{t.n_trades_30d ?? "—"}</td>
+                    <td className="num">
+                      {t.avg_holding_hours === null || t.avg_holding_hours === undefined
+                        ? "—"
+                        : `${fmtNum(t.avg_holding_hours, 1)}h`}
+                    </td>
+                    <td className="addr">{topAssets.length ? topAssets.join(" ") : "—"}</td>
+                    <td className="addr">{fmtDateTime(t.last_activity)}</td>
                     <td>
                       <StatusSelect
                         address={t.address}
@@ -299,11 +348,10 @@ export default function TradersTable({
                         equity={t.equity}
                       />
                     </td>
-                    <td className="num">{t.n_trades_30d ?? "—"}</td>
-                    <td className="num">
-                      {t.avg_holding_hours === null || t.avg_holding_hours === undefined
+                    <td className={`num ${pnlClass(t.twrr_30d)}`}>
+                      {t.twrr_30d === null || t.twrr_30d === undefined
                         ? "—"
-                        : `${fmtNum(t.avg_holding_hours, 1)}h`}
+                        : `${fmtNum(t.twrr_30d, 1)}%`}
                     </td>
                     <td className={`num ${pnlClass(t.sim_expectancy_usd)}`}>
                       {t.sim_expectancy_usd === null || t.sim_expectancy_usd === undefined
@@ -339,8 +387,6 @@ export default function TradersTable({
                       {t.equity === null || t.equity === undefined ? "—" : fmtNum(t.equity, 0)}
                     </td>
                     <td>{t.windows_positive ?? "—"}</td>
-                    <td className="addr">{topAssets.length ? topAssets.join(" ") : "—"}</td>
-                    <td className="addr">{fmtDateTime(t.last_activity)}</td>
                     <td>
                       {t.mode === "percent" ? `${t.value}× prop.` : `${fmtNum(t.value, 0)} USDC fixo`}
                     </td>

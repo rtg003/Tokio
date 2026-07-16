@@ -35,6 +35,7 @@ collection:
   active_scan_window_hours: 48    # janela de varredura ativa (48h = fim de semana + dia útil)
   active_scan_max_addresses: 200  # limite de endereços novos por varredura
   active_scan_min_notional_usd: 1000  # ignora fills poeira
+  reprocess_saved_traders: true   # UPDATE-0054: reprocessa diariamente os traders JÁ SALVOS (SUGERIDO/SALVO/TESTNET/MAINNET) mesmo fora do leaderboard; false desliga
 
 # v8: fontes ADICIONAIS de candidatos (opcionais, atrás de flag, sem
 # dependência dura). HL público continua a fonte de verdade: terceiros só

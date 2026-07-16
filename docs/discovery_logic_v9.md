@@ -56,6 +56,7 @@ flowchart LR
 | `collection.active_scan_window_hours` | parâmetro de coleta/custo do scan | 48 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.active_scan_max_addresses` | parâmetro de coleta/custo do scan | 200 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.active_scan_min_notional_usd` | parâmetro de coleta/custo do scan | 1000 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
+| `collection.reprocess_saved_traders` | reprocessa diariamente traders já salvos (SUGERIDO/SALVO/TESTNET/MAINNET) mesmo fora do leaderboard | true | UPDATE-0054: copiados/salvos passam a ter métricas recalculadas todo dia, não só quando reaparecem no leaderboard | injeta os salvos no deep dive (prepend, sem short-circuit no F1); pinned/manual nunca rebaixados; false desliga |
 | `sources.hypertracker.enabled` | ativar HyperTracker como feed de endereços | true | aumenta pool sem delegar decisão | +274 endereços exclusivos; mediana +$11.79, hit 67% |
 | `sources.hypertracker.api_key_env` | nome da variável de ambiente da chave | HYPERTRACKER_API_KEY | segredo fora do repo; sem chave = off silencioso | teste de fonte sem chave |
 | `sources.hypertracker.max_addresses` | limite de candidatos do HyperTracker por scan | 300 | ~3-5 requests/scan dentro do free tier | free tier 100 req/dia; uso estimado < 5 |

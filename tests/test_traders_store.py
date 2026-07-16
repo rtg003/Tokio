@@ -177,10 +177,15 @@ def test_rescan_pinned_rejecting_keeps_status_and_reason(db) -> None:
     set_status(db, ADDR, "TESTNET", by="human", human_gate=True)
     # trader está pinned e em TESTNET
 
-    # cria um candidato reprovado pelo re-scan (reject_reason preenchido)
+    # cria um candidato reprovado pelo re-scan (reject_reason preenchido).
+    # UPDATE-0054: um candidato REALMENTE reprovado tem dados de deep dive
+    # (coverage/n_trades) — sem eles a guarda anti-wipe do persist_scan preserva
+    # o histórico. Populamos para exercitar o caminho de atualização de métricas.
     c = Candidate(address=ADDR, name="whale", score=42.0)
     c.reject_reason = "F17: reprovação simulada do re-scan"
     c.cohort = "smart"
+    c.coverage_days = 45.0
+    c.n_trades_30d = 20
     result = ScanResult(scan_id="t1", approved=[], rejected=[c],
                         funnel_stats={}, rekt_sample=[])
     cfg = {"logic_version": 9}

@@ -318,8 +318,17 @@ th.num { text-align: right; }
 .select-status.status-sugerido { color: var(--yellow); border-color: var(--yellow); background: var(--yellow-soft); }
 .select-status.status-salvo { color: var(--amber); border-color: var(--amber); }
 .select-status.status-testnet { color: var(--info); border-color: var(--info); }
-.select-status.status-mainnet { color: var(--neg); border-color: var(--neg); }
+.select-status.status-mainnet { color: var(--pos); border-color: var(--pos); background: var(--pos-soft); }
 .select-status.status-rejeitado { color: var(--neg); border-color: var(--neg); }
+
+/* Endereço abreviado clicável (copia o endereço completo) na tabela de traders */
+.addr-copy { cursor: pointer; transition: color 0.12s; }
+.addr-copy:hover { color: var(--amber); }
+.addr-copy:focus-visible { outline: 1px solid var(--amber); outline-offset: 2px; }
+.addr-copy.addr-copied { color: var(--pos); }
+/* Coorte encurtada com link externo (Coinmarketman) */
+.cohort-link { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--faint); }
+.cohort-link:hover { color: var(--amber); border-bottom-color: var(--amber); }
 .status-error { font: 400 10px var(--mono); color: var(--neg); max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 
 /* ============ CONFIGURAÇÕES ============ */
