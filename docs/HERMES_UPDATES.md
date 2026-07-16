@@ -3082,7 +3082,7 @@ preservada. **Sem migration**, sem secret, sem `logic_version` novo.
 - `cd web && npm run build` verde (exit 0).
 - INVARIANTE §8.4.1 preservada; §5.1/§5.2 tudo dentro do módulo copy_trade.
 
-## UPDATE-0055 · 2026-07-16 · Status: PENDENTE
+## UPDATE-0055 · 2026-07-16 · Status: APLICADO em 2026-07-16
 
 **Origem**: bug reportado pelo operador (rtg003) — o endpoint
 `/control/suggestions/analyze` (análise individual de sugestões) devolvia
