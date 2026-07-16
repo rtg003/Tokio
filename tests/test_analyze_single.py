@@ -319,6 +319,10 @@ def test_sampled_wallet_keeps_portfolio_measurements() -> None:
     assert c.twrr_30d_pct is not None
     assert c.max_dd_90d_pct is not None
     assert "90d" in c.windows_pnl
+    # UPDATE-0059 (correção Parte A): PnL 30d é derivado do portfolio (month) na
+    # análise individual — o candidato não passa pelo leaderboard, então sem essa
+    # derivação `windows_pnl["30d"]` ficaria ausente (pnl_30d NULL na UI).
+    assert c.windows_pnl.get("30d") is not None
 
 
 def test_sampled_wallet_rationale_has_informative_projection() -> None:

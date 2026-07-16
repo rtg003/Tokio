@@ -177,7 +177,11 @@ def _series(portfolio: dict[str, Any], window: str, key: str) -> list[tuple[floa
 
 def fill_windows_from_portfolio(c: Candidate, portfolio: dict[str, Any],
                                 now_ms: float | None = None) -> None:
-    """Deriva PnL 60d/90d da série allTime (leaderboard só tem 7d/30d)."""
+    """Deriva PnL 60d/90d da série allTime; 7d/30d do portfolio quando ausentes.
+
+    No scan em massa 7d/30d chegam do leaderboard (parse_leaderboard_row); na
+    análise individual e no reprocessamento de salvos o candidato nasce sem eles
+    e são derivados aqui do portfolio (fonte COMPLETA, não-truncada)."""
     now_ms = now_ms or time.time() * 1000
     pnl_hist = _series(portfolio, "allTime", "pnlHistory")
     # UPDATE-0056: idade REAL da wallet (não confundir com o span da amostra de
@@ -202,6 +206,15 @@ def fill_windows_from_portfolio(c: Candidate, portfolio: dict[str, Any],
         if pnl_hist:
             last = pnl_hist[-1][1]
             c.windows_pnl[key] = last - (base if base is not None else pnl_hist[0][1])
+    # UPDATE-0059 (correção Parte A): 7d/30d — no scan vêm do leaderboard; na
+    # análise individual e no reprocessamento de salvos o candidato nasce sem
+    # eles. Derivar do portfolio (fonte COMPLETA, não-truncada) quando ausentes.
+    # Reusa o padrão de discovery.py:203-206. NÃO sobrescreve o leaderboard.
+    for window, key in (("week", "7d"), ("month", "30d")):
+        if key not in c.windows_pnl:
+            hist = _series(portfolio, window, "pnlHistory")
+            if len(hist) >= 2:
+                c.windows_pnl[key] = hist[-1][1] - hist[0][1]
 
 
 def entry_rule_ok(c: Candidate, cfg: dict[str, Any]) -> bool:

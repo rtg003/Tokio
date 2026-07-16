@@ -3427,3 +3427,17 @@ legada.** Fecha duas lacunas que deixavam sugestões inúteis para decidir.
   `sample_*` preenchido ("SIM ~$X em Yd" + projeção /30d no rationale), `sim_*`
   longitudinais nulas e F17/F19 indeterminados anotados. Status **PENDENTE** até
   a re-validação do Hermes.
+
+### Correção Parte A (2026-07-16) — pnl_30d/7d na análise individual
+A validação pós-deploy do Hermes achou **uma divergência**: `pnl_30d` continuava
+**NULL** na análise individual (`/control/suggestions/analyze` e reprocessamento
+de salvos), embora aparecesse no scan. Causa-raiz: `windows_pnl["7d"]`/`["30d"]`
+só eram preenchidos em `parse_leaderboard_row` (a partir do leaderboard); os
+caminhos individual/reprocess criam candidatos frescos que não passam pelo
+leaderboard. Correção cirúrgica em `fill_windows_from_portfolio`
+(`engine/strategies/copy_trade/funnel.py`): 7d/30d agora são derivados do
+portfolio (`week`/`month` `pnlHistory`, fonte COMPLETA não-truncada) **quando
+ausentes** — reusa o padrão de `discovery.py:203-206`; o scan (que já traz esses
+valores do leaderboard) fica intocado (guarda `key not in c.windows_pnl`).
+- **Re-validar (Hermes):** re-analisar `0x3bca`/`0x68f8`/`0xb7e0` e confirmar
+  `pnl_30d` preenchido → então marcar UPDATE-0059 **APLICADO**.
