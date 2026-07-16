@@ -3363,7 +3363,7 @@ uma amostra `sampled`/`insufficient`. Nenhuma ação nova de backend é necessá
   reprovações; salvar e confirmar as colunas *Confiança*/*Idade* na tabela de
   traders. Status **PENDENTE** até o aval visual do Hermes.
 
-## UPDATE-0059 · 2026-07-16 · Status: PENDENTE
+## UPDATE-0059 · 2026-07-16 · Status: APLICADO em 2026-07-16
 
 **Discovery: métricas amostrais + fontes não-truncadas + backfill de confiança
 legada.** Fecha duas lacunas que deixavam sugestões inúteis para decidir.
