@@ -3135,3 +3135,73 @@ assinaturas de `deep_dive`/`fills_by_time`/`compute_copy_sims`/
 - INVARIANTE §8.4.1 preservada; §5.1/§5.2 tudo dentro do módulo copy_trade.
 - Pós-deploy: re-analisar `0xb7e0…` e `0x68f8…` e conferir n_trades_30d/sim_*
   realistas + aviso de truncamento quando aplicável.
+
+## UPDATE-0056 · 2026-07-16 · Status: PENDENTE
+
+**Origem**: feedback do operador (rtg003) — o UPDATE-0055 não foi suficiente.
+Trocar a fonte p/ `fills_recent` corrigiu o viés ASC, MAS em traders
+hiperativos os ~2.000 fills recentes cobrem só HORAS. Todas as métricas
+longitudinais (`n_trades_30d`, WR, PF, hold, F6/F8/F9, e as sims de
+F15/F17/F18/F19) eram calculadas sobre essas poucas horas e **rotuladas como
+30/60d**. Pior: o campo único `coverage_days` misturava três conceitos —
+(1) idade da wallet, (2) span coberto pela amostra, (3) janela pedida. O F16
+("wallet nova demais") julgava pela AMOSTRA, não pela idade. Casos:
+`0x3bca…`, `0x68f8…`, `0xb7e0…`.
+
+**Tipo**: Fase 1/3 da arquitetura definitiva p/ amostras truncadas. Correção de
+backend + API no módulo copy_trade (`engine/`). **Não toca** hot path
+(`/intent`/`/cancel`/`handle_intent`/`handle_cancel`) nem as assinaturas de
+`deep_dive`/`fills_by_time`/`fills_recent`/`compute_copy_sims`/`M.simulate_copy`/
+`score_candidate`/`hard_filters_all`/`upsert_candidate`/`set_status` →
+INVARIANTE §8.4.1 preservada. Sem migration, sem secret, sem `logic_version`
+novo. Persistência do scan em massa **inalterada** (fica p/ a Fase 2).
+
+**Faseamento** (aprovado pelo operador): Fase 1 (ESTE) = backend + API; Fase 2 =
+enriquecimento HyperTracker + migração/guarda anti-sobrescrita na persistência;
+Fase 3 = badges/avisos na UI.
+
+### Mudanças
+1. **3 conceitos separados no `Candidate`** (`funnel.py`): `wallet_age_days`
+   (idade real), `fills_sample_days` (span da amostra), `fills_sample_count`,
+   `fills_complete`, `metrics_confidence` (complete|sampled|insufficient),
+   `metrics_warnings`, `indeterminate_filters`. `coverage_days` mantido p/ compat.
+2. **Idade da wallet** vem de `portfolio.allTime` (1º ponto de
+   pnl/accountValueHistory) em `fill_windows_from_portfolio` — vale nos DOIS
+   caminhos (scan + análise). (HyperTracker `earliestActivityAt` fica p/ Fase 2.)
+3. **F16 passa a usar `wallet_age_days`** (não o span dos fills). Mensagem:
+   `F16: idade da wallet Xd < Yd`. Chave `f16_min_coverage_days` mantida (compat).
+4. **Coleta HÍBRIDA na análise individual** (`analyze_single_wallet`): une
+   `fills_recent` (recentes, DESC) + `fills_by_time` paginado (longitudinal, ASC)
+   com dedup (`_merge_fills`). Isso de fato COBRE a janela p/ traders
+   normais/moderados — só ultra-hiperativos (histórico paginado truncado) ficam
+   `sampled`. O scan em massa segue com `collection.fills_max_pages` e só MARCA
+   `metrics_confidence` (não faz gate).
+5. **`classify_metrics_confidence`** (novo helper, fim do `deep_dive`): classifica
+   a confiança nos DOIS caminhos com base em `fills_complete`, `fills_sample_days`
+   e nº de trades fechados.
+6. **Gate tri-estado (só análise individual)**: quando `metrics_confidence !=
+   complete` — (Parte 6) as sim_* ficam NULAS (não fabricamos net sobre horas de
+   dado) e (Parte 5) os filtros longitudinais (F2/F2b/F4/F5/F6/F8/F9/F15/F17/F18/
+   F19 + copy_sim_negativa) migram de `reject_reasons` p/ `indeterminate_filters`
+   (nunca reprovam definitivamente). O aviso ⚠️ de truncamento migrou p/
+   `metrics_warnings`.
+7. **Config** (`discovery_config.yaml`): novo bloco `manual_analysis`
+   (recent_fill_limit, longitudinal_window_days, longitudinal_max_pages,
+   max_requests_per_wallet, min_sample_days_for_longitudinal_metrics,
+   min_sample_closed_fills). Documentado em `docs/discovery_logic_v9.md`.
+8. **API** `/control/suggestions/analyze` (`server.py _suggestion_report`): novos
+   campos `metrics_confidence`, `wallet_age_days`, `fills_sample_days`,
+   `fills_sample_count`, `fills_complete`, `metrics_warnings`,
+   `indeterminate_reasons` (aditivos; `coverage_days` mantido).
+
+### Validação
+- `.venv/bin/python -m pytest tests/ -q` verde (372 = 367 base + 5 novos em
+  `tests/test_analyze_single.py`: idade-via-allTime, confiança-complete,
+  F16-por-idade, poucos-fills-insufficient, coleta-híbrida-merge; +
+  hiperativo migrado p/ checar `sampled`/sim_* nulas/`metrics_warnings`).
+  `FakeClient.fills_by_time` ganhou histórico longitudinal + flag de truncamento.
+- INVARIANTE §8.4.1 preservada; §5.1/§5.2 tudo dentro do módulo copy_trade.
+- Pós-deploy (rede/credenciais): re-analisar `0x3bca…`, `0x68f8…`, `0xb7e0…` —
+  `wallet_age_days` real, `fills_sample_days` << 30/60d p/ hiperativos,
+  `metrics_confidence == sampled`, sim_* nulas e filtros longitudinais em
+  `indeterminate_reasons` (nunca reprovação definitiva sobre horas de dado).

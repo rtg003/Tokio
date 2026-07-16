@@ -101,6 +101,15 @@ class Candidate:
     # UPDATE-0055: fills pré-carregados pelo caller (análise individual usa
     # fills_recent). None → deep_dive busca via fills_by_time (scan em massa).
     prefetched_fills: list[dict[str, Any]] | None = None
+    # UPDATE-0056 (Fase 1): separa os 3 conceitos que o coverage_days misturava
+    # (idade da wallet × span da amostra × janela pedida) + confiança das métricas.
+    wallet_age_days: float | None = None         # idade real (portfolio.allTime)
+    fills_sample_days: float | None = None        # span coberto pela amostra de fills
+    fills_sample_count: int = 0                   # nº de fills na amostra analisada
+    fills_complete: bool = True                   # amostra cobre a janela longitudinal?
+    metrics_confidence: str = "complete"          # complete | sampled | insufficient
+    metrics_warnings: list[str] = field(default_factory=list)
+    indeterminate_filters: list[str] = field(default_factory=list)
     weekly_stability: float = 0.5
     is_top20_alltime: bool = False
     # resultado
@@ -150,6 +159,13 @@ def fill_windows_from_portfolio(c: Candidate, portfolio: dict[str, Any],
     """Deriva PnL 60d/90d da série allTime (leaderboard só tem 7d/30d)."""
     now_ms = now_ms or time.time() * 1000
     pnl_hist = _series(portfolio, "allTime", "pnlHistory")
+    # UPDATE-0056: idade REAL da wallet (não confundir com o span da amostra de
+    # fills). Fonte autoritativa = 1º ponto da série allTime (pnl/accountValue).
+    acct_hist = _series(portfolio, "allTime", "accountValueHistory")
+    earliest = min([t for t, _ in pnl_hist] + [t for t, _ in acct_hist],
+                   default=None)
+    if earliest is not None:
+        c.wallet_age_days = max((now_ms - earliest) / DAY_MS, 0.0)
     for days, key in ((60, "60d"), (90, "90d")):
         cutoff = now_ms - days * DAY_MS
         base = None
@@ -306,12 +322,16 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
     # massa mantém o comportamento paginado de sempre.
     if c.prefetched_fills is not None:
         fills = c.prefetched_fills
-        truncated = len(fills) >= 2000
+        # UPDATE-0056: a análise individual (coleta híbrida) já classificou
+        # history_truncated/fills_complete — não recomputar por len>=2000, que
+        # não faz sentido para a UNIÃO recent+longitudinal.
     else:
         fills, truncated = client.fills_by_time(
             c.address, window_days=int(col["fills_window_days"]),
             max_pages=int(col["fills_max_pages"]))
-    c.history_truncated = truncated
+        c.history_truncated = truncated
+        c.fills_complete = not truncated
+    c.fills_sample_count = len(fills)
 
     portfolio = client.portfolio(c.address)
     fill_windows_from_portfolio(c, portfolio, now_ms)
@@ -452,6 +472,30 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
     compute_copy_sims(c, fills, cfg, now_ms)
 
     c.style = classify_style(c.median_hold_hours)
+    classify_metrics_confidence(c, cfg)
+
+
+def classify_metrics_confidence(c: Candidate, cfg: dict[str, Any]) -> None:
+    """UPDATE-0056: classifica se as métricas longitudinais (30/60d) merecem
+    confiança OU são só uma amostra recente rotulada como tal.
+
+    - ``insufficient``: sem fills OU poucos trades fechados (nem a amostra serve).
+    - ``sampled``: a amostra não cobre a janela longitudinal (ex.: trader
+      hiperativo cujos 2.000 fills recentes cobrem horas) — 30/60d subestimados.
+    - ``complete``: a amostra cobre a janela e há trades fechados suficientes.
+
+    Marca em AMBOS os caminhos; o gate (nulificar sim_* / filtros indeterminados)
+    é feito só na análise individual (`analyze_single_wallet`)."""
+    ma = cfg.get("manual_analysis") or {}
+    min_days = float(ma.get("min_sample_days_for_longitudinal_metrics", 25))
+    min_fills = int(ma.get("min_sample_closed_fills", 30))
+    span = c.fills_sample_days or 0.0
+    if not c.fills_sample_count or c.n_trades < min_fills:
+        c.metrics_confidence = "insufficient"
+    elif not c.fills_complete or span < min_days:
+        c.metrics_confidence = "sampled"
+    else:
+        c.metrics_confidence = "complete"
 
 
 def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
@@ -473,6 +517,8 @@ def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
 
     times = [float(f.get("time", 0)) for f in fills]
     c.coverage_days = (max(times) - min(times)) / DAY_MS if len(times) >= 2 else 0.0
+    # UPDATE-0056: span da amostra de fills — conceito próprio (≠ idade da wallet).
+    c.fills_sample_days = c.coverage_days
 
     if hf.get("f15_sim_window_days") is not None:
         sim = M.simulate_copy(
@@ -552,11 +598,13 @@ def hard_filters_all(c: Candidate, cfg: dict[str, Any],
     if f2c is not None and c.n_trades_7d < f2c:
         reasons.append(f"F2c: {c.n_trades_7d} trades fechados nos últimos 7d < {f2c} (inativo)")
 
-    # v9 — F16: cobertura mínima de histórico (dias entre 1º e último fill).
-    # Auditoria do "top 1" do lab: 5 dias de atividade geravam +250% irreal.
+    # F16: idade MÍNIMA da wallet (UPDATE-0056: usa a idade real da conta —
+    # portfolio.allTime — não o span da amostra de fills, que em traders
+    # hiperativos cobre só horas). Auditoria do lab: wallet de 5 dias gerava
+    # +250% irreal; o alvo do filtro é a MATURIDADE, não a densidade de fills.
     f16 = _float_or_none(f.get("f16_min_coverage_days"))
-    if f16 is not None and c.coverage_days is not None and c.coverage_days < f16:
-        reasons.append(f"F16: histórico de {c.coverage_days:.0f}d < "
+    if f16 is not None and c.wallet_age_days is not None and c.wallet_age_days < f16:
+        reasons.append(f"F16: idade da wallet {c.wallet_age_days:.0f}d < "
                        f"{f['f16_min_coverage_days']}d (wallet nova demais p/ julgar)")
 
     # v11 — F20: banda de equity do trader; ambos os lados são ajustáveis.
@@ -1082,6 +1130,32 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
 
 _ADDRESS_RE = re.compile(r"^0x[0-9a-f]{40}$")
 
+# UPDATE-0056: filtros cuja evidência exige histórico longitudinal COMPLETO
+# (30/60d). Quando a amostra é só recente (metrics_confidence != complete), na
+# análise individual eles viram INDETERMINADOS em vez de reprovar — nunca
+# reprovamos definitivamente sobre horas de dado rotuladas como 30/60d.
+_LONGITUDINAL_CODES = ("F2", "F2b", "F4", "F5", "F6", "F8", "F9",
+                       "F15", "F17", "F18", "F19", "copy_sim_negativa")
+
+
+def _merge_fills(*sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """UPDATE-0056: união dedup de fills de fontes distintas (userFills recente
+    + userFillsByTime paginado). Chave = `tid` (trade id) se presente, senão a
+    tupla (oid, time, px, sz). A ordem interna é irrelevante — os consumidores
+    em metrics.py ordenam por tempo."""
+    seen: set[Any] = set()
+    out: list[dict[str, Any]] = []
+    for src in sources:
+        for f in src or []:
+            key = f.get("tid")
+            if key is None:
+                key = (f.get("oid"), f.get("time"), f.get("px"), f.get("sz"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(f)
+    return out
+
 
 # ----------------------------------------------------------------------------
 def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
@@ -1097,10 +1171,14 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
     `erro_na_analise` em `reject_reasons` (não derruba a análise dos demais).
 
     UPDATE-0055: usa `fills_recent` (userFills, ~2.000 fills MAIS RECENTES) como
-    fonte primária — não paginação por tempo. Isso corrige o viés ASC do
-    `userFillsByTime` que, em traders hiperativos (>2.000 fills), coletava só os
-    fills mais VELHOS da janela e zerava `n_trades_30d`/`sim_*`. Quando a API
-    trunca a amostra (2.000 fills), um aviso é prependido em `reject_reasons`.
+    fonte primária — corrigiu o viés ASC do `userFillsByTime`.
+
+    UPDATE-0056 (Fase 1): coleta HÍBRIDA — une `fills_recent` (recentes, DESC)
+    com `fills_by_time` paginado (longitudinal, ASC) para de fato cobrir a
+    janela. Classifica `metrics_confidence`; quando o histórico longitudinal é
+    incompleto (`sampled`/`insufficient`), NÃO fabricamos veredito: as sim_*
+    ficam nulas e os filtros longitudinais migram para `indeterminate_filters`
+    (não reprovam). `metrics_warnings` explica a limitação da amostra.
     """
     import copy as _copy
 
@@ -1118,10 +1196,27 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
     c = Candidate(address=address)
     now_ms = time.time() * 1000
     reasons: list[str] = []
-    # fonte primária: os fills mais recentes (evita o viés ASC do userFillsByTime).
-    fills = client.fills_recent(address)
-    truncated = len(fills) >= 2000
+    # UPDATE-0056: coleta HÍBRIDA — recentes (userFills, DESC) + longitudinais
+    # (userFillsByTime paginado, ASC), unidos e deduplicados. A união cobre a
+    # atividade recente E o histórico da janela; a cobertura real classifica a
+    # confiança das métricas mais abaixo.
+    ma = cfg.get("manual_analysis") or {}
+    recent_limit = int(ma.get("recent_fill_limit", 2000))
+    lon_window = int(ma.get("longitudinal_window_days", 60))
+    lon_pages = int(ma.get("longitudinal_max_pages", 6))
+    recent = client.fills_recent(address)
+    lon, lon_trunc = client.fills_by_time(
+        address, window_days=lon_window, max_pages=lon_pages)
+    fills = _merge_fills(recent, lon)
     c.prefetched_fills = fills
+    # fills_complete: o fetch longitudinal (janela) trouxe TUDO — não bateu no
+    # teto de páginas. Se bateu (`lon_trunc`), há um buraco entre os fills mais
+    # antigos coletados e os recentes: o trader é hiperativo demais p/ a janela.
+    # (Traders normais/moderados ganham histórico COMPLETO via userFillsByTime,
+    # mesmo com fills_recent estourando o teto de 2.000.)
+    c.fills_complete = not lon_trunc
+    truncated = lon_trunc
+    c.history_truncated = truncated
     try:
         f1 = precheck_activity(c, client, cfg, now_ms)
         if f1:
@@ -1159,10 +1254,33 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
                            {"address": address, "error": str(exc)[:200]})
         reasons = [f"erro_na_analise: {str(exc)[:200]}"]
 
+    # UPDATE-0056: gate de confiança (só na análise individual). Quando o
+    # histórico longitudinal está incompleto NÃO afirmamos veredito sobre horas
+    # de dado: (Parte 6) nulificamos as sim_* forjadas e (Parte 5) os filtros
+    # longitudinais viram INDETERMINADOS em vez de reprovar.
+    if c.metrics_confidence != "complete":
+        for attr in ("sim_net_pnl_usd", "sim_stage4_net_usd", "sim_expectancy_usd",
+                     "sim_max_dd_pct", "sim_factor", "sim_copy_notional_usd",
+                     "sim_half_old_net", "sim_half_new_net"):
+            setattr(c, attr, None)
+        keep, indet = [], []
+        for r in reasons:
+            code = r.split(":", 1)[0]
+            (indet if code in _LONGITUDINAL_CODES else keep).append(r)
+        reasons, c.indeterminate_filters = keep, indet
+        c.metrics_warnings.append(
+            f"métricas longitudinais {c.metrics_confidence} — amostra cobre "
+            f"~{(c.fills_sample_days or 0):.1f}d ({c.fills_sample_count} fills); "
+            f"filtros/sims que exigem 30/60d completos ficam INDETERMINADOS")
+
     if truncated:
-        reasons.insert(0,
-            f"⚠️ amostra truncada ({len(fills)} fills mais recentes — API "
-            f"limita a 2.000; métricas podem subestimar atividade real)")
+        recent_capped = " (bateu o teto de ~%d)" % recent_limit \
+            if len(recent) >= recent_limit else ""
+        c.metrics_warnings.append(
+            f"⚠️ amostra truncada: mesmo com {lon_pages} páginas do histórico + "
+            f"{len(recent)} fills recentes{recent_capped} ({len(fills)} únicos) "
+            f"não foi possível cobrir {lon_window}d — trader hiperativo demais; "
+            f"métricas longitudinais subestimam a atividade real")
 
     c.reject_reasons = reasons
     c.reject_reason = None  # informativo apenas; nunca marca REJEITADO

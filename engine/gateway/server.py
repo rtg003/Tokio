@@ -777,6 +777,15 @@ def _suggestion_report(c: Any) -> dict[str, Any]:
         "cohort": c.cohort or None,
         "reject_reasons": list(c.reject_reasons),
         "rationale": list(c.rationale),
+        # UPDATE-0056: confiança da amostra + filtros indeterminados (o front
+        # distingue DADOS COMPLETOS × AMOSTRA RECENTE × INDETERMINADO na Fase 3).
+        "metrics_confidence": getattr(c, "metrics_confidence", "complete"),
+        "wallet_age_days": getattr(c, "wallet_age_days", None),
+        "fills_sample_days": getattr(c, "fills_sample_days", None),
+        "fills_sample_count": getattr(c, "fills_sample_count", 0),
+        "fills_complete": getattr(c, "fills_complete", True),
+        "metrics_warnings": list(getattr(c, "metrics_warnings", [])),
+        "indeterminate_reasons": list(getattr(c, "indeterminate_filters", [])),
         "metrics": {
             "n_trades_30d": c.n_trades_30d,
             "win_rate_30d": c.win_rate_30d,

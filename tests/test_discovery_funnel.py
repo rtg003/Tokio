@@ -94,7 +94,11 @@ class FakeClient:
 
     def fills_by_time(self, address, *, window_days=60, max_pages=4):
         self.requests_used += 1
-        return self._p(address).get("fills", []), False
+        p = self._p(address)
+        # UPDATE-0056: perfis podem expor um histórico longitudinal próprio e um
+        # flag de truncamento (páginas estouradas). Default preserva o legado.
+        return (p.get("fills_longitudinal", p.get("fills", [])),
+                p.get("fills_truncated", False))
 
     def fills_recent(self, address):
         self.requests_used += 1

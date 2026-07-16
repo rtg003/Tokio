@@ -37,6 +37,17 @@ collection:
   active_scan_min_notional_usd: 1000  # ignora fills poeira
   reprocess_saved_traders: true   # UPDATE-0054: reprocessa diariamente os traders JÁ SALVOS (SUGERIDO/SALVO/TESTNET/MAINNET) mesmo fora do leaderboard; false desliga
 
+# UPDATE-0056 (Fase 1): parâmetros DEDICADOS da análise individual de sugestões
+# (endpoint /control/suggestions/analyze — coleta HÍBRIDA recent+longitudinal).
+# NÃO afetam o scan em massa, que segue em collection.*.
+manual_analysis:
+  recent_fill_limit: 2000                       # userFills devolve ~2.000 fills (teto da API); acima disso a amostra recente cobre só horas em traders hiperativos
+  longitudinal_window_days: 60                  # janela do userFillsByTime paginado (ASC) usada para cobrir o histórico
+  longitudinal_max_pages: 6                     # páginas do userFillsByTime (~2.000 fills/página) na coleta longitudinal
+  max_requests_per_wallet: 12                   # teto informativo de requests HTTP por wallet analisada (1 recent + páginas + portfolio/clearinghouse/precheck)
+  min_sample_days_for_longitudinal_metrics: 25  # span mínimo da amostra p/ métricas 30/60d serem "complete"; abaixo disso ⇒ "sampled"
+  min_sample_closed_fills: 30                   # mínimo de trades fechados na amostra; abaixo disso ⇒ "insufficient"
+
 # v8: fontes ADICIONAIS de candidatos (opcionais, atrás de flag, sem
 # dependência dura). HL público continua a fonte de verdade: terceiros só
 # alimentam ENDEREÇOS candidatos — todas as métricas/filtros são nossos.
