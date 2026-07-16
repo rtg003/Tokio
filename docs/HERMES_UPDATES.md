@@ -3308,3 +3308,57 @@ de `test_hl_data.py`). INVARIANTE §8.4.1 preservada (só o corpo de
 **Pós-deploy (rede/credenciais)**: re-analisar `0x3bca`/`0x68f8`/`0xb7e0` e
 confirmar `hypertracker.*` preenchido + `wallet_age_days` via HyperTracker.
 Status segue **PENDENTE** até a re-validação do Hermes.
+
+---
+
+## UPDATE-0058 · 2026-07-16 · Status: PENDENTE
+
+**Origem**: Cursor/CONSTRUTOR — Fase 3/3 (final) da arquitetura definitiva p/
+amostras truncadas. Fases 1 (UPDATE-0056) e 2 (UPDATE-0057) já APLICADAS e
+validadas em produção. Esta fase é **só apresentação/clareza operacional** na
+dashboard de Copy Trade: NÃO altera o motor de classificação, a persistência,
+os endpoints nem as assinaturas. Zero mudança de backend/Python.
+
+**Tipo**: `operacao` (frontend Next.js — `web/`). Sem migration, sem config,
+sem secret, sem `logic_version`. INVARIANTE §8.4.1 intacta por construção
+(nenhum arquivo do `engine/` foi tocado). §5.1/§5.2/§5.3: tudo dentro da
+dashboard de Copy Trade já existente.
+
+### Mudanças (UI)
+1. **Badges de confiança** (novo `web/components/copy-trade/ConfidenceBadge.tsx`):
+   `metrics_confidence` vira badge — **DADOS COMPLETOS** (verde) ·
+   **AMOSTRA RECENTE** (âmbar) · **INSUFICIENTE** (vermelho), cada uma com
+   tooltip explicando o significado.
+2. **Tela de Sugestões** (`SuggestionResults.tsx`): nova coluna *Confiança* e
+   coluna *Idade* (idade REAL da wallet, com a FONTE — HyperTracker
+   `earliestActivityAt` vs `portfolio.allTime` — no tooltip). Linha expansível
+   por wallet mostrando SEPARADAMENTE: idade real × span/quantidade da amostra
+   (com aviso de truncamento), enriquecimento **HyperTracker (agregado)** ×
+   métricas **Hyperliquid (trading)**, e — em blocos distintos — *filtros
+   indeterminados* (NÃO reprovam) vs *reprovações* de filtro vs *avisos*.
+3. **Métricas longitudinais não-exatas** (ambas as tabelas): quando a confiança
+   ≠ `complete`, SIM NET/PF/Win rate/TWRR/PnL 30d/Max DD/Trades 30d/SIM EXP/
+   SIM DD/Metades são exibidas com prefixo `~` e estilo de aproximação — nunca
+   como valores exatos. As sim_* já vêm nulas do backend (gate da Fase 1).
+4. **Tooltip do truncamento em ~2.000 fills**: constante canônica reaproveitada
+   nos dois lugares (limite da API `userFills` da Hyperliquid).
+5. **Tabela principal de traders** (`TradersTable.tsx`): colunas *Confiança* e
+   *Idade* após a persistência; linhas legadas (sem classificação) recebem o
+   selo neutro "n/classif." com dica p/ re-analisar. Ordenável por *Idade*.
+
+### Fluxo operacional (reprocessar & persistir com confiança)
+Para classificar os traders escolhidos, o operador usa a tela **Sugestões**:
+analisar → selecionar → salvar. O salvar persiste `metrics_confidence`/idade/
+amostra (`_suggestion_extras`, Fase 2) e a **guarda anti-sobrescrita** (Parte 8,
+UPDATE-0057) garante que métricas `complete` já gravadas NÃO são rebaixadas por
+uma amostra `sampled`/`insufficient`. Nenhuma ação nova de backend é necessária.
+
+### Validação
+- `web`: `npx tsc --noEmit` limpo; `npx next build` verde (rota `/suggestions`
+  e `/copy-trade` compilam).
+- `.venv/bin/python -m pytest tests/ -q` segue verde (389) — backend inalterado.
+- **Pós-deploy (visual)**: na tela de Sugestões, analisar `0x3bca`/`0x68f8`/
+  `0xb7e0` e conferir badge de confiança, coluna Idade com a fonte correta,
+  linha expansível separando HyperTracker × Hyperliquid e indeterminados ×
+  reprovações; salvar e confirmar as colunas *Confiança*/*Idade* na tabela de
+  traders. Status **PENDENTE** até o aval visual do Hermes.

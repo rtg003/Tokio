@@ -4,6 +4,24 @@ import { useMemo, useState } from "react";
 import { fmtDateTime, fmtNum, fmtSigned, pnlClass, shortAddr } from "@/lib/format";
 import { Trader } from "@/lib/copy-trade/data";
 import StatusSelect from "@/components/copy-trade/StatusSelect";
+import ConfidenceBadge, {
+  ageSource,
+  isComplete,
+} from "@/components/copy-trade/ConfidenceBadge";
+
+// Métrica LONGITUDINAL (30/60d): quando a confiança persistida não é COMPLETA, o
+// valor não é exibido como exato — sinaliza aproximação (UPDATE-0058, Fase 3).
+function Lon({ children, complete }: { children: React.ReactNode; complete: boolean }) {
+  if (complete || children === "—") return <>{children}</>;
+  return (
+    <span
+      style={{ opacity: 0.7, fontStyle: "italic" }}
+      title="Confiança não é COMPLETA — valor longitudinal APROXIMADO (amostra recente)."
+    >
+      ~{children}
+    </span>
+  );
+}
 
 const COLUMN_TIPS: Record<string, string> = {
   "#": "Posição atual na lista filtrada (ordenada por cópia simulada líquida).",
@@ -28,6 +46,8 @@ const COLUMN_TIPS: Record<string, string> = {
   Equity: "Equity do trader. Traders grandes demais podem não espelhar bem com banca pequena.",
   Ativos: "Principais ativos operados. Ajuda a avaliar concentração e compatibilidade.",
   "Últ. atividade": "Último trade observado. Inatividade reduz copiabilidade.",
+  Confiança: "Qualidade da amostra que produziu as métricas: DADOS COMPLETOS (janela coberta), AMOSTRA RECENTE (trader hiperativo/histórico truncado — métricas longitudinais aproximadas) ou INSUFICIENTE.",
+  Idade: "Idade real da wallet (não é o span da amostra). Fonte: HyperTracker (earliestActivityAt) ou portfolio.allTime da Hyperliquid.",
   Sizing: "Modo e valor de espelhamento configurados para o trader.",
   "Dist. liq.": "Menor distância até liquidação nas posições abertas.",
   Origem: "Fonte do candidato: discovery, manual, Hermes, Copin ou HyperX.",
@@ -69,6 +89,7 @@ const ACCESSORS: Record<string, Accessor> = {
   Janelas: { get: (t) => t.windows_positive, numeric: true },
   Ativos: { get: (t) => parseTopAssets(t.top_assets).join(" "), numeric: false },
   "Últ. atividade": { get: (t) => t.last_activity, numeric: false },
+  Idade: { get: (t) => t.wallet_age_days, numeric: true },
   "Dist. liq.": { get: (t) => t.liq_distance, numeric: true },
   Origem: { get: (t) => t.origin, numeric: false },
   Lógica: { get: (t) => t.logic_version, numeric: true },
@@ -244,6 +265,8 @@ export default function TradersTable({
                 <Th label="Hold méd." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Ativos" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Últ. atividade" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Confiança" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Idade" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="TWRR 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="SIM EXP" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -265,13 +288,16 @@ export default function TradersTable({
                 const topAssets = parseTopAssets(t.top_assets);
                 const score = Math.max(0, Math.min(100, Number(t.score ?? 0)));
                 const nameClass = traderNameClass(t.status);
+                const complete = isComplete(t.metrics_confidence);
                 return (
                   <tr key={t.address}>
                     <td className="num">{i + 1}</td>
                     <td className={`num ${pnlClass(t.sim_net_pnl_usd)}`}>
-                      {t.sim_net_pnl_usd === null || t.sim_net_pnl_usd === undefined
-                        ? "—"
-                        : `$${fmtSigned(t.sim_net_pnl_usd, 2)}`}
+                      <Lon complete={complete}>
+                        {t.sim_net_pnl_usd === null || t.sim_net_pnl_usd === undefined
+                          ? "—"
+                          : `$${fmtSigned(t.sim_net_pnl_usd, 2)}`}
+                      </Lon>
                     </td>
                     <td>
                       <span className={`trader-name ${nameClass}`}>{t.name ?? shortAddr(t.address)}</span>
@@ -301,24 +327,34 @@ export default function TradersTable({
                       )}
                     </td>
                     <td className="num">
-                      {t.win_rate === null || t.win_rate === undefined
-                        ? "—"
-                        : `${fmtNum(t.win_rate * 100, 0)}%`}
+                      <Lon complete={complete}>
+                        {t.win_rate === null || t.win_rate === undefined
+                          ? "—"
+                          : `${fmtNum(t.win_rate * 100, 0)}%`}
+                      </Lon>
                     </td>
                     <td className="num">
-                      {t.profit_factor === null || t.profit_factor === undefined
-                        ? "—"
-                        : fmtNum(t.profit_factor, 2)}
+                      <Lon complete={complete}>
+                        {t.profit_factor === null || t.profit_factor === undefined
+                          ? "—"
+                          : fmtNum(t.profit_factor, 2)}
+                      </Lon>
                     </td>
                     <td className={`num ${pnlClass(t.pnl_30d)}`}>
-                      {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : `$${fmtSigned(t.pnl_30d, 2)}`}
+                      <Lon complete={complete}>
+                        {t.pnl_30d === null || t.pnl_30d === undefined ? "—" : `$${fmtSigned(t.pnl_30d, 2)}`}
+                      </Lon>
                     </td>
                     <td className="num">
-                      {t.max_drawdown === null || t.max_drawdown === undefined
-                        ? "—"
-                        : `−${fmtNum(t.max_drawdown, 1)}%`}
+                      <Lon complete={complete}>
+                        {t.max_drawdown === null || t.max_drawdown === undefined
+                          ? "—"
+                          : `−${fmtNum(t.max_drawdown, 1)}%`}
+                      </Lon>
                     </td>
-                    <td className="num">{t.n_trades_30d ?? "—"}</td>
+                    <td className="num">
+                      <Lon complete={complete}>{t.n_trades_30d ?? "—"}</Lon>
+                    </td>
                     <td className="num">
                       {t.avg_holding_hours === null || t.avg_holding_hours === undefined
                         ? "—"
@@ -326,6 +362,30 @@ export default function TradersTable({
                     </td>
                     <td className="addr">{topAssets.length ? topAssets.join(" ") : "—"}</td>
                     <td className="addr">{fmtDateTime(t.last_activity)}</td>
+                    <td>
+                      {t.metrics_confidence ? (
+                        <ConfidenceBadge confidence={t.metrics_confidence} />
+                      ) : (
+                        <span className="chip dry" title="Métrica legada — confiança não classificada (linha anterior à Fase 1). Re-analise pela tela de Sugestões para classificar.">
+                          n/classif.
+                        </span>
+                      )}
+                    </td>
+                    <td
+                      className="num"
+                      title={
+                        t.wallet_age_days === null || t.wallet_age_days === undefined
+                          ? "idade não disponível"
+                          : `idade real da wallet · fonte: ${ageSource({
+                              htEarliestMs: t.ht_earliest_activity_ms,
+                              walletAgeDays: t.wallet_age_days,
+                            })}`
+                      }
+                    >
+                      {t.wallet_age_days === null || t.wallet_age_days === undefined
+                        ? "—"
+                        : `${fmtNum(t.wallet_age_days, 0)}d`}
+                    </td>
                     <td>
                       <StatusSelect
                         address={t.address}
@@ -349,19 +409,25 @@ export default function TradersTable({
                       />
                     </td>
                     <td className={`num ${pnlClass(t.twrr_30d)}`}>
-                      {t.twrr_30d === null || t.twrr_30d === undefined
-                        ? "—"
-                        : `${fmtNum(t.twrr_30d, 1)}%`}
+                      <Lon complete={complete}>
+                        {t.twrr_30d === null || t.twrr_30d === undefined
+                          ? "—"
+                          : `${fmtNum(t.twrr_30d, 1)}%`}
+                      </Lon>
                     </td>
                     <td className={`num ${pnlClass(t.sim_expectancy_usd)}`}>
-                      {t.sim_expectancy_usd === null || t.sim_expectancy_usd === undefined
-                        ? "—"
-                        : `$${fmtSigned(t.sim_expectancy_usd, 2)}`}
+                      <Lon complete={complete}>
+                        {t.sim_expectancy_usd === null || t.sim_expectancy_usd === undefined
+                          ? "—"
+                          : `$${fmtSigned(t.sim_expectancy_usd, 2)}`}
+                      </Lon>
                     </td>
                     <td className="num">
-                      {t.sim_max_dd_pct === null || t.sim_max_dd_pct === undefined
-                        ? "—"
-                        : `−${fmtNum(t.sim_max_dd_pct, 1)}%`}
+                      <Lon complete={complete}>
+                        {t.sim_max_dd_pct === null || t.sim_max_dd_pct === undefined
+                          ? "—"
+                          : `−${fmtNum(t.sim_max_dd_pct, 1)}%`}
+                      </Lon>
                     </td>
                     <td className="num">
                       {t.avg_leverage === null || t.avg_leverage === undefined
@@ -379,9 +445,11 @@ export default function TradersTable({
                         : `${fmtNum(t.available_margin_pct, 0)}%`}
                     </td>
                     <td className="num">
-                      {t.sim_half_new_net === null || t.sim_half_new_net === undefined
-                        ? "—"
-                        : `${t.sim_half_old_net === null || t.sim_half_old_net === undefined ? "n/d" : `$${fmtSigned(t.sim_half_old_net, 0)}`} / $${fmtSigned(t.sim_half_new_net, 0)}`}
+                      <Lon complete={complete}>
+                        {t.sim_half_new_net === null || t.sim_half_new_net === undefined
+                          ? "—"
+                          : `${t.sim_half_old_net === null || t.sim_half_old_net === undefined ? "n/d" : `$${fmtSigned(t.sim_half_old_net, 0)}`} / $${fmtSigned(t.sim_half_new_net, 0)}`}
+                      </Lon>
                     </td>
                     <td className="num">
                       {t.equity === null || t.equity === undefined ? "—" : fmtNum(t.equity, 0)}

@@ -534,6 +534,15 @@ export type SuggestionMetrics = {
   coverage_days?: number | null;
 };
 
+// UPDATE-0057 (Fase 2): enriquecimento AGREGADO do HyperTracker, em campos
+// SEPARADOS — nunca substitui as métricas de trading da Hyperliquid (`metrics`).
+export type HyperTrackerAggregate = {
+  earliest_activity_ms: number | null;
+  total_equity: number | null;
+  perp_pnl: number | null;
+  exposure_ratio: number | null;
+};
+
 export type SuggestionReport = {
   address: string;
   name?: string | null;
@@ -542,6 +551,15 @@ export type SuggestionReport = {
   cohort: string | null;
   reject_reasons: string[];
   rationale: string[];
+  // UPDATE-0056/0057/0058 — confiança da amostra + separação idade × amostra.
+  metrics_confidence?: string | null;
+  wallet_age_days?: number | null;
+  fills_sample_days?: number | null;
+  fills_sample_count?: number | null;
+  fills_complete?: boolean | null;
+  metrics_warnings?: string[];
+  indeterminate_reasons?: string[];
+  hypertracker?: HyperTrackerAggregate | null;
   metrics: SuggestionMetrics;
 };
 
