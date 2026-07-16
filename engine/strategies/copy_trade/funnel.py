@@ -41,6 +41,7 @@ class DataClient(Protocol):
     def leaderboard(self) -> list[dict[str, Any]]: ...
     def fills_by_time(self, address: str, *, window_days: int = 60,
                       max_pages: int = 4) -> tuple[list[dict[str, Any]], bool]: ...
+    def fills_recent(self, address: str) -> list[dict[str, Any]]: ...
     def portfolio(self, address: str) -> dict[str, Any]: ...
     def clearinghouse(self, address: str) -> dict[str, Any]: ...
     def ledger_updates(self, address: str, *, window_days: int = 35) -> list[dict[str, Any]]: ...
@@ -97,6 +98,9 @@ class Candidate:
     top_assets: list[str] = field(default_factory=list)
     last_activity: str | None = None
     history_truncated: bool = False
+    # UPDATE-0055: fills pré-carregados pelo caller (análise individual usa
+    # fills_recent). None → deep_dive busca via fills_by_time (scan em massa).
+    prefetched_fills: list[dict[str, Any]] | None = None
     weekly_stability: float = 0.5
     is_top20_alltime: bool = False
     # resultado
@@ -297,9 +301,16 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
     col = cfg["collection"]
     now_ms = now_ms or time.time() * 1000
 
-    fills, truncated = client.fills_by_time(
-        c.address, window_days=int(col["fills_window_days"]),
-        max_pages=int(col["fills_max_pages"]))
+    # UPDATE-0055: caller pode pré-carregar os fills (análise individual usa
+    # fills_recent p/ evitar o viés ASC do userFillsByTime). None → scan em
+    # massa mantém o comportamento paginado de sempre.
+    if c.prefetched_fills is not None:
+        fills = c.prefetched_fills
+        truncated = len(fills) >= 2000
+    else:
+        fills, truncated = client.fills_by_time(
+            c.address, window_days=int(col["fills_window_days"]),
+            max_pages=int(col["fills_max_pages"]))
     c.history_truncated = truncated
 
     portfolio = client.portfolio(c.address)
@@ -1085,8 +1096,11 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
     ValueError (erro do chamador); qualquer outra falha vira um único
     `erro_na_analise` em `reject_reasons` (não derruba a análise dos demais).
 
-    Limita `fills_max_pages=2` numa CÓPIA do cfg para proteger o orçamento de
-    requests da venue (o scan em massa usa o valor cheio).
+    UPDATE-0055: usa `fills_recent` (userFills, ~2.000 fills MAIS RECENTES) como
+    fonte primária — não paginação por tempo. Isso corrige o viés ASC do
+    `userFillsByTime` que, em traders hiperativos (>2.000 fills), coletava só os
+    fills mais VELHOS da janela e zerava `n_trades_30d`/`sim_*`. Quando a API
+    trunca a amostra (2.000 fills), um aviso é prependido em `reject_reasons`.
     """
     import copy as _copy
 
@@ -1095,7 +1109,6 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
         raise ValueError(f"endereço inválido: {address!r}")
 
     cfg = _copy.deepcopy(cfg)
-    cfg["collection"]["fills_max_pages"] = 2
 
     f8_share = cfg["hard_filters"].get("f8_min_liquid_volume_share")
     f8_top_n = cfg["hard_filters"].get("f8_liquid_assets_top_n")
@@ -1105,6 +1118,10 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
     c = Candidate(address=address)
     now_ms = time.time() * 1000
     reasons: list[str] = []
+    # fonte primária: os fills mais recentes (evita o viés ASC do userFillsByTime).
+    fills = client.fills_recent(address)
+    truncated = len(fills) >= 2000
+    c.prefetched_fills = fills
     try:
         f1 = precheck_activity(c, client, cfg, now_ms)
         if f1:
@@ -1141,6 +1158,11 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
             logger.warning("suggestion.analyze_error",
                            {"address": address, "error": str(exc)[:200]})
         reasons = [f"erro_na_analise: {str(exc)[:200]}"]
+
+    if truncated:
+        reasons.insert(0,
+            f"⚠️ amostra truncada ({len(fills)} fills mais recentes — API "
+            f"limita a 2.000; métricas podem subestimar atividade real)")
 
     c.reject_reasons = reasons
     c.reject_reason = None  # informativo apenas; nunca marca REJEITADO

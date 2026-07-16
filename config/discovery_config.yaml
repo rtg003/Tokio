@@ -26,7 +26,7 @@ collection:
   # prioridade do aprofundamento: ROI 30d (desc) — PnL absoluto puro só traz
   # mega-baleias holders, que reprovam em F1/F2 (validação de 2026-07-03)
   fills_window_days: 60           # janela baixada de fills (paginada)
-  fills_max_pages: 4              # ~2000 fills/página
+  fills_max_pages: 6              # ~2000 fills/página (UPDATE-0055: 4→6, mais fôlego p/ traders ativos no scan em massa)
   cache_ttl_hours: 20
   rekt_sample: 20                 # tamanho da coorte de controle
   positioning_sample: 15          # wallets por coorte p/ snapshot de posicionamento

@@ -3081,3 +3081,57 @@ preservada. **Sem migration**, sem secret, sem `logic_version` novo.
   deep dive no candidato sintético (a guarda anti-wipe exige métricas frescas).
 - `cd web && npm run build` verde (exit 0).
 - INVARIANTE §8.4.1 preservada; §5.1/§5.2 tudo dentro do módulo copy_trade.
+
+## UPDATE-0055 · 2026-07-16 · Status: PENDENTE
+
+**Origem**: bug reportado pelo operador (rtg003) — o endpoint
+`/control/suggestions/analyze` (análise individual de sugestões) devolvia
+métricas ERRADAS para traders muito ativos. Casos:
+`0xb7e0…` (reportou 0 trades, tem 642) e `0x68f8…` (reportou 33 trades / US$
+3,86 SIM NET; real ~1.236 trades / +US$ 33,486k).
+
+**Causa raiz**: `analyze_single_wallet` limitava `fills_max_pages=2` e o
+`deep_dive` buscava fills via `client.fills_by_time` (`userFillsByTime`, que
+**pagina do mais ANTIGO p/ o mais novo** — ASC). Em traders hiperativos
+(>2.000 fills), as 2 páginas (~4.000 fills) pegavam só os fills mais VELHOS da
+janela de 60d — a atividade recente sumia e `n_trades_30d`/`sim_*` saíam
+quase-zero/irreais.
+
+**Tipo**: correção de comportamento no módulo copy_trade (`engine/`). **Não
+toca** hot path (`/intent`/`/cancel`/`handle_intent`/`handle_cancel`) nem as
+assinaturas de `deep_dive`/`fills_by_time`/`compute_copy_sims`/
+`M.simulate_copy`/`score_candidate`/`hard_filters_all`/`upsert_candidate`/
+`set_status` → INVARIANTE §8.4.1 preservada. Sem migration, sem secret, sem
+`logic_version` novo.
+
+### Mudanças
+1. **Novo endpoint de dados** `HLDataClient.fills_recent(address)`
+   (`hl_data.py`): usa `userFills` (~2.000 fills MAIS RECENTES, ordem desc).
+   `fills_by_time` fica **intacto** (o scan em massa continua usando-o).
+2. **`analyze_single_wallet` (`funnel.py`)**: passa a usar `fills_recent` como
+   fonte PRIMÁRIA — sem paginação. Removida a linha `fills_max_pages=2`. Quando
+   a API trunca a amostra (2.000 fills), um aviso é prependido em
+   `reject_reasons`: `⚠️ amostra truncada (N fills mais recentes — API limita a
+   2.000; métricas podem subestimar atividade real)`.
+3. **Ponto de extensão no `deep_dive`** (compartilhado scan/análise): novo campo
+   opcional `Candidate.prefetched_fills`. Quando o caller pré-carrega fills,
+   `deep_dive` os honra; quando `None` (scan em massa), busca via `fills_by_time`
+   como sempre — comportamento **byte-a-byte idêntico** no scan. A assinatura de
+   `deep_dive` não muda (a decisão de qual fonte usar fica no CALLER).
+4. **Ordem dos fills**: os consumidores (`metrics.position_episodes`,
+   `metrics.simulate_copy`) ordenam internamente por `time`, e o resto do
+   `deep_dive` usa `min/max`/filtros por tempo — logo a ordem desc do
+   `fills_recent` NÃO exige reversão.
+5. **Scan em massa com mais fôlego**: `collection.fills_max_pages` 4 → 6
+   (`config/discovery_config.yaml`), para não subestimar traders ativos também
+   no scan diário. Doc atualizada em `docs/discovery_logic_v9.md`.
+
+### Validação
+- `.venv/bin/python -m pytest tests/ -q` verde (367 = 363 base + 4 novos em
+  `tests/test_analyze_single.py`: normal-não-truncado, hiperativo-2000-avisa,
+  sem-fills-não-estoura, usa-fills_recent-não-fills_by_time; + substituição do
+  antigo `test_analyze_uses_reduced_fills_budget` por
+  `test_analyze_does_not_mutate_caller_cfg`). `FakeClient` ganhou `fills_recent`.
+- INVARIANTE §8.4.1 preservada; §5.1/§5.2 tudo dentro do módulo copy_trade.
+- Pós-deploy: re-analisar `0xb7e0…` e `0x68f8…` e conferir n_trades_30d/sim_*
+  realistas + aviso de truncamento quando aplicável.

@@ -96,6 +96,11 @@ class FakeClient:
         self.requests_used += 1
         return self._p(address).get("fills", []), False
 
+    def fills_recent(self, address):
+        self.requests_used += 1
+        p = self._p(address)
+        return p.get("fills_recent", p.get("fills", []))
+
     def portfolio(self, address):
         self.requests_used += 1
         curve = self._p(address).get("curve", growing_curve())

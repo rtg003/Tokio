@@ -144,6 +144,20 @@ class HLDataClient:
                 truncated = True
         return fills, truncated
 
+    def fills_recent(self, address: str) -> list[dict[str, Any]]:
+        """Fills mais recentes (userFills, ~2.000, ordem desc).
+
+        Fonte da análise individual — evita o viés ASC do userFillsByTime
+        (que pagina do mais antigo p/ o mais novo e, em traders hiperativos,
+        nunca alcança a atividade recente). Pode voltar None → tratamos como
+        []. Os consumidores (metrics.simulate_copy/position_episodes) ordenam
+        internamente, então a ordem desc não exige reversão.
+        """
+        return self._info(
+            f"fills_recent:{address}",
+            {"type": "userFills", "user": address},
+        ) or []
+
     def portfolio(self, address: str) -> dict[str, Any]:
         data = self._info(f"portfolio:{address}", {"type": "portfolio", "user": address})
         # API devolve lista de pares [janela, dados]; normalizar p/ dict

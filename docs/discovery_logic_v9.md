@@ -48,7 +48,7 @@ flowchart LR
 | `collection.sort_by` | parâmetro de coleta/custo do scan | pnl_7d | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.deep_sort_by` | ordenação dos candidatos que entram no deep dive | roi_30d | Hermes pode mudar o perfil do funil (`roi_30d`, `pnl_7d`, `equity_asc`) | equity_log foi o preditor mais forte do lab (ρ -0.227) |
 | `collection.fills_window_days` | parâmetro de coleta/custo do scan | 60 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
-| `collection.fills_max_pages` | parâmetro de coleta/custo do scan | 4 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
+| `collection.fills_max_pages` | parâmetro de coleta/custo do scan | 6 | UPDATE-0055: 4→6 no scan em massa (1 página extra para não subestimar traders hiperativos) | análise individual não pagina mais — usa `fills_recent` (userFills) |
 | `collection.cache_ttl_hours` | parâmetro de coleta/custo do scan | 20 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.rekt_sample` | parâmetro de coleta/custo do scan | 20 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.positioning_sample` | parâmetro de coleta/custo do scan | 15 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
