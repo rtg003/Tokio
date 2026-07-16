@@ -3136,7 +3136,7 @@ assinaturas de `deep_dive`/`fills_by_time`/`compute_copy_sims`/
 - Pós-deploy: re-analisar `0xb7e0…` e `0x68f8…` e conferir n_trades_30d/sim_*
   realistas + aviso de truncamento quando aplicável.
 
-## UPDATE-0056 · 2026-07-16 · Status: PENDENTE
+## UPDATE-0056 · 2026-07-16 · Status: APLICADO em 2026-07-16
 
 **Origem**: feedback do operador (rtg003) — o UPDATE-0055 não foi suficiente.
 Trocar a fonte p/ `fills_recent` corrigiu o viés ASC, MAS em traders
