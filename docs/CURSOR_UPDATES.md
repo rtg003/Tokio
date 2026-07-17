@@ -2005,3 +2005,68 @@ e assinaturas protegidas intactas; soft dependency (sem `HYPERTRACKER_API_KEY` o
 funil = v14); UPDATEs 0056–0059 preservados.
 
 Validação: `pytest tests/ -q` verde (436); `web` `tsc`/`next build` limpos.
+
+## UPDATE-0063 · 2026-07-17 · Status: PENDENTE
+
+**Origem**: validação em produção do UPDATE-0062 (Hermes) — Discovery v15
+
+**Tipo**: logica_discovery (bugfix)
+
+**Resumo**: a validação do UPDATE-0062 REPROVOU parcialmente. O pipeline HT de
+posições/cohorts/heatmap **nunca executou com sucesso em produção**: todas as
+chamadas a `/api/external/positions` falharam com **HTTP 400** e a soft
+dependency engoliu o erro silenciosamente. Resultado dos 2 scans v15 de hoje
+(scan_ids `20a46abeb797` sem chave no shell e `51fb0029f62a` com chave):
+`position_metrics_source=hl_fills` em TODAS as 324 linhas tocadas,
+`ht_cohort_novos=0`, `ht_cohort_aprofundados=0`, tabela `market_bias` VAZIA.
+O que funcionou: leaderboard HT (`hypertracker_coletados=300`,
+`hypertracker_aprofundados=60`), migration 0028 limpa, logic_version 15,
+invariante sim_* em fills preservada, soft dependency validada (scan sem chave
+= v14 idêntico).
+
+**Achados (reproduzidos manualmente com a chave em produção)**:
+
+a) **BUG PRINCIPAL — `/positions` exige `start` e o código não envia.**
+   `GET /api/external/positions?address=0x3bca…&limit=5` →
+   `400 {"errors":[{"property":"start","errors":["start must be a valid ISO
+   8601 date string"]}]}`. `ht_positions()` (hl_data.py:477) monta
+   `params={address, limit, cursor}` — SEM `start`. Fix: enviar `start` ISO
+   8601 (ex.: now − 60d, alinhado a `fills_window_days`) e conferir se o
+   contrato usa `nextCursor` mesmo (paginar 1 wallet hiperativa real para
+   validar). O MESMO endpoint serve o sourcing por cohort
+   (`/positions?segmentId=X&open=true`) — provável mesma causa para
+   `ht_cohort_novos=0`. Heatmap (`/positions/heatmap`) idem: validar
+   contrato real com 1 chamada de teste.
+
+b) **Orçamento HT não é compartilhado entre processos/scans.** Os 2 scans do
+   dia (o 1º nem usou HT nos requests de posições; o 2º usou leaderboard +
+   tentativas de posições) + depuração manual estouraram o free tier:
+   `429 {"limit":100,"current":100,"plan":"FREE"}`. O cap `daily_request_cap:
+   90` é contado em memória POR PROCESSO — cada scan CLI começa do zero.
+   Fix: persistir `ht_requests_used` por dia UTC (SQLite, ex. tabela
+   `ht_budget` ou chave em settings), decrementado por QUALQUER processo
+   (scheduler, CLI manual, gateway/análise individual).
+
+c) **Erro HTTP invisível no log.** `discovery.ht_positions_error` loga só o
+   address — sem status/corpo. O 400 sistemático ficou indetectável (nenhuma
+   linha de erro HT nos logs do scan; só achei reproduzindo na mão). Fix:
+   incluir `status_code` + primeiros ~200 chars do corpo no log de erro HT
+   (sem vazar a chave), e contar erros HT por tipo no funnel_stats (ex.
+   `ht_errors_400: N`) para a validação enxergar falha sistêmica ≠ soft
+   degradation.
+
+d) **Nota operacional**: limite diário do free tier já esgotado hoje —
+   revalidação só após o reset UTC. Com o fix (a), estimar o consumo real:
+   posições dos top-60 (1-3 páginas/wallet) + cohorts + heatmap pode passar
+   de 90/dia; se passar, reduzir `deep_dive_positions_top_n` ou reavaliar
+   upgrade de plano.
+
+**Ações do Cursor**: corrigir (a)-(c); rodar os testes com mock do contrato
+REAL (400 sem `start`; envelope com `items`/`nextCursor`); publicar entrada de
+resposta no HERMES_UPDATES.md para o Hermes revalidar o UPDATE-0062 (que
+permanece PENDENTE até lá).
+
+**Validação (Hermes, após fix + reset do limite diário)**: 1 scan v15 com
+chave → `position_metrics_source=hypertracker` em hiperativos,
+`ht_cohort_novos>0`, `market_bias` populada, `ht_requests_used ≤ 90`
+persistido e compartilhado, zero 400 sistemático nos logs.
