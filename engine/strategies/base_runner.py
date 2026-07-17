@@ -64,6 +64,25 @@ class GatewayClient:
             return {"transferred": 0.0, "reason": "gateway_indisponivel",
                     "error": str(exc)[:200]}
 
+    def ledger_resync(self, strategy_id: str, symbol: str, venue_size: float,
+                      *, reason: str = "drift.venue_resync",
+                      environment: str | None = None) -> dict[str, Any]:
+        """Persiste a correção do ledger à venue (fill sintético) quando a venue
+        está flat mas o book tem size fantasma. Best-effort: erro de rede não
+        aborta o reconcile — o _my_pos local já foi corrigido pelo chamador; isto
+        só garante que a correção sobreviva a restart (hydrate)."""
+        try:
+            resp = self._client.post("/internal/ledger-resync", json={
+                "strategy_id": strategy_id, "symbol": symbol,
+                "venue_size": venue_size, "reason": reason,
+                "environment": environment,
+            })
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:  # noqa: BLE001 — nunca aborta o reconcile
+            return {"ok": False, "reason": "gateway_indisponivel",
+                    "error": str(exc)[:200]}
+
     def market_meta(self, symbol: str, environment: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"symbol": symbol}
         if environment is not None:

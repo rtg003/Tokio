@@ -224,6 +224,29 @@ export async function setWalletLabel(
   }
 }
 
+// Client-side: reseta o circuit breaker (ato humano autenticado). Sem escopo =
+// todos os breakers abertos; com {wallet, environment} = seletivo. O backend
+// reativa SÓ as estratégias pausadas PELO breaker (payload.by='circuit_breaker'),
+// marca acknowledged_day (não reabre no mesmo dia UTC) e emite circuit_breaker.reset.
+export async function resetCircuitBreaker(
+  scope?: { wallet?: string; environment?: string },
+): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/circuit-breaker/reset`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(scope ?? {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, reason: data.reason ?? data.detail ?? "erro_reset" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
 export function traderOptions(traders: Trader[] | null): TraderOption[] {
   const rows = (traders ?? []).filter((t) =>
     (t.n_copy_fills ?? 0) > 0 || ["TESTNET", "MAINNET"].includes(t.status),

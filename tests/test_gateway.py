@@ -575,25 +575,127 @@ def test_kill_switch_cancels_open_orders(client, gateway_state) -> None:
     assert resp["ok"] is False and resp["reason"] == "kill_switch_engaged"
 
 
-def test_circuit_breaker_auto_pauses_all(client, gateway_state, settings) -> None:
-    register_strategy(gateway_state.db, "dm_loss")
-    register_strategy(gateway_state.db, "dm_other")
-    settings.risk.max_daily_loss_usd = 1.0
-    # open then close at a loss big enough to trip the breaker
-    r1 = client.post("/intent", json={
-        "strategy_id": "dm_loss", "symbol": "BTC", "side": "buy", "notional_usd": 400.0,
-    }).json()
-    assert r1["ok"]
-    gateway_state.adapter.set_price("BTC", 90_000.0)
-    r2 = client.post("/intent", json={
-        "strategy_id": "dm_loss", "symbol": "BTC", "side": "sell",
-        "size": 0.004, "reduce_only": True,
-    }).json()
-    assert r2["ok"]
-    assert gateway_state.enforcer.circuit_open
-    rows = gateway_state.db.query(
-        "SELECT id, status FROM strategies WHERE id IN ('dm_loss','dm_other')")
-    assert all(r["status"] == "auto_paused" for r in rows)
+def _seed_loss_fill(db, *, strategy_id, wallet, network, pnl, day,
+                    forced_close=0, synthetic=0) -> None:
+    """Insere um fill perdedor atribuído a (wallet, network) no dia `day`."""
+    from engine.core.db import utcnow
+    db.insert("fills", {
+        "cloid": None, "strategy_id": strategy_id, "symbol": "BTC",
+        "side": "sell", "price": 90_000.0, "size": 0.01, "fee": 0.0,
+        "fee_asset": "USDC", "realized_pnl": pnl, "network": network,
+        "master_address": wallet, "forced_close": forced_close,
+        "synthetic": synthetic, "ts": f"{day}T12:00:00.000Z",
+    })
+
+
+def _today() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def test_circuit_breaker_isolates_wallet_scope(client, gateway_state, settings) -> None:
+    # Fix 2: isolamento de wallet — perda além do cap em (0x4124, testnet) abre SÓ
+    # esse escopo e pausa SÓ as estratégias dele; (0xd2c7, mainnet) fica intacto.
+    settings.risk.max_daily_loss_usd = 100.0
+    day = _today()
+    register_strategy(gateway_state.db, "ct_1a5db900", module="copy_trade")
+    register_strategy(gateway_state.db, "ct_mainnet", module="copy_trade")
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_1a5db900",
+                    wallet="0x4124", network="testnet", pnl=-150.0, day=day)
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_mainnet",
+                    wallet="0xd2c7", network="mainnet", pnl=-5.0, day=day)
+
+    gateway_state._evaluate_circuit_breakers(day)
+
+    assert gateway_state.enforcer.is_open("0x4124", "testnet")
+    assert not gateway_state.enforcer.is_open("0xd2c7", "mainnet")
+    statuses = {
+        r["id"]: r["status"] for r in gateway_state.db.query(
+            "SELECT id, status FROM strategies WHERE id IN ('ct_1a5db900','ct_mainnet')")
+    }
+    assert statuses["ct_1a5db900"] == "auto_paused"  # escopo estourado
+    assert statuses["ct_mainnet"] == "active"          # wallet/ambiente intactos
+    # /health expõe só o escopo aberto.
+    scopes = client.get("/health").json()["circuit_breakers"]
+    assert len(scopes) == 1 and scopes[0]["wallet"] == "0x4124"
+
+
+def test_circuit_breaker_excludes_forced_and_synthetic(client, gateway_state, settings) -> None:
+    # Regressão: forced_close=1 e synthetic=1 NÃO entram no net_pnl do breaker.
+    settings.risk.max_daily_loss_usd = 100.0
+    day = _today()
+    register_strategy(gateway_state.db, "ct_fc", module="copy_trade")
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_fc", wallet="0x9999",
+                    network="testnet", pnl=-500.0, day=day, forced_close=1)
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_fc", wallet="0x9999",
+                    network="testnet", pnl=-500.0, day=day, synthetic=1)
+    gateway_state._evaluate_circuit_breakers(day)
+    assert not gateway_state.enforcer.is_open("0x9999", "testnet")
+    assert gateway_state.db.query(
+        "SELECT status FROM strategies WHERE id = 'ct_fc'")[0]["status"] == "active"
+
+
+def test_circuit_breaker_reset_reactivates_only_breaker_paused(
+    client, gateway_state, settings) -> None:
+    # Fix 2b: reset reativa SÓ estratégias pausadas PELO breaker (by=circuit_breaker),
+    # deixa pausa manual intacta, marca acknowledged_day e emite circuit_breaker.reset.
+    settings.risk.max_daily_loss_usd = 100.0
+    day = _today()
+    register_strategy(gateway_state.db, "ct_auto", module="copy_trade")
+    register_strategy(gateway_state.db, "ct_manual", module="copy_trade",
+                      status="auto_paused")  # pausa manual pré-existente
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_auto", wallet="0x4124",
+                    network="testnet", pnl=-150.0, day=day)
+    gateway_state._evaluate_circuit_breakers(day)
+    assert gateway_state.db.query(
+        "SELECT status FROM strategies WHERE id = 'ct_auto'")[0]["status"] == "auto_paused"
+
+    r = client.post("/control/circuit-breaker/reset",
+                    headers={"X-Control-Token": "test-token"},
+                    json={"wallet": "0x4124", "environment": "testnet"}).json()
+    assert r["ok"] and "ct_auto" in r["reactivated"]
+    assert "ct_manual" not in r["reactivated"]
+    statuses = {
+        row["id"]: row["status"] for row in gateway_state.db.query(
+            "SELECT id, status FROM strategies WHERE id IN ('ct_auto','ct_manual')")
+    }
+    assert statuses["ct_auto"] == "active"          # reativada
+    assert statuses["ct_manual"] == "auto_paused"   # pausa manual intacta
+    assert not gateway_state.enforcer.is_open("0x4124", "testnet")
+    # acknowledged_day marcado.
+    ack = gateway_state.db.query(
+        "SELECT acknowledged_day FROM circuit_breaker_state "
+        "WHERE wallet = '0x4124' AND environment = 'testnet' AND day = ?", (day,))
+    assert ack and ack[0]["acknowledged_day"] == day
+    assert gateway_state.db.query(
+        "SELECT COUNT(*) AS n FROM events WHERE event_type = 'circuit_breaker.reset'"
+    )[0]["n"] >= 1
+
+
+def test_circuit_breaker_reset_idempotent_until_rollover(
+    client, gateway_state, settings) -> None:
+    # Fix 2b: após reset, novo fill perdedor no MESMO dia UTC não reabre o breaker
+    # (reconhece até o rollover); virando o dia, volta a poder abrir.
+    settings.risk.max_daily_loss_usd = 100.0
+    day = _today()
+    register_strategy(gateway_state.db, "ct_idem", module="copy_trade")
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_idem", wallet="0x4124",
+                    network="testnet", pnl=-150.0, day=day)
+    gateway_state._evaluate_circuit_breakers(day)
+    client.post("/control/circuit-breaker/reset",
+                headers={"X-Control-Token": "test-token"},
+                json={"wallet": "0x4124", "environment": "testnet"})
+    # novo fill perdedor no mesmo dia
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_idem", wallet="0x4124",
+                    network="testnet", pnl=-200.0, day=day)
+    gateway_state._evaluate_circuit_breakers(day)
+    assert not gateway_state.enforcer.is_open("0x4124", "testnet")  # NÃO reabre
+    # novo dia → reconhecimento não vale mais; volta a abrir
+    tomorrow = "2999-01-01"
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_idem", wallet="0x4124",
+                    network="testnet", pnl=-300.0, day=tomorrow)
+    gateway_state._evaluate_circuit_breakers(tomorrow)
+    assert gateway_state.enforcer.is_open("0x4124", "testnet")
 
 
 def test_api_positions_scoped_to_strategy_symbols(client, gateway_state) -> None:

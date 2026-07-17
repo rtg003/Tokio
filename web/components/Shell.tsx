@@ -4,7 +4,19 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ENV_COOKIE, Environment, WALLET_COOKIE } from "@/lib/prefs";
-import { WalletOption, setWalletLabel } from "@/lib/copy-trade/data";
+import {
+  WalletOption,
+  setWalletLabel,
+  resetCircuitBreaker,
+} from "@/lib/copy-trade/data";
+
+type BreakerScope = {
+  wallet: string;
+  environment: string;
+  open: boolean;
+  net_pnl?: number | null;
+  cap?: number | null;
+};
 
 type Health = {
   ok: boolean;
@@ -12,6 +24,7 @@ type Health = {
   network?: string;
   kill_switch?: boolean;
   circuit_breaker?: boolean;
+  circuit_breakers?: BreakerScope[];
   uptime_s?: number;
 };
 
@@ -44,6 +57,7 @@ export default function Shell({
   const [editingLabel, setEditingLabel] = useState(false);
   const [labelDraft, setLabelDraft] = useState("");
   const [savingLabel, setSavingLabel] = useState(false);
+  const [clearingBreaker, setClearingBreaker] = useState(false);
 
   // Nome atual da wallet selecionada = parte antes de " — 0x…" no label.
   const selectedOpt = wallets.find((w) => w.value === wallet);
@@ -110,6 +124,33 @@ export default function Shell({
   }
 
   const online = health?.ok === true;
+  const openBreakers = (health?.circuit_breakers ?? []).filter((b) => b.open);
+  const breakerOpen = openBreakers.length > 0;
+  // Tooltip: "wallet · ambiente · perda · cap" por escopo aberto.
+  const fmtUsd = (v?: number | null) =>
+    v == null ? "—" : `$${Math.abs(v).toFixed(2)}`;
+  const breakerTip = openBreakers
+    .map((b) => {
+      const short = `${b.wallet.slice(0, 6)}…${b.wallet.slice(-4)}`;
+      return `${short} · ${b.environment} · perda ${fmtUsd(b.net_pnl)} · cap ${fmtUsd(b.cap)}`;
+    })
+    .join("\n");
+
+  async function clearBreaker() {
+    if (clearingBreaker) return;
+    setClearingBreaker(true);
+    // Reset global (sem escopo) — reativa SÓ o que o breaker pausou; força sempre.
+    const res = await resetCircuitBreaker();
+    setClearingBreaker(false);
+    if (res.ok) {
+      // Reflete o novo estado (header verde) e reativa as estratégias na UI.
+      try {
+        const r = await fetch("/api/control/health");
+        setHealth(r.ok ? await r.json() : null);
+      } catch {}
+      router.refresh();
+    }
+  }
 
   const nav = (href: string, label: string, ico: string) => (
     <Link
@@ -127,10 +168,25 @@ export default function Shell({
         <button className="hamb" aria-label="Abrir menu" onClick={() => setDrawer(!drawer)}>
           ≡
         </button>
-        <span className="seg">
-          <span className={`dot ${online ? "on" : "off"}`} /> ENGINE{" "}
-          <strong>{online ? "ONLINE" : "OFFLINE"}</strong>
-        </span>
+        {breakerOpen ? (
+          <span className="seg seg-breaker" title={breakerTip}>
+            <span className="dot off" /> <strong>CIRCUIT BREAKER</strong>
+            <button
+              className="breaker-clear"
+              aria-label="Limpar circuit breaker"
+              title="Reativa as estratégias pausadas pelo breaker"
+              disabled={clearingBreaker}
+              onClick={clearBreaker}
+            >
+              {clearingBreaker ? "…" : "limpar"}
+            </button>
+          </span>
+        ) : (
+          <span className="seg">
+            <span className={`dot ${online ? "on" : "off"}`} /> ENGINE{" "}
+            <strong>{online ? "ONLINE" : "OFFLINE"}</strong>
+          </span>
+        )}
         {wallets.length > 1 && !editingLabel && (
           <select
             className="statusbar-sel wallet-sel"

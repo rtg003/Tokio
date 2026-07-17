@@ -52,6 +52,9 @@ class RecordingGateway:
         self.margin_calls: list[dict[str, Any]] = []
         self.margin_response: dict[str, Any] = {"transferred": 0.0,
                                                 "reason": "margem_suficiente"}
+        # ledger-resync (Fix 1c): registra chamadas de correção de fantasma no
+        # ponto de stale-detection; default é um no-op (nada a ressincronizar).
+        self.resync_calls: list[dict[str, Any]] = []
 
         outer = self
 
@@ -77,6 +80,14 @@ class RecordingGateway:
                                   "required_usd": required_usd,
                                   "environment": environment})
         return self.margin_response
+
+    def ledger_resync(self, strategy_id: str, symbol: str, venue_size: float,
+                      *, reason: str = "drift.venue_resync",
+                      environment: str | None = None) -> dict[str, Any]:
+        self.resync_calls.append({"strategy_id": strategy_id, "symbol": symbol,
+                                  "venue_size": venue_size, "reason": reason,
+                                  "environment": environment})
+        return {"ok": True, "resynced": False, "reason": "ja_em_sincronia"}
 
     def ledger(self) -> dict[str, Any]:
         return self.ledger_response

@@ -234,6 +234,7 @@ class GatewayState:
         self.enforcer = RiskEnforcer(
             settings, self.ledger, logger=self.logger, notifier=self.notifier,
             kill_file=settings.kill_file,
+            active_ids_provider=self._active_strategy_ids,
         )
         self.started_at = time.time()
         self._kill_handled = False
@@ -480,13 +481,15 @@ class GatewayState:
     def _refresh_daily_metrics(self, strategy_id: str | None) -> None:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if strategy_id:
+            # `synthetic=0`: fills de ajuste (resync ledger↔venue) são PnL-neutros
+            # e não são trades — nunca contam em net_pnl/n_trades/win_rate.
             rows = self.db.query(
                 """SELECT COALESCE(SUM(realized_pnl), 0) AS pnl,
                           COALESCE(SUM(fee), 0) AS fees,
                           COUNT(*) AS n,
                           AVG(CASE WHEN realized_pnl IS NOT NULL THEN
                               CASE WHEN realized_pnl > 0 THEN 1.0 ELSE 0.0 END END) AS wr
-                   FROM fills WHERE strategy_id = ? AND date(ts) = ?""",
+                   FROM fills WHERE strategy_id = ? AND date(ts) = ? AND synthetic = 0""",
                 (strategy_id, day),
             )
             r = rows[0]
@@ -498,15 +501,77 @@ class GatewayState:
                 "n_trades": r["n"] or 0,
                 "fees": r["fees"] or 0.0,
             }, ("strategy_id", "day"))
-        total = self.db.query(
-            "SELECT COALESCE(SUM(realized_pnl), 0) AS pnl FROM fills WHERE date(ts) = ?",
+        self._evaluate_circuit_breakers(day)
+
+    def _active_strategy_ids(self) -> set[str]:
+        """strategy_ids que DEVEM contar no total_cap (status operante). Fix 1a:
+        books de estratégias mortas (pausadas/arquivadas/auto_paused) não podem
+        inflar a exposição total e bloquear ordens reais."""
+        rows = self.db.query(
+            "SELECT id FROM strategies WHERE status IN ('active', 'dry_run')"
+        )
+        return {r["id"] for r in rows}
+
+    def _evaluate_circuit_breakers(self, day: str) -> None:
+        """Fix 2: agrega a perda diária por (wallet, ambiente) e abre o breaker de
+        cada escopo que estourar o cap — ISOLADO por wallet (§5.1/§5.2). Exclui
+        forced_close (fechamento involuntário) e synthetic (ajuste PnL-neutro).
+        Escopos já reconhecidos hoje (reset do operador) são pulados — idempotência
+        do reset até o rollover UTC."""
+        rows = self.db.query(
+            """SELECT master_address AS wallet, network AS environment,
+                      COALESCE(SUM(realized_pnl), 0) AS net_pnl
+               FROM fills
+               WHERE date(ts) = ? AND forced_close = 0 AND synthetic = 0
+                     AND master_address IS NOT NULL AND network IS NOT NULL
+               GROUP BY master_address, network""",
             (day,),
-        )[0]["pnl"]
-        self.enforcer.record_daily_pnl(day, float(total or 0.0))
-        if self.enforcer.circuit_open:
-            self.db.execute(
-                "UPDATE strategies SET status = 'auto_paused' WHERE status = 'active'"
+        )
+        acked = {
+            (a["wallet"], a["environment"])
+            for a in self.db.query(
+                "SELECT wallet, environment FROM circuit_breaker_state "
+                "WHERE day = ? AND acknowledged_day = ?",
+                (day, day),
             )
+        }
+        per_scope = {
+            (r["wallet"], r["environment"]): float(r["net_pnl"] or 0.0)
+            for r in rows
+            if (r["wallet"], r["environment"]) not in acked
+        }
+        newly_opened = self.enforcer.record_daily_pnl(day, per_scope)
+        cap = abs(self.settings.risk.max_daily_loss_usd)
+        for wallet, environment in newly_opened:
+            net_pnl = per_scope[(wallet, environment)]
+            opened_at = utcnow()
+            self.db.upsert("circuit_breaker_state", {
+                "wallet": wallet, "environment": environment, "day": day,
+                "open": 1, "opened_at": opened_at, "net_pnl": net_pnl,
+                "cap": cap, "updated_at": opened_at,
+            }, ("wallet", "environment", "day"))
+            # Estratégias do escopo: atribuídas via fills (a tabela strategies não
+            # tem coluna wallet/ambiente). Só as que estão operando são pausadas.
+            sids = [
+                s["strategy_id"] for s in self.db.query(
+                    "SELECT DISTINCT strategy_id FROM fills "
+                    "WHERE master_address = ? AND network = ? AND strategy_id IS NOT NULL",
+                    (wallet, environment),
+                )
+            ]
+            for sid in sids:
+                res = self.db.execute(
+                    "UPDATE strategies SET status = 'auto_paused' "
+                    "WHERE id = ? AND status IN ('active', 'dry_run')",
+                    (sid,),
+                )
+                if res.rowcount:
+                    self.logger.warning(
+                        "strategy.auto_paused",
+                        {"by": "circuit_breaker", "wallet": wallet,
+                         "environment": environment, "net_pnl": net_pnl, "cap": cap},
+                        strategy_id=sid,
+                    )
 
     # -- intents ------------------------------------------------------------
     def handle_intent(self, intent: IntentRequest) -> dict[str, Any]:
@@ -552,6 +617,10 @@ class GatewayState:
             notional_usd=notional, leverage=leverage, prices=prices,
             strategy_cap_usd=intent.strategy_cap_usd,
             reduce_only=intent.reduce_only,
+            # Circuit breaker escopado: wallet/ambiente já resolvidos do adapter —
+            # zero hit de DB no hot path §8.4.1 (só lookup em memória no enforcer).
+            wallet=getattr(adapter, "account_address", None),
+            environment=adapter.network,
         )
         cloid = make_cloid(intent.strategy_id)
         # Truncate-to-cap: the enforcer allowed the intent but capped its
@@ -872,7 +941,10 @@ def build_app(state: GatewayState) -> FastAPI:
             "network": state.adapter.network,
             "environments": sorted(state.adapters),
             "kill_switch": state.enforcer.kill_switch_engaged(),
+            # Legado: OR global de todos os escopos (compat de clientes antigos).
             "circuit_breaker": state.enforcer.circuit_open,
+            # Fix 2: breakers ESCOPADOS por (wallet, ambiente) — a UI mostra qual.
+            "circuit_breakers": state.enforcer.open_breakers(),
         }
 
     @app.post("/intent")
@@ -979,6 +1051,159 @@ def build_app(state: GatewayState) -> FastAPI:
             state.logger.warning("decision.margin.insufficient", payload,
                                  strategy_id=strategy_id)
         return result
+
+    @app.post("/internal/ledger-resync")
+    def ledger_resync(body: dict[str, Any]) -> dict[str, Any]:
+        """Ressincroniza a posição virtual à venue e PERSISTE um fill sintético
+        (Fix 1b). Confiança localhost (mesmo modelo do /internal/ensure-margin —
+        FORA do hot path §8.4.1). Body: {strategy_id, symbol, venue_size, reason,
+        environment?}. O executor chama isto no ponto de stale-detection p/ a
+        correção sobreviver a restart (hoje só corrige o _my_pos local)."""
+        strategy_id = body.get("strategy_id")
+        symbol = body.get("symbol")
+        if not strategy_id or not symbol:
+            return {"ok": False, "reason": "strategy_id_e_symbol_obrigatorios"}
+        venue_size = float(body.get("venue_size", 0) or 0)
+        reason = body.get("reason", "drift.venue_resync")
+        environment = body.get("environment")
+        adapter = state.adapters.get(environment) if environment else None
+        master_address = getattr(adapter, "account_address", None) if adapter else None
+        row = state.ledger.resync_position(
+            strategy_id=strategy_id, symbol=symbol, venue_size=venue_size,
+            reason=reason, network=environment, master_address=master_address,
+        )
+        if row is None:
+            return {"ok": True, "resynced": False, "reason": "ja_em_sincronia"}
+        row["ts"] = utcnow()
+        state.db.insert("fills", row)
+        state.logger.info("drift.venue_resync",
+                          {"symbol": symbol, "venue": venue_size, "reason": reason,
+                           "synthetic": True},
+                          strategy_id=strategy_id)
+        return {"ok": True, "resynced": True, "venue_size": venue_size}
+
+    @app.post("/control/ledger/cleanup", dependencies=[Depends(_control_auth)])
+    def ledger_cleanup() -> dict[str, Any]:
+        """One-shot: zera posições FANTASMA (ledger com size mas venue flat) via
+        fills sintéticos. Nunca toca estratégia com posição real na venue —
+        re-verifica a venue imediatamente antes de escrever (evita corrida com fill
+        em voo). Retorna o relatório do que foi zerado/preservado."""
+        report: dict[str, Any] = {"resynced": [], "kept": [], "skipped": []}
+        for sid, book in state.ledger.books().items():
+            if not sid:
+                continue
+            for symbol, pos in list(book.positions.items()):
+                if abs(pos.size) < 1e-12:
+                    continue
+                attr = state.db.query(
+                    "SELECT master_address, network FROM fills "
+                    "WHERE strategy_id = ? AND master_address IS NOT NULL "
+                    "AND network IS NOT NULL AND synthetic = 0 "
+                    "ORDER BY id DESC LIMIT 1",
+                    (sid,),
+                )
+                wallet = attr[0]["master_address"] if attr else None
+                env = attr[0]["network"] if attr else None
+                scoped = _scoped_positions([sid], env, wallet)
+                venue_size = next(
+                    (float(p.get("size", 0) or 0) for p in scoped
+                     if p.get("symbol") == symbol), None)
+                if venue_size is None:
+                    # Venue não legível (ambiente off / hiccup) OU símbolo ausente
+                    # da conta = flat. Só zeramos quando a leitura confirma flat;
+                    # ausência por erro de leitura fica em skipped (conservador).
+                    if not scoped and env is None:
+                        report["skipped"].append(
+                            {"strategy_id": sid, "symbol": symbol,
+                             "ledger": pos.size, "reason": "venue_ilegivel"})
+                        continue
+                    venue_size = 0.0
+                if abs(venue_size) < 1e-12:
+                    row = state.ledger.resync_position(
+                        strategy_id=sid, symbol=symbol, venue_size=0.0,
+                        reason="control.ledger_cleanup",
+                        network=env, master_address=wallet)
+                    if row is not None:
+                        row["ts"] = utcnow()
+                        state.db.insert("fills", row)
+                        state.logger.info(
+                            "drift.venue_resync",
+                            {"symbol": symbol, "venue": 0.0,
+                             "reason": "control.ledger_cleanup", "synthetic": True,
+                             "was": pos.size}, strategy_id=sid)
+                    report["resynced"].append(
+                        {"strategy_id": sid, "symbol": symbol, "was": pos.size})
+                else:
+                    report["kept"].append(
+                        {"strategy_id": sid, "symbol": symbol,
+                         "venue_size": venue_size})
+        return {"ok": True, "report": report}
+
+    @app.post("/control/circuit-breaker/reset", dependencies=[Depends(_control_auth)])
+    def circuit_breaker_reset(body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Reset de UM clique (Fix 2b). Body opcional {wallet, environment} p/
+        seletivo; vazio = todos. FORÇA SEMPRE (ato humano deliberado): reativa SÓ
+        as estratégias pausadas PELO breaker (eventos strategy.auto_paused com
+        by='circuit_breaker'), deixa pausas manuais intactas. Marca acknowledged_day
+        p/ o breaker NÃO reabrir no mesmo dia UTC (reconhece até o rollover)."""
+        body = body or {}
+        wallet = body.get("wallet")
+        environment = body.get("environment")
+        closed = state.enforcer.reset_breaker(wallet, environment)
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Escopos a reconhecer: os fechados agora + qualquer registro aberto no DB
+        # que case o filtro (cobre reset após restart antes de novo fill).
+        db_where = "day = ? AND open = 1"
+        params: list[Any] = [day]
+        if wallet is not None:
+            db_where += " AND wallet = ?"
+            params.append(wallet)
+        if environment is not None:
+            db_where += " AND environment = ?"
+            params.append(environment)
+        db_scopes = state.db.query(
+            f"SELECT wallet, environment FROM circuit_breaker_state WHERE {db_where}",
+            params,
+        )
+        scopes = {(w, e) for (w, e) in closed}
+        scopes |= {(r["wallet"], r["environment"]) for r in db_scopes}
+        reactivated: list[str] = []
+        for w, e in scopes:
+            state.db.execute(
+                "UPDATE circuit_breaker_state SET open = 0, acknowledged_day = ?, "
+                "updated_at = ? WHERE wallet = ? AND environment = ? AND day = ?",
+                (day, utcnow(), w, e, day),
+            )
+            # Reativa só estratégias pausadas PELO breaker deste escopo hoje.
+            paused_rows = state.db.query(
+                "SELECT DISTINCT strategy_id FROM events "
+                "WHERE event_type = 'strategy.auto_paused' AND date(ts) = ? "
+                "AND json_extract(payload, '$.by') = 'circuit_breaker' "
+                "AND json_extract(payload, '$.wallet') = ? "
+                "AND json_extract(payload, '$.environment') = ?",
+                (day, w, e),
+            )
+            for pr in paused_rows:
+                sid = pr["strategy_id"]
+                if not sid:
+                    continue
+                res = state.db.execute(
+                    "UPDATE strategies SET status = 'active' "
+                    "WHERE id = ? AND status = 'auto_paused'",
+                    (sid,),
+                )
+                if res.rowcount:
+                    reactivated.append(sid)
+                    state.logger.info("strategy.activated",
+                                      {"by": "circuit_breaker_reset",
+                                       "wallet": w, "environment": e},
+                                      strategy_id=sid)
+        state.logger.info("circuit_breaker.reset",
+                          {"wallet": wallet, "environment": environment,
+                           "scopes": [list(s) for s in scopes],
+                           "reactivated": reactivated})
+        return {"ok": True, "scopes": [list(s) for s in scopes],
+                "reactivated": reactivated}
 
     @app.get("/api/market-meta")
     def market_meta(symbol: str, environment: str | None = None) -> dict[str, Any]:
@@ -2381,13 +2606,25 @@ def main() -> None:
     # runners subirem: sem isto, o reconcile de startup compara o alvo do trader
     # contra um book vazio e reabre todas as posições (dobra AAVE/HYPE etc.).
     hydrate_rows = db.query(
-        "SELECT cloid, strategy_id, symbol, side, price, size, fee, forced_close "
+        "SELECT cloid, strategy_id, symbol, side, price, size, fee, forced_close, synthetic "
         "FROM fills WHERE strategy_id IS NOT NULL ORDER BY id ASC"
     )
     state.ledger.hydrate_from_db(hydrate_rows)
     state.logger.info("ledger.hydrated", {
         "fills": len(hydrate_rows), "strategies": len(state.ledger.books()),
     })
+    # Fix 2: rehidrata os circuit breakers ABERTOS de hoje (não reconhecidos), p/ o
+    # breaker sobreviver a restart antes do 1º fill do dia. Escopos já reconhecidos
+    # (reset do operador) ficam fechados até o rollover UTC.
+    _cb_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for _cb in db.query(
+        "SELECT wallet, environment, net_pnl, cap, opened_at FROM circuit_breaker_state "
+        "WHERE day = ? AND open = 1 AND (acknowledged_day IS NULL OR acknowledged_day != ?)",
+        (_cb_day, _cb_day),
+    ):
+        state.enforcer.restore_open(
+            _cb["wallet"], _cb["environment"], _cb_day,
+            net_pnl=_cb["net_pnl"], cap=_cb["cap"], opened_at=_cb["opened_at"])
     state.watch_kill_file()
     app = build_app(state)
     # GATEWAY_BIND overrides the listen address (VPS: 127.0.0.1 — nothing

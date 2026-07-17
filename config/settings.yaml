@@ -9,7 +9,12 @@ risk:
   max_order_notional_usd: 3000.0        # max value per single order
   max_total_exposure_usd: 4000.0       # max aggregate open exposure
   max_strategy_exposure_usd: 4000.0     # default per-strategy cap (overridable per strategy)
-  max_daily_loss_usd: 100.0            # circuit breaker: pauses ALL strategies
+  # circuit breaker cap PER (wallet, environment) — UPDATE-0061. A perda diária
+  # é agregada por master_address+network (isolamento de wallet): uma quebra em
+  # (0x4124, testnet) NÃO pausa (0xd2c7, mainnet). Ao estourar, pausa só as
+  # estratégias daquele escopo; reset de um clique reativa e reconhece até o
+  # rollover UTC.
+  max_daily_loss_usd: 100.0
   max_leverage_global: 5.0             # leverage always truncated by this ceiling
   min_order_notional_usd: 10.0         # Hyperliquid minimum
 

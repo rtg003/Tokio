@@ -1941,3 +1941,31 @@ Ações do Cursor:
 
 Validação: `bash ~/.hermes/scripts/tokio_sqlite_backup.sh` produz um
 `.db.gz` válido; `du -sh data/backups/` < 10 GB; `df -h /` < 30%.
+
+## UPDATE-0061 · 2026-07-17 · Status: PENDENTE
+
+Origem: Claude Code (CONSTRUTOR) — fix duplo ledger fantasma + breaker escopado
+Tipo: engine | gateway | web
+
+Resumo: dois contratos novos relevantes ao construtor/operador:
+
+1. **`fills.synthetic` (migration 0026).** Coluna aditiva. `synthetic=1` marca
+   fills de AJUSTE (resync ledger↔venue): `realized_pnl=0`, `fee=0`, PnL-neutro
+   por construção. **Toda query nova de PnL/métricas/breaker DEVE filtrar
+   `synthetic=0`** (as existentes de PnL diário/breaker já filtram). Só o
+   `hydrate_from_db` reproduz o size a partir desses fills.
+2. **`circuit_breaker_state` (migration 0027).** Estado do breaker por
+   `(wallet, environment, day)`. `acknowledged_day` = reset reconhecido até o
+   rollover UTC (não reabre no mesmo dia). O breaker agrega perda por
+   `master_address`+`network` direto em `fills` (sem coluna wallet/ambiente em
+   `strategies`).
+
+Contratos de API novos (proxy `/api/control` já liberado no allowlist):
+- `POST /control/ledger/cleanup` — zera fantasmas (ato humano).
+- `POST /control/circuit-breaker/reset` — body `{wallet?, environment?}`.
+- `POST /internal/ledger-resync` — confiança-localhost (não exposto à web).
+- `GET /health` agora inclui `circuit_breakers:[{wallet,environment,open,...}]`.
+
+`risk.max_daily_loss_usd` agora é cap **por (wallet, ambiente)**.
+
+Validação: `pytest tests/ -q` verde (428); `web` `tsc`/`next build` limpos.

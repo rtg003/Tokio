@@ -87,6 +87,7 @@ class Ledger:
         size: float,
         fee: float,
         forced_close: bool = False,
+        synthetic: bool = False,
     ) -> float | None:
         """Update the virtual book. Returns realized PnL (net of this fill's fee)
         when the fill reduces/closes a position, else None.
@@ -97,7 +98,14 @@ class Ledger:
         com a venue em books rasos), a posição é clampada em ZERO em vez de fazer
         flip-through-zero e criar um short fantasma — a venue foi a flat, não a
         short. Só afeta o caso `abs(signed) >= abs(pos.size)`; PnL/closing ficam
-        idênticos (a correção é ortogonal ao realizado)."""
+        idênticos (a correção é ortogonal ao realizado).
+
+        `synthetic` marca um fill de AJUSTE (resync ledger↔venue): ajusta SÓ o
+        `size` da posição, NUNCA acumula realized/fees nem dispara o warning de
+        direções opostas. É PnL-neutro por construção — o `book.realized_pnl` em
+        memória tem de bater com as queries de PnL/breaker (que filtram
+        `synthetic=0`); qualquer acúmulo aqui divergiria dos dois. Usado no
+        replay do hydrate p/ reproduzir o size corrigido após restart."""
         sid = strategy_id or self.strategy_for_cloid(cloid)
         if sid is None:
             if self.logger:
@@ -105,6 +113,16 @@ class Ledger:
             return None
 
         signed = size if side == "buy" else -size
+        if synthetic:
+            # Ajuste puro de size: sem realized/fees, sem avg_entry, sem opposite
+            # warning. `signed` é o DELTA (venue_size - size_atual) assinado.
+            with self._lock:
+                book = self._books.setdefault(sid, StrategyBook(sid))
+                pos = book.positions.setdefault(symbol, VirtualPosition(symbol))
+                pos.size += signed
+                if abs(pos.size) < 1e-12:
+                    pos.size = 0.0
+            return None
         realized: float | None = None
         with self._lock:
             book = self._books.setdefault(sid, StrategyBook(sid))
@@ -147,6 +165,55 @@ class Ledger:
                 {"symbol": symbol, "long": longs, "short": shorts,
                  "policy": "allow (netting reduces real margin); review if unintended"},
             )
+
+    def resync_position(
+        self,
+        *,
+        strategy_id: str,
+        symbol: str,
+        venue_size: float,
+        reason: str,
+        network: str | None = None,
+        master_address: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Ressincroniza a posição virtual de `strategy_id`/`symbol` ao `venue_size`
+        REAL da venue e devolve a linha de fill sintético a persistir (ou None se
+        já está em sincronia). Aplica o ajuste no book EM MEMÓRIA como delta puro
+        de size (via `apply_fill(synthetic=True)`); o chamador (server) persiste a
+        linha em `fills` p/ o `hydrate_from_db` reproduzir o size após restart.
+
+        Fantasma clássico: a venue foi a flat (`venue_size=0`) mas o book ainda tem
+        size — o resync zera o book e grava o ajuste. `synthetic=1` NUNCA entra em
+        métricas/PnL/relatórios/breaker (é PnL-neutro: realized_pnl=0, fee=0)."""
+        with self._lock:
+            book = self._books.get(strategy_id)
+            current = 0.0
+            if book is not None and (pos := book.positions.get(symbol)) is not None:
+                current = pos.size
+        delta = venue_size - current
+        if abs(delta) < 1e-12:
+            return None
+        side = "buy" if delta > 0 else "sell"
+        size = abs(delta)
+        self.apply_fill(
+            cloid=None, strategy_id=strategy_id, symbol=symbol,
+            side=side, price=0.0, size=size, fee=0.0, synthetic=True,
+        )
+        return {
+            "cloid": None,
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+            "side": side,
+            "price": 0.0,
+            "size": size,
+            "fee": 0.0,
+            "fee_asset": "USDC",
+            "realized_pnl": 0.0,
+            "network": network,
+            "master_address": master_address,
+            "forced_close": 0,
+            "synthetic": 1,
+        }
 
     def strategy_holding_symbol(self, symbol: str) -> str | None:
         """Estratégia ÚNICA que segura `symbol` agora, ou None se 0 ou >1.
@@ -194,6 +261,7 @@ class Ledger:
                     size=float(row["size"]),
                     fee=float(row["fee"] or 0.0),
                     forced_close=bool(row.get("forced_close", 0)),
+                    synthetic=bool(row.get("synthetic", 0)),
                 )
         finally:
             self.logger = saved_logger

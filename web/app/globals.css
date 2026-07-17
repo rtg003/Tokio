@@ -46,6 +46,19 @@ a { color: inherit; }
 .dot.on { background: var(--pos); }
 .dot.off { background: var(--neg); }
 .badge-env { color: var(--amber); border: 1px solid var(--amber); border-radius: 3px; padding: 2px 7px; font-weight: 600; letter-spacing: 0.12em; }
+/* Circuit breaker aberto: substitui o "ENGINE ONLINE" verde por um alerta
+   vermelho na mesma posição, com botão flat "limpar" (reset de um clique). */
+.statusbar .seg-breaker { color: var(--neg); }
+.statusbar .seg-breaker strong { color: var(--neg); letter-spacing: 0.1em; }
+.statusbar .seg-breaker .dot.off { animation: breaker-pulse 1.4s ease-in-out infinite; }
+.breaker-clear {
+  background: none; border: 1px solid var(--neg-soft); color: var(--neg);
+  cursor: pointer; font: 600 10px var(--mono); letter-spacing: 0.08em;
+  padding: 2px 8px; margin-left: 4px; border-radius: 3px; text-transform: lowercase;
+}
+.breaker-clear:hover:not(:disabled) { background: var(--neg-soft); border-color: var(--neg); }
+.breaker-clear:disabled { opacity: 0.5; cursor: default; }
+@keyframes breaker-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 /* Controle GLOBAL no topo: wallet + ambiente. */
 .statusbar-sel { background: var(--ink); border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px; font: 600 11px var(--mono); color: var(--text); letter-spacing: 0.08em; cursor: pointer; }
 .statusbar-sel.wallet-sel { color: var(--muted); font-weight: 500; }

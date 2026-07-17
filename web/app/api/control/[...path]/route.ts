@@ -46,6 +46,10 @@ const ALLOWED_POST_PATTERNS = [
   // UPDATE-0059 (backfill): reclassifica linhas legadas (metrics_confidence NULL)
   // pelo pipeline individual, preservando status/copy_pinned. Ato humano.
   /^discovery\/reclassify$/,
+  // UPDATE-0061: reset do circuit breaker (por wallet+ambiente ou global) e
+  // cleanup one-shot de fantasmas no ledger — atos humanos autenticados.
+  /^circuit-breaker\/reset$/,
+  /^ledger\/cleanup$/,
 ];
 
 function gatewayBase(): string {

@@ -3522,3 +3522,81 @@ follow-up a aprovar após a confirmação abaixo.
    disparar cópia → confirmar `decision.margin.auto_transfer` + ordem executada +
    eventos no banco; reproduzir o cenário de 16/07. Marcar UPDATE-0060
    **APLICADO** ao confirmar.
+
+---
+
+## UPDATE-0061 · 2026-07-17 · Status: PENDENTE
+
+**Fix duplo: (1) exposição fantasma no ledger destrava `total_cap`; (2) circuit
+breaker escopado por (wallet, ambiente), visível na UI e com reset de um clique.**
+Fecha a validação pendente do UPDATE-0060 (incidente 2026-07-16, trader `0x1a5d`
+→ wallet **0x4124/testnet**, strategy `ct_1a5db900`). Confirma e corrige a causa
+-raiz do `auto_paused` levantada como follow-up no UPDATE-0060.
+
+### Problema
+1. **Exposição fantasma.** O `Ledger` é 100% em memória, reidratado de `fills` no
+   boot. Books de estratégias mortas / posições stale (a venue já está flat, mas o
+   ledger ainda tem size) inflavam o `total_cap` em `risk_enforcer.check_intent`,
+   rejeitando/truncando ordens REAIS. Não havia como ressincronizar o ledger à
+   venue de forma persistente.
+2. **Circuit breaker global.** `record_daily_pnl` abria UM booleano global e o
+   `server` rodava `UPDATE strategies SET status='auto_paused' WHERE
+   status='active'` — silencioso, global, sem evento por estratégia. Uma perda em
+   **0x4124/testnet pausava 0xd2c7/mainnet** (viola o isolamento de wallet §5.1/
+   §5.2) — foi o que pausou indevidamente a `ct_1a5db900`. Sem visibilidade nem
+   reset na UI.
+
+### O que mudou (código — CONSTRUTOR)
+- **(1a) `total_cap` ignora books mortos/órfãos.** `RiskEnforcer._total_exposure`
+  soma só books de estratégias operantes (status in `active`/`dry_run`, via
+  provider cacheado 5 s — zero custo no hot path) e IGNORA books órfãos
+  (strategy_id vazio), logando `ledger.orphan_book_ignored` no máx. 1×/hora.
+- **(1b) `Ledger.resync_position` + fill sintético.** Migration `0026` adiciona
+  `fills.synthetic`. `apply_fill(synthetic=True)` ajusta SÓ o size (nunca
+  realized/fees/opposite-warning) → PnL-neutro. `synthetic=1` NUNCA entra em
+  métricas/PnL/relatórios/breaker; só reconstrói o size no `hydrate_from_db`.
+- **(1c) Endpoints de resync.** `POST /internal/ledger-resync` (confiança
+  -localhost, FORA do §8.4.1) persiste a correção; o executor o chama no ponto de
+  stale-detection (a correção sobrevive a restart). `POST /control/ledger/cleanup`
+  (ato humano) varre os books e zera fantasmas (`|ledger|>0` e venue flat),
+  re-verificando a venue antes de escrever; retorna relatório.
+- **(2a) Breaker por (wallet, ambiente).** Agregação da perda diária por
+  `master_address`+`network` (sem JOIN — colunas já em `fills`), excluindo
+  `forced_close=1` e `synthetic=1`. Estado persistido em `circuit_breaker_state`
+  (migration `0027`) p/ sobreviver a restart e dar idempotência ao reset
+  (`acknowledged_day`). Ao abrir um escopo: pausa SÓ as estratégias dele +
+  `circuit_breaker.opened` + `strategy.auto_paused {by:'circuit_breaker'}`.
+  **Removido** o UPDATE global silencioso. Hot path §8.4.1 intacto: `check_intent`
+  ganhou kwargs opcionais `wallet`/`environment` (resolvidos do adapter, zero DB).
+- **(2b) UI.** `/health` expõe `circuit_breakers:[{wallet,environment,open}]`. O
+  header troca o verde "ENGINE ONLINE" pelo vermelho **"CIRCUIT BREAKER"** com
+  tooltip (`wallet · ambiente · perda · cap`) e botão **"limpar"** →
+  `POST /control/circuit-breaker/reset` (força sempre; reativa SÓ o que o breaker
+  pausou; reconhece até o rollover UTC).
+
+### Config
+`risk.max_daily_loss_usd` passa a ser cap **por (wallet, ambiente)** (documentado
+no YAML). Sem novas chaves obrigatórias.
+
+### Invariantes
+- Hot path §8.4.1 (`/intent`,`/cancel`,`handle_intent`) só ganhou kwargs
+  opcionais defaultados — nenhuma query nova no hot path. Migrations só aditivas
+  (0026, 0027). `M.simulate_copy` e assinaturas protegidas intocadas. Isolamento
+  de wallet 0x4124 ≠ 0xd2c7 preservado por construção.
+
+### Validação
+- `.venv/bin/python -m pytest tests/ -q` verde (428).
+- `web`: `npx tsc --noEmit` limpo; `npx next build` verde.
+
+### Validação em produção (Hermes)
+1. **Cleanup dos fantasmas:** `POST /control/ledger/cleanup` → confere o relatório
+   (o que foi zerado vs. preservado); a exposição real da wallet 0x4124/testnet cai
+   para < $4000 (o cap total volta a ter folga).
+2. **Reconcile `ct_1a5db900`:** disparar a cópia → a ordem AAVE passa pelo risk
+   (não mais bloqueada por `total_cap`), gera `decision.margin.auto_transfer`
+   (UPDATE-0060) e executa. **Isso fecha a validação pendente do UPDATE-0060.**
+3. **Isolamento + reset:** simular breach em (0x4124, testnet) → header fica
+   vermelho "CIRCUIT BREAKER" e confirmar que (0xd2c7, mainnet) NÃO é pausada;
+   clicar "limpar" reativa SÓ as estratégias pausadas pelo breaker; novo fill
+   perdedor no mesmo dia UTC NÃO reabre.
+4. Ao confirmar, marcar UPDATE-0060 **e** UPDATE-0061 **APLICADOS**.

@@ -611,6 +611,13 @@ class CopyTradeExecutor:
                         self._my_pos[key] = venue
                         actual = venue
                         delta = desired - actual
+                        # Fix 1b: persiste a correção no ledger (fill sintético) p/
+                        # sobreviver a restart — antes só o _my_pos local era
+                        # corrigido e o size fantasma voltava no próximo hydrate,
+                        # bloqueando o total_cap. Best-effort (fora do hot path).
+                        self.gateway.ledger_resync(
+                            sid, symbol, venue,
+                            reason="drift.venue_resync", environment=environment)
                 # step / min-notional guards (same as on_target_fill)
                 if sz_decimals is not None and abs(delta) < 10 ** (-sz_decimals):
                     self._reconcile_attempts.pop(key, None)
