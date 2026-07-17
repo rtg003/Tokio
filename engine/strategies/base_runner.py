@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -43,6 +44,25 @@ class GatewayClient:
         resp = self._client.post("/cancel", json=payload)
         resp.raise_for_status()
         return resp.json()
+
+    def ensure_margin(self, strategy_id: str, required_usd: float,
+                      environment: str | None = None) -> dict[str, Any]:
+        """Garante margem perp INTRA-CONTA antes de abrir (auto-transfer spot→perp).
+
+        O gateway resolve o adapter por `environment` e transfere na PRÓPRIA conta;
+        nunca cruza wallets/ambientes. Best-effort: erros de rede não abortam a
+        cópia — devolvem transferred=0 e o fluxo normal (venue/reconcile) trata."""
+        try:
+            resp = self._client.post("/internal/ensure-margin", json={
+                "strategy_id": strategy_id,
+                "required_usd": required_usd,
+                "environment": environment,
+            }, timeout=20.0)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:  # noqa: BLE001 — nunca deixa a margem abortar a cópia
+            return {"transferred": 0.0, "reason": "gateway_indisponivel",
+                    "error": str(exc)[:200]}
 
     def market_meta(self, symbol: str, environment: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"symbol": symbol}
@@ -173,42 +193,141 @@ class BaseRunner:
         return result
 
     # -- thresholds / auto-pause ----------------------------------------------
-    def check_thresholds(self) -> bool:
-        """Auto-pause when metrics breach configured thresholds.
+    def _breach_reason(self) -> tuple[str | None, dict[str, Any]]:
+        """Evaluate configured thresholds over the eval window.
 
         Thresholds (all optional) in config['thresholds']:
           min_net_pnl (over eval window), min_win_rate, max_drawdown_usd,
           eval_window_days (default 7), min_trades (evaluation needs a sample).
-        Returns True when the strategy was auto-paused.
+
+        Returns (breach description or None, details payload).
+
+        B3 (regra de sanidade): o PnL do breach é computado DIRETO em `fills`
+        EXCLUINDO `forced_close=1` (ADL/liquidação re-hidratada), para que um
+        fechamento involuntário da venue não rebaixe a strategy. `n_trades`/
+        `win_rate` continuam vindo de `strategy_metrics_daily` — as métricas
+        REPORTADAS (dashboard) ficam intactas; só o cálculo do breach muda.
         """
         th = self.config.get("thresholds") or {}
         if not th:
-            return False
+            return None, {}
         window = int(th.get("eval_window_days", 7))
-        rows = self.db.query(
-            """SELECT COALESCE(SUM(net_pnl),0) AS pnl, COALESCE(SUM(n_trades),0) AS n,
-                      AVG(win_rate) AS wr
+        mrows = self.db.query(
+            """SELECT COALESCE(SUM(n_trades),0) AS n, AVG(win_rate) AS wr
                FROM strategy_metrics_daily
                WHERE strategy_id = ? AND day >= date('now', ?)""",
             (self.strategy_id, f"-{window} days"),
         )
-        r = rows[0]
-        if r["n"] < int(th.get("min_trades", 5)):
-            return False
+        m = mrows[0]
+        prows = self.db.query(
+            """SELECT COALESCE(SUM(realized_pnl),0) AS pnl
+               FROM fills
+               WHERE strategy_id = ? AND date(ts) >= date('now', ?)
+                 AND COALESCE(forced_close, 0) = 0""",
+            (self.strategy_id, f"-{window} days"),
+        )
+        pnl = prows[0]["pnl"]
+        n = m["n"]
+        wr = m["wr"] or 0.0
+        details: dict[str, Any] = {
+            "pnl": pnl, "n_trades": n, "win_rate": wr,
+            "window_days": window, "thresholds": th,
+        }
+        if n < int(th.get("min_trades", 5)):
+            return None, details
         breach: str | None = None
-        if "min_net_pnl" in th and r["pnl"] < th["min_net_pnl"]:
-            breach = f"net_pnl {r['pnl']:.2f} < {th['min_net_pnl']}"
-        elif "min_win_rate" in th and (r["wr"] or 0) < th["min_win_rate"]:
-            breach = f"win_rate {(r['wr'] or 0):.2f} < {th['min_win_rate']}"
+        if "min_net_pnl" in th and pnl < th["min_net_pnl"]:
+            breach = f"net_pnl {pnl:.2f} < {th['min_net_pnl']}"
+        elif "min_win_rate" in th and wr < th["min_win_rate"]:
+            breach = f"win_rate {wr:.2f} < {th['min_win_rate']}"
+        return breach, details
+
+    def check_thresholds(self) -> bool:
+        """Auto-pause when metrics breach configured thresholds.
+
+        Returns True when the strategy was auto-paused. The persisted
+        `strategy.auto_paused` event carries a rich payload (breach + the
+        evaluated pnl/n_trades/win_rate/thresholds) for audit/dashboard (B1).
+        """
+        breach, details = self._breach_reason()
         if breach:
+            # Guarda o status ANTERIOR p/ o auto-resume restaurar sem cruzar o
+            # gate humano (um dry_run pausado jamais volta como active).
+            prev_status = self.status()
             self.db.execute(
                 "UPDATE strategies SET status = 'auto_paused' WHERE id = ? AND status IN ('active','dry_run')",
                 (self.strategy_id,),
             )
-            self.logger.warning("strategy.auto_paused", {"breach": breach, "window_days": window},
+            self.logger.warning("strategy.auto_paused",
+                                {"breach": breach, "prev_status": prev_status, **details},
                                 strategy_id=self.strategy_id)
             return True
         return False
+
+    def _auto_resume_after_hours(self) -> float | None:
+        """Resolve the auto-resume window: per-strategy config overrides the
+        global copy_trade default (None ⇒ manual resume only, current behavior)."""
+        val = self.config.get("auto_resume_after_hours")
+        if val is None:
+            val = getattr(self.settings.copy_trade, "auto_resume_after_hours", None)
+        return float(val) if val else None
+
+    def maybe_auto_resume(self) -> bool:
+        """Auto-resume an `auto_paused` strategy after N hours if no active breach.
+
+        B2. Reads the last `strategy.auto_paused` event timestamp; once
+        `auto_resume_after_hours` has elapsed AND `_breach_reason` finds no
+        current breach, flips status back to 'active' and emits
+        `strategy.auto_resumed`.
+
+        Limitation (documented follow-up): circuit-breaker pauses
+        (server.py) do NOT emit `strategy.auto_paused`, so this path never sees
+        them — those still require a manual/operator resume.
+        """
+        hours = self._auto_resume_after_hours()
+        if not hours or self.status() != "auto_paused":
+            return False
+        rows = self.db.query(
+            """SELECT ts, payload FROM events
+               WHERE event_type = 'strategy.auto_paused' AND strategy_id = ?
+               ORDER BY ts DESC LIMIT 1""",
+            (self.strategy_id,),
+        )
+        if not rows or not rows[0]["ts"]:
+            return False
+        last = rows[0]["ts"]
+        try:
+            paused_at = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if paused_at.tzinfo is None:
+            paused_at = paused_at.replace(tzinfo=timezone.utc)
+        elapsed_h = (datetime.now(timezone.utc) - paused_at).total_seconds() / 3600.0
+        if elapsed_h < hours:
+            return False
+        breach, _ = self._breach_reason()
+        if breach:
+            return False  # still breaching — keep paused
+        # Restaura o status ANTERIOR (respeita o gate humano: dry_run não vira
+        # active). Sem prev_status registrado, assume 'active' (comportamento
+        # dos eventos antigos, que só ocorriam sobre strategies ativas).
+        prev_status = "active"
+        try:
+            payload = json.loads(rows[0]["payload"] or "{}")
+            if payload.get("prev_status") in ("active", "dry_run"):
+                prev_status = payload["prev_status"]
+        except (ValueError, TypeError):
+            pass
+        self.db.execute(
+            "UPDATE strategies SET status = ? WHERE id = ? AND status = 'auto_paused'",
+            (prev_status, self.strategy_id),
+        )
+        self.logger.info("strategy.auto_resumed",
+                         {"elapsed_hours": round(elapsed_h, 2),
+                          "auto_resume_after_hours": hours,
+                          "restored_status": prev_status},
+                         strategy_id=self.strategy_id)
+        return True
 
     # -- lifecycle loop ---------------------------------------------------------
     def heartbeat(self) -> None:
@@ -238,6 +357,7 @@ class BaseRunner:
             if now - last_beat >= self.heartbeat_interval:
                 self.heartbeat()
                 self.check_thresholds()
+                self.maybe_auto_resume()
                 last_beat = now
             if st in RUNNABLE_STATUSES:
                 try:

@@ -620,3 +620,38 @@ def test_api_positions_scoped_to_strategy_symbols(client, gateway_state) -> None
 
 def test_api_positions_requires_strategy_id(client) -> None:
     assert client.get("/api/positions").status_code == 400
+
+
+# -- /internal/ensure-margin: auto-transfer spot→perp intra-conta ------------
+
+def test_ensure_margin_feature_off(client, gateway_state) -> None:
+    """Flag desligada ⇒ não toca a venue; devolve feature_desligada."""
+    gateway_state.settings.copy_trade.auto_transfer_margin = False
+    try:
+        resp = client.post("/internal/ensure-margin", json={
+            "strategy_id": "ct_x", "required_usd": 100.0, "environment": None,
+        }).json()
+    finally:
+        gateway_state.settings.copy_trade.auto_transfer_margin = True
+    assert resp["transferred"] == 0.0
+    assert resp["reason"] == "feature_desligada"
+
+
+def test_ensure_margin_mainnet_requires_opt_in(client, gateway_state) -> None:
+    """mainnet exige opt-in explícito: sem ele, recusa antes de resolver adapter."""
+    assert gateway_state.settings.copy_trade.auto_transfer_margin is True
+    assert gateway_state.settings.copy_trade.auto_transfer_margin_mainnet is False
+    resp = client.post("/internal/ensure-margin", json={
+        "strategy_id": "ct_x", "required_usd": 100.0, "environment": "mainnet",
+    }).json()
+    assert resp["transferred"] == 0.0
+    assert resp["reason"] == "mainnet_opt_in_desligado"
+
+
+def test_ensure_margin_routes_to_adapter(client) -> None:
+    """Venue sem spot/perp separados (PaperAdapter) ⇒ no-op do base adapter."""
+    resp = client.post("/internal/ensure-margin", json={
+        "strategy_id": "ct_x", "required_usd": 100.0, "environment": None,
+    }).json()
+    assert resp["transferred"] == 0.0
+    assert resp["reason"] == "nao_suportado"

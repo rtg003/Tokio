@@ -935,6 +935,51 @@ def build_app(state: GatewayState) -> FastAPI:
             "network": adapter.network,
         }
 
+    @app.post("/internal/ensure-margin")
+    def ensure_margin(body: dict[str, Any]) -> dict[str, Any]:
+        """Auto-transfer spot→perp INTRA-CONTA antes de uma abertura de posição.
+
+        Confiança localhost (mesmo modelo do /intent — não toca o hot path
+        §8.4.1). Body: {environment, strategy_id, required_usd}. Resolve o adapter
+        por ambiente e transfere na PRÓPRIA conta dele; nunca cruza wallets."""
+        environment = body.get("environment")
+        strategy_id = body.get("strategy_id")
+        required_usd = float(body.get("required_usd", 0) or 0)
+        ct = state.settings.copy_trade
+        if not ct.auto_transfer_margin:
+            return {"transferred": 0.0, "reason": "feature_desligada"}
+        # Gate extra p/ mainnet: só transfere se o opt-in explícito estiver ligado.
+        if (environment or "").lower() == "mainnet" and not ct.auto_transfer_margin_mainnet:
+            return {"transferred": 0.0, "reason": "mainnet_opt_in_desligado"}
+        try:
+            adapter = state._adapter_for(environment)
+        except ValueError as exc:
+            return {"transferred": 0.0, "reason": str(exc)}
+        try:
+            result = adapter.ensure_perp_margin(
+                required_usd,
+                buffer_pct=ct.margin_transfer_buffer_pct,
+                min_transfer_usd=ct.min_transfer_usd,
+            )
+        except Exception as exc:  # noqa: BLE001 — falha na venue não pode 500 o executor
+            state.logger.warning("decision.margin.error",
+                                 {"error": str(exc)[:200], "required_usd": required_usd,
+                                  "environment": environment},
+                                 strategy_id=strategy_id)
+            return {"transferred": 0.0, "reason": "erro", "error": str(exc)[:200]}
+        payload = {"required_usd": required_usd, "environment": environment,
+                   "transferred": result.get("transferred", 0.0),
+                   "spot_free": result.get("spot_free"),
+                   "needed": result.get("needed"),
+                   "detail_reason": result.get("reason")}
+        if result.get("transferred"):
+            state.logger.info("decision.margin.auto_transfer", payload,
+                              strategy_id=strategy_id)
+        elif result.get("reason") == "spot_insuficiente":
+            state.logger.warning("decision.margin.insufficient", payload,
+                                 strategy_id=strategy_id)
+        return result
+
     @app.get("/api/market-meta")
     def market_meta(symbol: str, environment: str | None = None) -> dict[str, Any]:
         # Asset metadata (szDecimals, maxLeverage) so callers can round size to
@@ -1422,12 +1467,21 @@ def build_app(state: GatewayState) -> FastAPI:
                 )
             }
 
+            # Status da strategy (active/auto_paused/…) por strategy_id — aditivo,
+            # p/ o badge "AUTO-PAUSADA" no dashboard (isolado ao módulo copy_trade,
+            # cujo strategy_id deriva do trader). NÃO altera o status do trader.
+            strat_status = {
+                sr["id"]: sr["status"]
+                for sr in state.db.query("SELECT id, status FROM strategies")
+            }
+
             enriched = []
             for r in rows:
                 row = dict(r)
                 row["strategy_id"] = strategy_id_for(row["address"], row.get("name"))
                 row["environment"] = environment_for_status(row["status"])
                 row["n_copy_fills"] = copy_fills.get(row["strategy_id"], 0)
+                row["strategy_status"] = strat_status.get(row["strategy_id"])
                 enriched.append(row)
             return enriched
         except HTTPException:

@@ -53,3 +53,15 @@ copy_trade:
   # Intervalo do reconcile corretivo. Mín. 60s e < cooldown por símbolo (120s)
   # para não empilhar ordens antes do fill refletir no ledger (UPDATE-0023).
   reconcile_interval_s: 60
+  # Auto-transfer spot→perp POR CONTA (wallet+ambiente). Na HL spot e perp são
+  # pools de margem SEPARADOS; USDC no spot não cobre ordem perp sem
+  # usd_class_transfer. Quando ligado, o executor garante margem perp antes de
+  # abrir posição, transferindo do spot livre da PRÓPRIA conta (nunca cruza
+  # wallets/ambientes). testnet liga por padrão; mainnet exige opt-in explícito.
+  auto_transfer_margin: true
+  auto_transfer_margin_mainnet: false   # gate extra p/ mainnet (default OFF)
+  margin_transfer_buffer_pct: 5.0       # folga sobre o necessário (fees/slippage)
+  min_transfer_usd: 1.0                  # HL não aceita transfer < $1
+  # Auto-resume de strategies auto-pausadas: após N horas SEM novo breach, volta
+  # para active automaticamente (evento strategy.auto_resumed). null = manual.
+  auto_resume_after_hours: null

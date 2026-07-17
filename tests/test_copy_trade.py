@@ -47,6 +47,11 @@ class RecordingGateway:
         # per-symbol mid price used by reconcile sizing; 0 => reconcile skips it.
         self.mids: dict[str, float] = {}
         self.default_mid = 0.0
+        # auto-transfer spot→perp: records ensure_margin calls; default response
+        # is a no-op (perp já suficiente) so existing tests are unaffected.
+        self.margin_calls: list[dict[str, Any]] = []
+        self.margin_response: dict[str, Any] = {"transferred": 0.0,
+                                                "reason": "margem_suficiente"}
 
         outer = self
 
@@ -65,6 +70,13 @@ class RecordingGateway:
 
     def cancel(self, **payload: Any) -> dict[str, Any]:
         return {"ok": True}
+
+    def ensure_margin(self, strategy_id: str, required_usd: float,
+                      environment: str | None = None) -> dict[str, Any]:
+        self.margin_calls.append({"strategy_id": strategy_id,
+                                  "required_usd": required_usd,
+                                  "environment": environment})
+        return self.margin_response
 
     def ledger(self) -> dict[str, Any]:
         return self.ledger_response
@@ -150,6 +162,38 @@ def test_open_from_flat_fixed_usdc(settings, db) -> None:
     assert intent["dry_run"] is False
     assert intent["environment"] == "testnet"
     assert intent["strategy_id"] == "ct_whale01"
+
+
+def test_open_calls_ensure_margin_before_intent(settings, db) -> None:
+    """Ao ABRIR posição, o executor pede ao gateway p/ garantir margem perp
+    (auto-transfer spot→perp) ANTES de emitir a ordem. required = notional/lev."""
+    ex, watcher, gw = make_executor(settings, db)  # fixed 100 USDC, lev 3x
+    watcher.emit(TARGET, fill("BTC", "B", 2.0, 50_000.0, start_pos=0.0))
+    assert len(gw.margin_calls) == 1
+    call = gw.margin_calls[0]
+    assert call["strategy_id"] == "ct_whale01"
+    assert call["environment"] == "testnet"
+    # notional = 0.002 BTC * 50k = $100; required = 100 / max_leverage(3) ≈ 33.33
+    assert call["required_usd"] == pytest.approx(100.0 / 3.0)
+
+
+def test_close_does_not_call_ensure_margin(settings, db) -> None:
+    """Fechar/reduzir (reduce_only) libera margem — não deve auto-transferir."""
+    ex, watcher, gw = make_executor(settings, db)
+    watcher.emit(TARGET, fill("BTC", "B", 2.0, 50_000.0, start_pos=0.0))
+    gw.margin_calls.clear()
+    # whale flattens -> our mirror closes (reduce_only)
+    watcher.emit(TARGET, fill("BTC", "S", 2.0, 50_000.0, start_pos=2.0))
+    assert gw.margin_calls == []
+
+
+def test_ensure_margin_disabled_skips_call(settings, db) -> None:
+    """Flag desligada ⇒ executor nem chama ensure_margin; ordem segue normal."""
+    settings.copy_trade.auto_transfer_margin = False
+    ex, watcher, gw = make_executor(settings, db)
+    watcher.emit(TARGET, fill("BTC", "B", 2.0, 50_000.0, start_pos=0.0))
+    assert gw.margin_calls == []
+    assert len(gw.intents) == 1  # a cópia acontece mesmo assim
 
 
 def test_percent_mode_proportional_to_equity(settings, db) -> None:

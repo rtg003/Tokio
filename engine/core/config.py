@@ -74,6 +74,16 @@ class CopyTradeSettings(BaseModel):
     # WS resiliente: reconecta se ficar silencioso além do timeout; backoff máx.
     ws_stale_timeout_s: float = 35.0
     ws_reconnect_max_backoff_s: float = 60.0
+    # Auto-transfer spot→perp INTRA-CONTA (wallet+ambiente). Na HL spot e perp são
+    # pools de margem separados — USDC no spot não cobre perp sem
+    # usd_class_transfer. testnet liga por padrão; mainnet exige o gate extra.
+    auto_transfer_margin: bool = True
+    auto_transfer_margin_mainnet: bool = False
+    margin_transfer_buffer_pct: float = 5.0
+    min_transfer_usd: float = 1.0
+    # Auto-resume: horas em auto_paused SEM novo breach antes de voltar a active.
+    # None => comportamento manual (nenhum resume automático).
+    auto_resume_after_hours: float | None = None
 
 
 class Settings(BaseModel):

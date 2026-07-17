@@ -373,6 +373,8 @@ class CopyTradeExecutor:
             return None
 
         reduce_only = abs(my_new) < abs(my_prev) or my_new == 0.0
+        self._ensure_margin_for_open(strategy_id, cfg, delta, px, reduce_only,
+                                     environment, latency_ms)
         result = self.gateway.send_intent(
             strategy_id=strategy_id,
             symbol=symbol,
@@ -410,6 +412,37 @@ class CopyTradeExecutor:
         self.logger.info("decision.mirrored", {**decision, "result": result},
                          strategy_id=strategy_id, latency_ms=latency_ms)
         return result
+
+    def _ensure_margin_for_open(self, strategy_id: str, cfg: TraderConfig,
+                                delta: float, px: float, reduce_only: bool,
+                                environment: str | None,
+                                latency_ms: float | None = None) -> None:
+        """Auto-transfer spot→perp antes de ABRIR/aumentar posição (best-effort).
+
+        Na HL spot e perp são pools de margem separados; se a conta tem USDC só no
+        spot a ordem perp falha por falta de margem (incidente 2026-07-16). Aqui
+        pedimos ao gateway para garantir a margem INTRA-CONTA. Fechamentos
+        (reduce_only) liberam margem — não chamam. NUNCA aborta a cópia: erro/spot
+        insuficiente só loga e deixa a venue/reconcile tratarem."""
+        if reduce_only or abs(delta) <= 0:
+            return
+        if not self.settings.copy_trade.auto_transfer_margin:
+            return
+        required_margin = abs(delta) * px / max(cfg.max_leverage, 1.0)
+        if required_margin <= 0:
+            return
+        tr = self.gateway.ensure_margin(strategy_id, required_margin, environment)
+        if tr.get("transferred"):
+            self.logger.info("decision.margin.auto_transfer",
+                             {"amount": tr["transferred"], "required": required_margin,
+                              "environment": environment},
+                             strategy_id=strategy_id, latency_ms=latency_ms)
+        elif tr.get("reason") == "spot_insuficiente":
+            self.logger.warning("decision.margin.insufficient",
+                                {"spot_free": tr.get("spot_free"),
+                                 "needed": tr.get("needed"),
+                                 "required": required_margin},
+                                strategy_id=strategy_id, latency_ms=latency_ms)
 
     def _min_notional_for(self, cfg: TraderConfig) -> float:
         """Piso de notional efetivo para este trader.
@@ -609,6 +642,8 @@ class CopyTradeExecutor:
                 info = {"symbol": symbol, "target_now": target_now,
                         "desired": desired, "actual": actual, "delta": delta}
                 self.logger.warning("drift.correcting", info, strategy_id=sid)
+                self._ensure_margin_for_open(sid, cfg, delta, px, reduce_only,
+                                             environment)
                 result = self.gateway.send_intent(
                     strategy_id=sid,
                     symbol=symbol,

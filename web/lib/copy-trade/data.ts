@@ -50,6 +50,9 @@ export type Trader = Record<string, any> & {
   name?: string | null;
   status: string;
   strategy_id: string;
+  // Status da STRATEGY (active/auto_paused/…), separado do status operacional
+  // do trader (SALVO/TESTNET/MAINNET). Alimenta o badge "AUTO-PAUSADA".
+  strategy_status?: string | null;
   environment?: "testnet" | "mainnet" | null;
   copy_pinned?: number | null;
   n_copy_fills?: number;

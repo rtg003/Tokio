@@ -273,6 +273,34 @@ class HyperliquidAdapter(ExchangeAdapter):
             "margin_used": margin_used,
         }
 
+    def ensure_perp_margin(self, required_usd: float, *,
+                           buffer_pct: float = 5.0,
+                           min_transfer_usd: float = 1.0) -> dict[str, Any]:
+        """Garante margem perp mínima NESTA conta. Se o perp livre < required e há
+        spot livre, transfere spot→perp via usd_class_transfer. Intra-conta por
+        construção — opera só em self.account_address; nunca cruza wallets.
+
+        Retorna {"transferred": float, "ok": bool, "reason": str|None, ...}."""
+        if required_usd <= 0:
+            return {"transferred": 0.0, "reason": "sem_margem_requerida"}
+        bal = self.balances()  # withdrawable_perp e spot_usdc já são valores LIVRES
+        perp_available = float(bal.get("withdrawable_perp", 0) or 0)
+        if perp_available >= required_usd:
+            return {"transferred": 0.0, "reason": "margem_suficiente",
+                    "perp_available": perp_available}
+        spot_free = float(bal.get("spot_usdc", 0) or 0)  # total - hold (UPDATE-0046)
+        needed = required_usd - perp_available
+        amount = round(min(needed * (1 + buffer_pct / 100.0), spot_free), 2)
+        if amount < min_transfer_usd:
+            return {"transferred": 0.0, "reason": "spot_insuficiente",
+                    "spot_free": spot_free, "needed": needed}
+        with self._lock:
+            resp = self.exchange.usd_class_transfer(amount, True)  # True = spot→perp
+        ok = isinstance(resp, dict) and resp.get("status") == "ok"
+        return {"transferred": amount if ok else 0.0, "ok": ok,
+                "reason": None if ok else "transfer_falhou",
+                "spot_free": spot_free, "needed": needed, "resp": resp}
+
     def subscribe_own_fills(self, callback: FillCallback) -> None:
         self.subscribe_user_fills(self.account_address, callback)
 

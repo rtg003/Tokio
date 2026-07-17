@@ -3441,3 +3441,84 @@ ausentes** — reusa o padrão de `discovery.py:203-206`; o scan (que já traz e
 valores do leaderboard) fica intocado (guarda `key not in c.windows_pnl`).
 - **Re-validar (Hermes):** re-analisar `0x3bca`/`0x68f8`/`0xb7e0` e confirmar
   `pnl_30d` preenchido → então marcar UPDATE-0059 **APLICADO**.
+
+## UPDATE-0060 · 2026-07-17 · Status: PENDENTE
+
+**Auto-transfer spot→perp por conta + correções do auto-pause.** Corrige o
+incidente de 2026-07-16: o trader `0x1a5d` (mainnet) preencheu buy 300 AAVE @
+$90.165 (10x); a cópia deveria sair na conta **testnet da wallet 0x4124**
+(strategy `ct_1a5db900`), mas **não saiu** por DOIS motivos independentes.
+
+### Problema
+1. **Margem perp zerada:** a conta tinha **$922.49 em spot** e **$0 em perp**.
+   Na Hyperliquid spot e perp são carteiras de margem SEPARADAS — USDC no spot
+   NÃO serve de margem para ordem perp sem `usd_class_transfer`. Não há "margem
+   unificada" que faça o spot cobrir o perp; **unificar via código não é
+   possível na HL** — a solução é auto-transferir spot→perp quando a cópia exigir
+   margem.
+2. **`auto_paused` indevido:** a strategy estava `auto_paused`; o runner logou
+   `signal.ignored_status {"status":"auto_paused"}` (DEBUG, não persistido) e
+   descartou os fills.
+
+### O que mudou (código — CONSTRUTOR)
+- **(A) Auto-transfer spot→perp INTRA-CONTA.** Novo `ensure_perp_margin` no
+  `HyperliquidAdapter`: se o perp livre < required e há spot livre, transfere via
+  `usd_class_transfer(amount, True)` na PRÓPRIA `account_address` (nunca cruza
+  wallets/ambientes). Endpoint interno `POST /internal/ensure-margin`
+  (confiança-localhost, FORA do hot path §8.4.1) resolve o adapter por ambiente,
+  respeita as flags e **persiste** `decision.margin.auto_transfer` (info) /
+  `decision.margin.insufficient` (warning). O executor chama antes de ABRIR
+  posição em `on_target_fill` e `reconcile` (fechamentos, reduce_only, liberam
+  margem → não chamam). **Best-effort:** erro/spot insuficiente NUNCA aborta a
+  cópia — deixa a venue/reconcile tratarem.
+- **(B) Auto-pause enriquecido (caminho `check_thresholds`).**
+  - B1: evento `strategy.auto_paused` agora carrega payload rico (breach + pnl,
+    n_trades, win_rate, thresholds, window_days).
+  - B2: auto-resume configurável (`auto_resume_after_hours`, default `null` =
+    manual): após N horas SEM novo breach, volta a `active` e emite
+    `strategy.auto_resumed`.
+  - B3: o PnL do breach passa a ser computado direto em `fills` **excluindo
+    `forced_close=1`** (ADL/liquidação re-hidratada não rebaixa a strategy). As
+    métricas REPORTADAS (dashboard) ficam intactas — só o cálculo do breach muda.
+  - B4: badge **"AUTO-PAUSADA"** na linha do trader (dashboard copy-trade).
+
+### Config (novas chaves `copy_trade`)
+`auto_transfer_margin: true` (testnet liga por padrão),
+`auto_transfer_margin_mainnet: false` (mainnet exige opt-in explícito),
+`margin_transfer_buffer_pct: 5.0`, `min_transfer_usd: 1.0`,
+`auto_resume_after_hours: null`.
+
+### Invariantes
+- Hot path §8.4.1 (`/intent`,`/cancel`,`handle_intent`) intacto; endpoint novo é
+  aditivo. `M.simulate_copy` inalterado. Transferência SEMPRE intra-conta —
+  isolamento por construção (§5.2).
+
+### Validação
+- `.venv/bin/python -m pytest tests/ -q` verde (417).
+- `web`: `npx tsc --noEmit` limpo; `npx next build` verde.
+
+### Hipótese de causa-raiz do `auto_paused` (Hermes confirma em produção)
+Descoberta em leitura (NÃO no incidente): o **circuit breaker global**
+(`server.py`) roda `UPDATE strategies SET status='auto_paused' WHERE
+status='active'` para TODAS as strategies quando a perda diária realizada excede
+`risk.max_daily_loss_usd` (default **$100**) — via SQL direto, **sem emitir
+evento** (por isso não há log `strategy.auto_paused` para a `ct_1a5db900`). A
+perda de −$146 de 14/07 (ADLs do incidente HYPE) tripa esse gatilho.
+**Limitação conhecida:** as correções B1-B3 são do caminho por-strategy; o
+circuit breaker é um caminho SEPARADO e silencioso, então o auto-resume (B2) NÃO
+o cobre. A lógica do breaker NÃO foi tocada (decisão do operador) — fica como
+follow-up a aprovar após a confirmação abaixo.
+
+### Investigação em produção (Hermes)
+1. **Confirmar causa-raiz:** `SELECT id,status FROM strategies WHERE
+   id='ct_1a5db900';`; comparar `risk.max_daily_loss_usd` vs. a perda realizada
+   de 14/07; grep dos logs do runner 14-17/07 por `circuit_open`/`auto_paused`.
+2. **Eventos:** `SELECT * FROM events WHERE event_type LIKE '%pause%' ORDER BY ts
+   DESC;` (esperado VAZIO para o breaker → confirma o UPDATE silencioso).
+3. **Reset seguro (ato do operador):** `UPDATE strategies SET status='active'
+   WHERE id='ct_1a5db900';` após validar que a causa (perdas de 14/07) já foi
+   corrigida (UPDATEs 0048-0050).
+4. **Validação end-to-end:** zerar o perp da conta de teste (tudo em spot) →
+   disparar cópia → confirmar `decision.margin.auto_transfer` + ordem executada +
+   eventos no banco; reproduzir o cenário de 16/07. Marcar UPDATE-0060
+   **APLICADO** ao confirmar.

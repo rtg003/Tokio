@@ -235,6 +235,32 @@ function CopyAddr({ address }: { address: string }) {
   );
 }
 
+// Badge "AUTO-PAUSADA": a STRATEGY do trader foi auto-pausada (breach de
+// threshold ou circuit breaker global). Enquanto auto_paused o runner descarta
+// os fills do alvo (nenhuma cópia sai). Status da strategy ≠ status operacional
+// do trader — por isso o badge é separado da coluna Status.
+function AutoPausedBadge({ status }: { status?: string | null }) {
+  if (status !== "auto_paused") return null;
+  return (
+    <span
+      title="Strategy AUTO-PAUSADA: nenhuma cópia sai enquanto durar. Causas: breach de threshold (min PnL/win rate) ou circuit breaker global (perda diária). Reative no combobox de Status ou aguarde o auto-resume (se configurado)."
+      style={{
+        marginLeft: 6,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: 0.3,
+        padding: "1px 5px",
+        borderRadius: 4,
+        color: "#c1121f",
+        border: "1px solid #c1121f",
+        whiteSpace: "nowrap",
+      }}
+    >
+      AUTO-PAUSADA
+    </span>
+  );
+}
+
 export default function TradersTable({
   traders,
   env,
@@ -359,6 +385,7 @@ export default function TradersTable({
                     </td>
                     <td>
                       <span className={`trader-name ${nameClass}`}>{t.name ?? shortAddr(t.address)}</span>
+                      <AutoPausedBadge status={t.strategy_status} />
                       <CopyAddr address={t.address} />
                     </td>
                     <td>

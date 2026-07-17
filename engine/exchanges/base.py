@@ -92,5 +92,14 @@ class ExchangeAdapter(ABC):
     @abstractmethod
     def mid_price(self, symbol: str) -> float: ...
 
+    def ensure_perp_margin(self, required_usd: float, *,
+                           buffer_pct: float = 5.0,
+                           min_transfer_usd: float = 1.0) -> dict[str, Any]:
+        """Garante margem perp mínima NESTA conta, transferindo spot→perp se
+        preciso. Intra-conta por construção (opera na própria account_address);
+        nunca cruza wallets/ambientes. Default: no-op (venues sem spot/perp
+        separados). Sobrescrito pelo HyperliquidAdapter."""
+        return {"transferred": 0.0, "reason": "nao_suportado"}
+
     def close(self) -> None:  # optional cleanup (WS connections)
         return None
