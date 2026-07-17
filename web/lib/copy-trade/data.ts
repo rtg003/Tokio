@@ -600,6 +600,10 @@ export type SuggestionReport = {
   hypertracker?: HyperTrackerAggregate | null;
   // UPDATE-0059: simulação amostral (paralela às sim_* longitudinais).
   sample_metrics?: SampleMetrics | null;
+  // UPDATE-0062 (v15): fonte das métricas de posição + confiança dos fills. Um
+  // trader pode ter posição `complete` via HT E copy sim `sampled` (fills).
+  position_metrics_source?: "hypertracker" | "hl_fills" | null;
+  fills_metrics_confidence?: string | null;
   metrics: SuggestionMetrics;
 };
 
@@ -704,6 +708,30 @@ export async function reclassify(
   } catch {
     return { ok: false, reclassified: 0, reason: "gateway_indisponivel" };
   }
+}
+
+// UPDATE-0062 (v15): heatmap de viés de mercado do HyperTracker (posições
+// abertas nos últimos 7d por ativo). INFORMATIVO — nunca entra no ranking.
+export type MarketBias = {
+  scan_ts: string;
+  logic_version: number;
+  payload: unknown | null;
+} | null;
+
+export async function getMarketBias(): Promise<MarketBias> {
+  // Tolera ausência (sem chave HT / tabela vazia → {} no gateway). Nunca derruba
+  // a dashboard: falha vira null e o componente simplesmente não renderiza.
+  const data = await gatewayGet<{
+    scan_ts?: string;
+    logic_version?: number;
+    payload?: unknown;
+  }>("/api/copy-trade/market-bias");
+  if (!data || !data.scan_ts) return null;
+  return {
+    scan_ts: data.scan_ts,
+    logic_version: data.logic_version ?? 0,
+    payload: data.payload ?? null,
+  };
 }
 
 export async function getPositions(

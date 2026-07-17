@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,8 +20,28 @@ logger = logging.getLogger(__name__)
 
 LEADERBOARD_URL = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
 INFO_URL = "https://api.hyperliquid.xyz/info"
+# v15: HyperTracker (coinmarketman) — posições consolidadas + cohorts/segmentos.
+HT_BASE_URL = "https://ht-api.coinmarketman.com/api/external"
 
 DAY_MS = 86_400_000
+
+
+def _parse_ht_positions_page(data: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """Desembrulha UMA página de `/api/external/positions`.
+
+    Tolerante a formatos: ``{"items": [...], "nextCursor": "..."}`` (real),
+    ``{"data": [...]}`` (legado) ou lista crua. Retorna
+    ``(itens, próximo_cursor|None)`` — helper puro, testável sem HTTP em
+    `tests/test_hl_data.py`."""
+    if isinstance(data, dict):
+        items = data.get("items")
+        if items is None:
+            items = data.get("data")
+        cursor = data.get("nextCursor") or data.get("next_cursor")
+        return (items if isinstance(items, list) else [], cursor or None)
+    if isinstance(data, list):
+        return (data, None)
+    return ([], None)
 
 
 def _parse_ht_wallet(data: Any, address: str) -> dict[str, Any]:
@@ -46,8 +67,43 @@ def _parse_ht_wallet(data: Any, address: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _flatten_cohort_ids(cohorts_cfg: Any) -> list[int]:
+    """Achata a config de cohorts (`{money_printer: 8, whales: [2,3,4,5]}` ou
+    lista de ids) numa lista de segmentIds únicos, preservando a ordem."""
+    out: list[int] = []
+    seen: set[int] = set()
+
+    def _add(value: Any) -> None:
+        try:
+            sid = int(value)
+        except (TypeError, ValueError):
+            return
+        if sid not in seen:
+            seen.add(sid)
+            out.append(sid)
+
+    if isinstance(cohorts_cfg, dict):
+        values: Any = cohorts_cfg.values()
+    elif isinstance(cohorts_cfg, (list, tuple)):
+        values = cohorts_cfg
+    else:
+        values = []
+    for v in values:
+        if isinstance(v, (list, tuple)):
+            for item in v:
+                _add(item)
+        else:
+            _add(v)
+    return out
+
+
 class RequestBudgetExceeded(RuntimeError):
     """Orçamento da varredura esgotado — o funil encerra graciosamente."""
+
+
+class HTBudgetExhausted(RuntimeError):
+    """v15: orçamento do HyperTracker (free tier 100 req/dia) esgotado — a fonte
+    de posições degrada para fills HL silenciosamente (soft dependency)."""
 
 
 class HLDataClient:
@@ -59,6 +115,8 @@ class HLDataClient:
         min_interval_s: float = 1.3,
         max_retries: int = 4,
         cache_ttl_hours: float = 20.0,
+        ht_daily_cap: int = 90,
+        ht_per_scan_cap: int = 80,
     ) -> None:
         import httpx
 
@@ -70,6 +128,61 @@ class HLDataClient:
         self.max_retries = max_retries
         self.cache_ttl = timedelta(hours=cache_ttl_hours)
         self._last_request_ts = 0.0
+        # v15: orçamento HyperTracker SEPARADO do budget HL (free tier 100/dia).
+        # `_ht_scan_used` conta esta varredura; o total do dia UTC é persistido em
+        # discovery_cache (chave `ht_budget:<dia>`) p/ sobreviver a múltiplos scans.
+        self.ht_daily_cap = ht_daily_cap
+        self.ht_per_scan_cap = ht_per_scan_cap
+        self._ht_scan_used = 0
+        self._ht_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self._ht_day_used_base = self._load_ht_day_used()
+
+    # -- orçamento HyperTracker (dedicado) ---------------------------------
+    def _load_ht_day_used(self) -> int:
+        if self.db is None:
+            return 0
+        rows = self.db.query(
+            "SELECT payload FROM discovery_cache WHERE cache_key = ?",
+            (f"ht_budget:{self._ht_day}",))
+        if not rows:
+            return 0
+        try:
+            return int(json.loads(rows[0]["payload"]).get("used", 0))
+        except Exception:  # noqa: BLE001
+            return 0
+
+    @property
+    def ht_requests_used(self) -> int:
+        """Requests HT usados HOJE (base persistida + esta varredura)."""
+        return self._ht_day_used_base + self._ht_scan_used
+
+    def _ht_budget_available(self) -> bool:
+        return (self._ht_scan_used < self.ht_per_scan_cap
+                and self.ht_requests_used < self.ht_daily_cap)
+
+    def _ht_incr(self) -> None:
+        self._ht_scan_used += 1
+        if self.db is not None:
+            self.db.upsert("discovery_cache", {
+                "cache_key": f"ht_budget:{self._ht_day}",
+                "payload": json.dumps({"used": self.ht_requests_used}),
+                "created_at": utcnow(),
+            }, ("cache_key",))
+
+    def _ht_get(self, key: str, path: str, params: dict[str, Any],
+                api_key: str) -> Any:
+        """GET no HyperTracker com cache + orçamento HT dedicado. Cache HIT não
+        consome orçamento; sem orçamento levanta HTBudgetExhausted."""
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        if not self._ht_budget_available():
+            raise HTBudgetExhausted(key)
+        self._ht_incr()
+        return self._request(key, lambda: self._http.get(
+            f"{HT_BASE_URL}{path}", params=params,
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Accept": "application/json"}))
 
     # -- cache -----------------------------------------------------------
     def _cache_get(self, key: str) -> Any | None:
@@ -126,7 +239,16 @@ class HLDataClient:
                                exc.request.url, exc.response.status_code)
                 if exc.response.status_code != 429 or attempt == self.max_retries:
                     raise
-                time.sleep(backoff)
+                # v15: respeita o header Retry-After do 429 (HyperTracker manda o
+                # tempo exato) quando maior que o backoff exponencial corrente.
+                delay = backoff
+                retry_after = exc.response.headers.get("retry-after")
+                if retry_after:
+                    try:
+                        delay = max(backoff, float(retry_after))
+                    except (TypeError, ValueError):
+                        pass
+                time.sleep(delay)
                 backoff *= 2
         raise RuntimeError("unreachable")
 
@@ -276,6 +398,16 @@ class HLDataClient:
                     key, max_addresses=int(ht.get("max_addresses", 300))))
             else:
                 by_source["hypertracker"] = []
+            # v15: sourcing por COHORT — wallets com posição aberta nos segmentos
+            # configurados (Money Printer/Smart Money/whales). Sub-fonte própria
+            # p/ contabilizar `ht_cohort_*` no funil; sem chave/orçamento → [].
+            cohorts_cfg = ht.get("cohorts") or {}
+            segment_ids = _flatten_cohort_ids(cohorts_cfg)
+            if key and segment_ids:
+                by_source["hypertracker_cohorts"] = dedup(
+                    self.ht_cohort_addresses(segment_ids))
+            else:
+                by_source["hypertracker_cohorts"] = []
         nansen = sources_cfg.get("nansen_leaderboard") or {}
         if nansen.get("enabled"):
             key = os.environ.get(str(nansen.get("api_key_env", "NANSEN_API_KEY")), "")
@@ -340,6 +472,128 @@ class HLDataClient:
             logger.warning("discovery.hypertracker_wallet_error address=%s", address)
             return {}
         return _parse_ht_wallet(data, address)
+
+    # -- v15: posições consolidadas + cohorts + heatmap --------------------
+    def ht_positions(self, address: str, *, max_pages: int = 10,
+                     page_limit: int = 100) -> list[dict[str, Any]]:
+        """Posições CONSOLIDADAS de UMA wallet no HyperTracker
+        (`/api/external/positions`), paginadas por `nextCursor`.
+
+        Fonte PRIMÁRIA de métricas de posição (v15) — não sofre o teto de ~2.000
+        fills da HL. SOFT dependency: sem `HYPERTRACKER_API_KEY`, orçamento HT
+        esgotado ou erro → ``[]`` (o funil degrada para fills HL).
+        """
+        api_key = os.environ.get("HYPERTRACKER_API_KEY", "")
+        if not api_key:
+            return []
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"address": address, "limit": page_limit}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                data = self._ht_get(
+                    f"ht_positions:{address}:{cursor or 0}", "/positions",
+                    params, api_key)
+            except HTBudgetExhausted:
+                logger.warning("discovery.ht_budget_exhausted endpoint=positions "
+                               "address=%s", address)
+                return out
+            except Exception:  # noqa: BLE001 — soft dependency, degrada p/ fills
+                logger.warning("discovery.ht_positions_error address=%s", address)
+                return out
+            items, cursor = _parse_ht_positions_page(data)
+            out.extend(it for it in items if isinstance(it, dict))
+            if not cursor or not items:
+                break
+        return out
+
+    def ht_segments(self) -> list[dict[str, Any]]:
+        """Segmentos/cohorts disponíveis no HyperTracker (`/api/external/segments`).
+        SOFT dependency: sem chave/orçamento/erro → ``[]``."""
+        api_key = os.environ.get("HYPERTRACKER_API_KEY", "")
+        if not api_key:
+            return []
+        try:
+            data = self._ht_get("ht_segments", "/segments", {}, api_key)
+        except HTBudgetExhausted:
+            logger.warning("discovery.ht_budget_exhausted endpoint=segments")
+            return []
+        except Exception:  # noqa: BLE001
+            logger.warning("discovery.ht_segments_error")
+            return []
+        if isinstance(data, dict):
+            items = data.get("items")
+            if items is None:
+                items = data.get("data")
+            return items if isinstance(items, list) else []
+        return data if isinstance(data, list) else []
+
+    def ht_cohort_addresses(self, segment_ids: list[int], *,
+                            max_per_segment: int = 200,
+                            page_limit: int = 100) -> list[str]:
+        """Wallets com posição ABERTA por segmento
+        (`/positions?segmentId=X&open=true`), deduplicadas. Alimenta o funil como
+        ENDEREÇOS candidatos (métricas/filtros seguem 100% nossos). SOFT
+        dependency: sem chave/orçamento/erro → o que já coletou (possivelmente
+        ``[]``)."""
+        api_key = os.environ.get("HYPERTRACKER_API_KEY", "")
+        if not api_key:
+            return []
+        seen: set[str] = set()
+        out: list[str] = []
+        for sid in segment_ids:
+            cursor: str | None = None
+            collected = 0
+            for _ in range(max(1, max_per_segment // page_limit) + 1):
+                params: dict[str, Any] = {"segmentId": sid, "open": "true",
+                                          "limit": page_limit}
+                if cursor:
+                    params["cursor"] = cursor
+                try:
+                    data = self._ht_get(
+                        f"ht_cohort:{sid}:{cursor or 0}", "/positions",
+                        params, api_key)
+                except HTBudgetExhausted:
+                    logger.warning("discovery.ht_budget_exhausted "
+                                   "endpoint=cohort segment=%s", sid)
+                    return out
+                except Exception:  # noqa: BLE001
+                    logger.warning("discovery.ht_cohort_error segment=%s", sid)
+                    break
+                items, cursor = _parse_ht_positions_page(data)
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    addr = str(it.get("address", "")).lower()
+                    if addr.startswith("0x") and len(addr) == 42 and addr not in seen:
+                        seen.add(addr)
+                        out.append(addr)
+                        collected += 1
+                if not cursor or not items or collected >= max_per_segment:
+                    break
+        return out
+
+    def ht_heatmap(self, *, opened_within: str = "7d") -> dict[str, Any]:
+        """Heatmap de posicionamento agregado do HyperTracker
+        (`/positions/heatmap?openedWithin=...`). INFORMATIVO — persistido em
+        `market_bias` p/ exibição; NUNCA alimenta ranking. SOFT dependency:
+        sem chave/orçamento/erro → ``{}``."""
+        api_key = os.environ.get("HYPERTRACKER_API_KEY", "")
+        if not api_key:
+            return {}
+        try:
+            data = self._ht_get(
+                f"ht_heatmap:{opened_within}", "/positions/heatmap",
+                {"openedWithin": opened_within}, api_key)
+        except HTBudgetExhausted:
+            logger.warning("discovery.ht_budget_exhausted endpoint=heatmap")
+            return {}
+        except Exception:  # noqa: BLE001
+            logger.warning("discovery.ht_heatmap_error")
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def _hypertracker_leaderboard(self, api_key: str, *,
                                   max_addresses: int) -> list[str]:

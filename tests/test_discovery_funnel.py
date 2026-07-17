@@ -792,3 +792,144 @@ def test_reprocess_flag_off_disables_injection(db) -> None:
     result = run_scan(client, db, cfg, now_ms=NOW_MS)
     assert result.funnel_stats.get("reprocessados", 0) == 0
     assert SAVED_OK not in {c.address for c in result.approved}
+
+
+# ============================================================================
+# UPDATE-0062 (v15) — HyperTracker como fonte primária de POSIÇÕES + cohorts
+# ============================================================================
+from engine.strategies.copy_trade.funnel import deep_dive  # noqa: E402
+
+COHORT_A = "0x" + "1a" * 20
+COHORT_B = "0x" + "2b" * 20
+
+
+def _ht_closed(coin: str, pnl: float, *, open_days: float,
+               close_days: float) -> dict[str, Any]:
+    """Posição CONSOLIDADA fechada do HyperTracker (abriu/fechou N dias atrás)."""
+    return {"coin": coin, "status": "closed", "realizedPnl": pnl,
+            "openedAt": NOW_MS - open_days * DAY_MS,
+            "closedAt": NOW_MS - close_days * DAY_MS}
+
+
+def _ht_positions_40d() -> list[dict[str, Any]]:
+    """10 posições fechadas cobrindo ~40 dias (7 wins / 3 losses)."""
+    pos = [_ht_closed("BTC", 50.0, open_days=40, close_days=39)]
+    for i in range(6):
+        pos.append(_ht_closed("ETH", 30.0 + i, open_days=30 - i, close_days=29 - i))
+    for i in range(3):
+        pos.append(_ht_closed("SOL", -20.0, open_days=20 - i, close_days=19 - i))
+    return pos
+
+
+class HTFakeClient(FakeClient):
+    """FakeClient + métodos HyperTracker (v15). Lê `ht_positions` do perfil e
+    injeta `hypertracker_cohorts` via `external_candidates_by_source`."""
+
+    def __init__(self, rows: list[dict[str, Any]],
+                 profiles: dict[str, dict[str, Any]], *,
+                 cohort_addrs: list[str] | None = None,
+                 heatmap: dict[str, Any] | None = None) -> None:
+        super().__init__(rows, profiles)
+        self._cohort_addrs = cohort_addrs or []
+        self._heatmap = heatmap or {}
+        self.ht_positions_calls: list[str] = []
+
+    def ht_positions(self, address: str) -> list[dict[str, Any]]:
+        self.ht_positions_calls.append(address.lower())
+        return self._p(address).get("ht_positions", [])
+
+    def ht_segments(self) -> list[dict[str, Any]]:
+        return [{"id": 8}, {"id": 9}]
+
+    def ht_heatmap(self, *, opened_within: str = "7d") -> dict[str, Any]:
+        return self._heatmap
+
+    def external_candidates_by_source(self, sources_cfg):
+        return {"hypertracker_cohorts": list(self._cohort_addrs)}
+
+
+def _ht_client(profiles: dict[str, dict[str, Any]], *,
+               cohort_addrs: list[str] | None = None,
+               heatmap: dict[str, Any] | None = None) -> HTFakeClient:
+    base = make_client()
+    client = HTFakeClient(base.rows, base.profiles, cohort_addrs=cohort_addrs,
+                          heatmap=heatmap)
+    client.profiles.update(profiles)
+    return client
+
+
+def test_v15_ht_positions_source_marks_complete(monkeypatch) -> None:
+    """v15: com o HT cobrindo a janela, `position_metrics_source==hypertracker` e
+    `metrics_confidence==complete` MESMO com pouquíssimos fills — enquanto a
+    confiança DOS FILLS (que gate a copy sim) segue insuficiente."""
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    client = _ht_client({GOOD: {
+        "fills": swing_fills(n=3),                 # amostra pobre (3 closes < 30)
+        "clearinghouse": healthy_clearinghouse(),
+        "ht_positions": _ht_positions_40d(),       # cobre ~40d, 10 posições
+    }})
+    c = Candidate(address=GOOD)
+    deep_dive(c, client, CFG, set(), NOW_MS)
+
+    assert c.position_metrics_source == "hypertracker"
+    assert c.n_trades == 10                         # veio das posições consolidadas
+    assert c.metrics_confidence == "complete"       # HT cobre a janela
+    # separação: a copy sim segue em fills HL, cuja amostra é insuficiente.
+    assert c.fills_metrics_confidence == "insufficient"
+    assert c.fills_closed_count == 3
+
+
+def test_v15_ht_unavailable_falls_back_to_fills(monkeypatch) -> None:
+    """Fallback: HT ligado mas SEM posições p/ a wallet → `hl_fills` e métricas
+    reconstruídas dos fills (comportamento pré-v15 preservado)."""
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    client = _ht_client({GOOD: {
+        "fills": swing_fills(n=3),
+        "clearinghouse": healthy_clearinghouse(),
+        # sem "ht_positions" → ht_positions() devolve [] → degrada p/ fills
+    }})
+    c = Candidate(address=GOOD)
+    deep_dive(c, client, CFG, set(), NOW_MS)
+
+    assert c.position_metrics_source == "hl_fills"
+    assert c.n_trades == 3                           # veio dos fills, não do HT
+    assert c.metrics_confidence == c.fills_metrics_confidence
+
+
+def test_v15_copy_sim_stays_on_fills_regardless_of_ht(monkeypatch) -> None:
+    """INVARIANTE: a simulação de cópia (sim_*) SEMPRE consome fills HL — o
+    override de posição pelo HT não altera nenhuma métrica de sim."""
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    profile = {
+        "fills": swing_fills(pnl_each=800),
+        "clearinghouse": healthy_clearinghouse(),
+        "ht_positions": _ht_positions_40d(),
+    }
+    # com HT (override de posição)
+    c_ht = Candidate(address=GOOD)
+    deep_dive(c_ht, _ht_client({GOOD: dict(profile)}), CFG, set(), NOW_MS,
+              use_ht_positions=True)
+    # sem HT (posição também vem dos fills)
+    c_fills = Candidate(address=GOOD)
+    deep_dive(c_fills, _ht_client({GOOD: dict(profile)}), CFG, set(), NOW_MS,
+              use_ht_positions=False)
+
+    assert c_ht.position_metrics_source == "hypertracker"
+    assert c_fills.position_metrics_source == "hl_fills"
+    # o override MEXEU nas métricas de posição…
+    assert c_ht.n_trades != c_fills.n_trades
+    # …mas a copy sim (fills HL) é IDÊNTICA nos dois caminhos.
+    assert c_ht.sim_net_pnl_usd is not None
+    assert c_ht.sim_net_pnl_usd == pytest.approx(c_fills.sim_net_pnl_usd)
+    assert c_ht.sim_stage4_net_usd == pytest.approx(c_fills.sim_stage4_net_usd)
+
+
+def test_v15_cohort_sourcing_injects_and_counts(db, monkeypatch) -> None:
+    """v15: sourcing por cohort injeta endereços NOVOS e conta
+    `ht_cohort_novos`/`ht_cohort_aprofundados`."""
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    client = _ht_client({}, cohort_addrs=[COHORT_A, COHORT_B])
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+
+    assert result.funnel_stats["ht_cohort_novos"] == 2
+    assert result.funnel_stats["ht_cohort_aprofundados"] == 2

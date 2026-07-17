@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import AutoRefresh from "@/components/AutoRefresh";
 import DashboardControls from "@/components/DashboardControls";
 import KpiRow from "@/components/copy-trade/KpiRow";
+import MarketBiasCard from "@/components/copy-trade/MarketBiasCard";
 import PositionsTable from "@/components/copy-trade/PositionsTable";
 import TradersTable from "@/components/copy-trade/TradersTable";
 import TradesOrdersTable from "@/components/copy-trade/TradesOrdersTable";
@@ -10,6 +11,7 @@ import {
   getCopyStrategyIds,
   getFills,
   getFillsSummary,
+  getMarketBias,
   getMetrics,
   getOrders,
   getPnlSummary,
@@ -111,13 +113,14 @@ export default async function CopyTradeDashboard({
           .filter((id): id is string => Boolean(id));
   const network = selectedEnv;
   const balance = await getBalance(selectedEnv, walletFilter);
-  const [metrics, fillsSummary, pnlSummary, orders, fills, positions] = await Promise.all([
+  const [metrics, fillsSummary, pnlSummary, orders, fills, positions, marketBias] = await Promise.all([
     getMetrics(copyStrategyIds, sinceDay, untilDay),
     getFillsSummary(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
     getPnlSummary(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
     getOrders(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
     getFills(ledgerStrategyIds, sinceTs, untilTs, network, walletFilter),
     getPositions(ledgerStrategyIds, network, walletFilter),
+    getMarketBias(),
   ]);
   const traderFilterOptions = traderOptions(allTraders);
 
@@ -147,6 +150,7 @@ export default async function CopyTradeDashboard({
         envFiltered={true}
       />
       <PositionsTable positions={positions} />
+      <MarketBiasCard bias={marketBias} />
       <TradesOrdersTable orders={orders} fills={fills} traders={allTraders} />
       <TradersTable
         traders={filteredTraders}

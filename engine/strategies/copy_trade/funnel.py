@@ -114,6 +114,19 @@ class Candidate:
     fills_complete: bool = True                   # amostra cobre a janela longitudinal?
     metrics_confidence: str = "complete"          # complete | sampled | insufficient
     metrics_warnings: list[str] = field(default_factory=list)
+    # UPDATE-0062 (v15): fonte das MÉTRICAS DE POSIÇÃO. "hl_fills" (default) =
+    # reconstruído dos fills HL (sujeito ao teto de ~2000). "hypertracker" =
+    # posições consolidadas do HT (sem o teto → libera metrics_confidence
+    # complete). A simulação de cópia (sim_*) SEGUE em fills HL sempre.
+    position_metrics_source: str = "hl_fills"      # hypertracker | hl_fills
+    ht_position_covered_days: float | None = None  # span coberto pelas posições HT
+    # nº de fills de FECHAMENTO na amostra (pré-override HT). Preserva a evidência
+    # dos fills p/ o gate de sim_* mesmo quando n_trades é sobrescrito pelo HT.
+    fills_closed_count: int = 0
+    # confiança das métricas SÓ dos fills (independe do HT). Guia o gate de
+    # nulificação de sim_* — a copy sim SEGUE em fills HL. Sem HT, é igual a
+    # metrics_confidence (comportamento 0056 preservado).
+    fills_metrics_confidence: str = "complete"     # complete | sampled | insufficient
     indeterminate_filters: list[str] = field(default_factory=list)
     # UPDATE-0057 (Fase 2): enriquecimento AGREGADO do HyperTracker em campos
     # SEPARADOS (nunca substituem as métricas HL). Só a análise individual os
@@ -349,8 +362,58 @@ def _cut_inactive_cheap(cheap: list[Candidate], client: DataClient,
     return kept
 
 
+def _ht_positions_enabled(client: DataClient, cfg: dict[str, Any]) -> bool:
+    """True quando a fonte HT de posições está ligada (config + chave + método).
+    Soft dependency: sem qualquer um dos três, o funil segue em fills HL."""
+    ht = (cfg.get("sources") or {}).get("hypertracker") or {}
+    if not ht.get("enabled"):
+        return False
+    if not hasattr(client, "ht_positions"):
+        return False
+    key_env = str(ht.get("api_key_env") or "HYPERTRACKER_API_KEY")
+    return bool(os.environ.get(key_env))
+
+
+def _apply_ht_positions(c: Candidate, client: DataClient, cfg: dict[str, Any],
+                        liquid: set[str], now_ms: float) -> bool:
+    """UPDATE-0062 (v15): substitui as MÉTRICAS DE POSIÇÃO reconstruídas dos
+    fills pelas posições consolidadas do HyperTracker, quando disponíveis.
+
+    Não toca em sim_* (copy sim segue em fills HL — invariante). Retorna True
+    quando o HT forneceu as métricas (fonte = hypertracker)."""
+    try:
+        positions = client.ht_positions(c.address)
+    except Exception:  # noqa: BLE001 — HT nunca derruba o deep dive
+        return False
+    if not positions:
+        return False
+    m = M.position_metrics_from_ht(positions, now_ms, liquid)
+    if not m:
+        return False
+    # só sobrescreve campos que o HT efetivamente calculou (não-None)
+    def _set(attr: str, key: str) -> None:
+        val = m.get(key)
+        if val is not None:
+            setattr(c, attr, val)
+
+    _set("n_trades", "n_trades")
+    _set("n_trades_30d", "n_trades_30d")
+    _set("n_trades_7d", "n_trades_7d")
+    _set("win_rate", "win_rate")
+    _set("win_rate_30d", "win_rate_30d")
+    _set("pf", "profit_factor")
+    _set("median_hold_hours", "median_hold_hours")
+    _set("top3_concentration", "top3_concentration")
+    _set("avg_leverage", "avg_leverage")
+    _set("liquid_volume_share", "liquid_volume_share")
+    c.ht_position_covered_days = m.get("covered_days")
+    c.position_metrics_source = "hypertracker"
+    return True
+
+
 def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
-              liquid: set[str], now_ms: float | None = None) -> None:
+              liquid: set[str], now_ms: float | None = None,
+              *, use_ht_positions: bool = True) -> None:
     """Coleta cara por candidato + cálculo de todas as métricas do Estágio 2/3."""
     col = cfg["collection"]
     now_ms = now_ms or time.time() * 1000
@@ -391,6 +454,9 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
         closing_fills = [f for f in fills
                          if float(f.get("closedPnl", 0) or 0) != 0.0]
         c.n_trades = len(closing_fills)
+        # preserva a contagem de fills de fechamento ANTES de qualquer override
+        # HT (o gate de sim_* usa isto, não o n_trades possivelmente vindo do HT).
+        c.fills_closed_count = len(closing_fills)
         c.n_trades_30d = len([f for f in closing_fills
                               if float(f["time"]) >= now_ms - 30 * DAY_MS])
         c.n_trades_7d = len([f for f in closing_fills
@@ -506,8 +572,14 @@ def deep_dive(c: Candidate, client: DataClient, cfg: dict[str, Any],
         c.weekly_stability = M.weekly_stability(weekly)
 
     # simulações de cópia (F15/F17/F18) — implementação ÚNICA, usada também
-    # pelo laboratório (research/discovery_lab/qualify.py)
+    # pelo laboratório (research/discovery_lab/qualify.py). SEMPRE em fills HL,
+    # ANTES de qualquer override de posição pelo HT (invariante inegociável).
     compute_copy_sims(c, fills, cfg, now_ms)
+
+    # UPDATE-0062 (v15): se a fonte HT está ligada e cobre a wallet, sobrescreve
+    # as métricas DE POSIÇÃO (não as sim_*) pelas posições consolidadas do HT.
+    if use_ht_positions and _ht_positions_enabled(client, cfg):
+        _apply_ht_positions(c, client, cfg, liquid, now_ms)
 
     c.style = classify_style(c.median_hold_hours)
     classify_metrics_confidence(c, cfg)
@@ -528,12 +600,27 @@ def classify_metrics_confidence(c: Candidate, cfg: dict[str, Any]) -> None:
     min_days = float(ma.get("min_sample_days_for_longitudinal_metrics", 25))
     min_fills = int(ma.get("min_sample_closed_fills", 30))
     span = c.fills_sample_days or 0.0
-    if not c.fills_sample_count or c.n_trades < min_fills:
-        c.metrics_confidence = "insufficient"
+    # Confiança SÓ dos fills (independe do HT). Usa fills_closed_count — nunca
+    # sobrescrito pelo HT — p/ que a copy sim (que roda em fills HL) seja gateada
+    # pela evidência real dos fills. Sem HT, fills_closed_count == n_trades →
+    # comportamento 0056 idêntico.
+    closed = c.fills_closed_count or c.n_trades
+    if not c.fills_sample_count or closed < min_fills:
+        fills_conf = "insufficient"
     elif not c.fills_complete or span < min_days:
-        c.metrics_confidence = "sampled"
+        fills_conf = "sampled"
     else:
+        fills_conf = "complete"
+    c.fills_metrics_confidence = fills_conf
+    # UPDATE-0062 (v15): posições consolidadas do HT são a evidência das MÉTRICAS
+    # DE POSIÇÃO — não dependem do teto de fills. Se o HT cobre a janela, a
+    # confiança GERAL (UI + guarda anti-sobrescrita) é `complete`; as sim_*
+    # seguem gateadas por `fills_metrics_confidence` (copy sim em fills HL).
+    if (c.position_metrics_source == "hypertracker"
+            and (c.ht_position_covered_days or 0.0) >= min_days):
         c.metrics_confidence = "complete"
+    else:
+        c.metrics_confidence = fills_conf
 
 
 def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
@@ -1048,6 +1135,14 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
         1 for c in selected_external if source_for_addr.get(c.address) == "hypertracker")
     stats["active_scan_aprofundados"] = sum(
         1 for c in selected_external if source_for_addr.get(c.address) == "active_scan")
+    # UPDATE-0062 (v15): sourcing por cohort do HyperTracker (segmentos). Novos =
+    # endereços de cohort injetados no scan; aprofundados = quantos foram ao deep.
+    stats["ht_cohort_novos"] = sum(
+        1 for c in source_candidates
+        if source_for_addr.get(c.address) == "hypertracker_cohorts")
+    stats["ht_cohort_aprofundados"] = sum(
+        1 for c in selected_external
+        if source_for_addr.get(c.address) == "hypertracker_cohorts")
     quota_left = max(0, external_quota - len(selected_external))
     fallback = cheap[deep_max:deep_max + quota_left]
     stats["fallback_leaderboard_extra"] = len(fallback)
@@ -1085,6 +1180,12 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     rejected: list[Candidate] = []
     from engine.strategies.copy_trade.hl_data import RequestBudgetExceeded
 
+    # UPDATE-0062 (v15): só as N wallets mais promissoras do scan gastam
+    # `ht_positions` (respeita o free tier do HT); as demais seguem em fills HL.
+    ht_budget_cfg = ((cfg.get("sources") or {}).get("hypertracker") or {}).get("budget") or {}
+    ht_positions_top_n = int(ht_budget_cfg.get("deep_dive_positions_top_n", 60))
+    ht_positions_used = 0
+
     for c in deep:
         try:
             # F1 primeiro e barato (1 request): reprova sem gastar o deep dive.
@@ -1100,7 +1201,10 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
                 continue
             if f1_reason:
                 c.reject_reasons = [f1_reason]
-            deep_dive(c, client, cfg, liquid, now_ms)
+            use_ht = ht_positions_used < ht_positions_top_n
+            deep_dive(c, client, cfg, liquid, now_ms, use_ht_positions=use_ht)
+            if c.position_metrics_source == "hypertracker":
+                ht_positions_used += 1
         except RequestBudgetExceeded:
             stats["interrompidos_por_orcamento"] = len(deep) - len(approved) - len(rejected)
             if logger:
@@ -1378,7 +1482,10 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
     # histórico longitudinal está incompleto NÃO afirmamos veredito sobre horas
     # de dado: (Parte 6) nulificamos as sim_* forjadas e (Parte 5) os filtros
     # longitudinais viram INDETERMINADOS em vez de reprovar.
-    if c.metrics_confidence != "complete":
+    # UPDATE-0062 (v15): o gate keia em `fills_metrics_confidence` (não em
+    # metrics_confidence): a copy sim SEGUE em fills HL, então posição completa
+    # via HT NÃO libera sim_* baseadas em fills truncados.
+    if c.fills_metrics_confidence != "complete":
         for attr in ("sim_net_pnl_usd", "sim_stage4_net_usd", "sim_expectancy_usd",
                      "sim_max_dd_pct", "sim_factor", "sim_copy_notional_usd",
                      "sim_half_old_net", "sim_half_new_net"):
@@ -1420,8 +1527,8 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
                 keep.append(r)
         reasons, c.indeterminate_filters = keep, indet
         c.metrics_warnings.append(
-            f"métricas longitudinais {c.metrics_confidence} — amostra cobre "
-            f"~{(c.fills_sample_days or 0):.1f}d ({c.fills_sample_count} fills); "
+            f"simulação de cópia {c.fills_metrics_confidence} — amostra de fills "
+            f"cobre ~{(c.fills_sample_days or 0):.1f}d ({c.fills_sample_count} fills); "
             f"filtros/sims que exigem 30/60d completos ficam INDETERMINADOS")
         # UPDATE-0059 (Parte C): projeção /30d INFORMATIVA no rationale (nunca é
         # filtro). Deixa explícito que é extrapolação da amostra, não medição.
@@ -1435,11 +1542,21 @@ def analyze_single_wallet(address: str, client: DataClient, cfg: dict[str, Any],
     if truncated:
         recent_capped = " (bateu o teto de ~%d)" % recent_limit \
             if len(recent) >= recent_limit else ""
-        c.metrics_warnings.append(
-            f"⚠️ amostra truncada: mesmo com {lon_pages} páginas do histórico + "
-            f"{len(recent)} fills recentes{recent_capped} ({len(fills)} únicos) "
-            f"não foi possível cobrir {lon_window}d — trader hiperativo demais; "
-            f"métricas longitudinais subestimam a atividade real")
+        if c.position_metrics_source == "hypertracker":
+            # UPDATE-0062 (v15): posições vieram do HT (consolidadas) — as
+            # métricas longitudinais NÃO subestimam. O teto de fills só limita a
+            # simulação de cópia (que segue em fills HL); nada de alarme sobre as
+            # métricas de posição.
+            c.metrics_warnings.append(
+                f"ℹ️ fills truncados ({len(fills)} únicos) — a simulação de cópia "
+                f"cobre só a janela de fills; métricas de posição vieram do "
+                f"HyperTracker (consolidadas, sem o teto de fills)")
+        else:
+            c.metrics_warnings.append(
+                f"⚠️ amostra truncada: mesmo com {lon_pages} páginas do histórico + "
+                f"{len(recent)} fills recentes{recent_capped} ({len(fills)} únicos) "
+                f"não foi possível cobrir {lon_window}d — trader hiperativo demais; "
+                f"métricas longitudinais subestimam a atividade real")
 
     c.reject_reasons = reasons
     c.reject_reason = None  # informativo apenas; nunca marca REJEITADO
@@ -1537,6 +1654,10 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             "sample_sim_max_dd_pct": c.sample_sim_max_dd_pct,
             "sample_sim_window_days": c.sample_sim_window_days,
             "sample_sim_net_per_day": c.sample_sim_net_per_day,
+            # UPDATE-0062 (v15): fonte das métricas de posição (hypertracker |
+            # hl_fills). A dashboard/report usam p/ omitir o aviso de truncamento
+            # quando a posição veio do HT.
+            "position_metrics_source": c.position_metrics_source,
             # Parte 2 (reclassify): persiste os 7 componentes normalizados [0,1]
             # + adjustments p/ recomputar o score sem refazer o deep dive.
             "score_components": serialize_components(c.components)
@@ -1615,6 +1736,25 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
                     "payload": json.dumps(agg | {"levs": len(agg["levs"])},
                                           ensure_ascii=False, default=str),
                 })
+
+    # UPDATE-0062 (v15): heatmap de viés de mercado do HyperTracker (informativo,
+    # SEM efeito em ranking). Snapshot por scan em `market_bias`. Soft dependency:
+    # sem chave/HT desligado → ht_heatmap() devolve {} e nada é persistido.
+    ht_cfg = (cfg.get("sources") or {}).get("hypertracker") or {}
+    if (client is not None and ht_cfg.get("enabled")
+            and ht_cfg.get("heatmap_enabled") and hasattr(client, "ht_heatmap")):
+        try:
+            heatmap = client.ht_heatmap()
+        except Exception as exc:  # noqa: BLE001 — heatmap nunca derruba o persist
+            heatmap = None
+            if logger:
+                logger.warning("discovery.ht_heatmap_failed", {"error": str(exc)[:200]})
+        if heatmap:
+            db.insert("market_bias", {
+                "scan_ts": utcnow(),
+                "logic_version": lv,
+                "payload": json.dumps(heatmap, ensure_ascii=False, default=str),
+            })
 
 
 def _components_from_row(row: dict[str, Any], cfg: dict[str, Any],

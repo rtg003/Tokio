@@ -3600,3 +3600,53 @@ no YAML). Sem novas chaves obrigatórias.
    clicar "limpar" reativa SÓ as estratégias pausadas pelo breaker; novo fill
    perdedor no mesmo dia UTC NÃO reabre.
 4. Ao confirmar, marcar UPDATE-0060 **e** UPDATE-0061 **APLICADOS**.
+
+---
+
+## UPDATE-0062 · 2026-07-17 · Status: PENDENTE
+
+**Origem**: PR do discovery v15 (merged)
+
+**Tipo**: logica_discovery + config
+
+**Resumo**: o discovery deixa de reconstruir as MÉTRICAS DE POSIÇÃO só a partir
+dos **fills** da Hyperliquid (truncados em ~2.000/página — traders hiperativos
+ficavam com win_rate/PF/hold/concentração subestimados e `metrics_confidence`
+caindo p/ `sampled`). O **HyperTracker** passa a ser a fonte PRIMÁRIA de
+posições consolidadas: quando disponível e cobrindo a janela, essas métricas vêm
+do HT e `metrics_confidence` pode ser `complete` **independentemente da contagem
+de fills** (novo campo `position_metrics_source = hypertracker | hl_fills`).
+Além disso, novas wallets entram por **cohort** (segmentos do HT) e o **heatmap**
+de viés de mercado fica visível na dashboard (informativo). `logic_version` 14→15.
+
+> **Separação crítica para a sua análise**: `position_metrics_source=hypertracker`
+> significa que WR/PF/hold/concentração/alavancagem são CONFIÁVEIS (posições
+> consolidadas). MAS a **simulação de cópia (sim_*) SEGUE em fills HL** e continua
+> sendo gateada por `fills_metrics_confidence` — ou seja, um trader hiperativo
+> pode ter **posição `complete` + copy sim `sampled`** ao mesmo tempo. Isso é
+> esperado e correto: não "corrija" isso tratando os dois como um só.
+
+**Ações do Hermes**:
+1. Garantir `HYPERTRACKER_API_KEY` no ambiente do engine (sem a chave, o funil
+   roda IDÊNTICO à v14 — soft dependency; nada quebra, mas você não ganha o
+   benefício). Free tier = 100 req/dia; o engine respeita `daily_request_cap: 90`.
+2. Após o primeiro scan v15, conferir nos relatórios/`/api/traders` que traders
+   hiperativos passaram a ter `position_metrics_source=hypertracker` e
+   `metrics_confidence=complete` (antes ficavam `sampled`).
+3. Conferir `funnel_stats` do scan: `ht_cohort_novos` / `ht_cohort_aprofundados`
+   > 0 (pool novo via segmentos). Se 0 com a chave presente, checar o log
+   `discovery.ht_budget_exhausted` (orçamento HT do dia esgotado — degradou p/
+   fills, não é erro).
+4. Conferir o heatmap na dashboard de Copy Trade (viés de mercado). É
+   **informativo** — NÃO entra no ranking.
+
+**Validação**:
+1. **Com chave HT** → scan mostra traders hiperativos ganhando `complete` via HT
+   (`position_metrics_source=hypertracker`), sem depender de cobrir a janela de
+   fills.
+2. **Cohorts** adicionam pool novo (`ht_cohort_novos` > 0).
+3. **Heatmap** visível na dashboard (`/api/copy-trade/market-bias` retorna
+   payload).
+4. **Sem chave HT** → comportamento inalterado (funil = v14).
+5. **Invariante**: a copy sim (sim_*/F15/F17/F18/F19) segue em fills HL; gates de
+   promoção e caps permanecem humanos. Ao confirmar 1–4, marcar **APLICADO**.

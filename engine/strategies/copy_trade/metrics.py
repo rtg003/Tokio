@@ -293,6 +293,137 @@ def net_expectancy_score(avg_trade_pnl_pct: float, cost_per_trade_pct: float,
     return min(1.0, net / saturation_pct)
 
 
+# --- v15: métricas de POSIÇÃO a partir de posições consolidadas do HyperTracker -
+def _ht_first(pos: dict[str, Any], *keys: str) -> Any:
+    """Primeiro valor não-nulo entre `keys` — tolera nomes camelCase/snake_case."""
+    for k in keys:
+        v = pos.get(k)
+        if v is not None:
+            return v
+    return None
+
+
+def _ht_ms(value: Any) -> float | None:
+    """Timestamp de posição do HT → ms (aceita epoch s/ms ou ISO-8601)."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        v = float(value)
+        return v * 1000.0 if v < 1e12 else v      # segundos → ms
+    try:
+        from datetime import datetime as _dt
+        s = str(value).replace("Z", "+00:00")
+        return _dt.fromisoformat(s).timestamp() * 1000.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _ht_is_closed(pos: dict[str, Any]) -> bool:
+    status = str(_ht_first(pos, "status", "state") or "").lower()
+    if status in ("closed", "close"):
+        return True
+    if status in ("open", "opened"):
+        return False
+    # sem status explícito: fechada se tem timestamp de fechamento.
+    return _ht_ms(_ht_first(pos, "closedAt", "closed_at", "closeTime", "endTime")) is not None
+
+
+def position_metrics_from_ht(positions: list[dict[str, Any]], now_ms: float,
+                             liquid: set[str] | None = None, *,
+                             window_days_30: int = 30,
+                             window_days_7: int = 7) -> dict[str, Any]:
+    """v15: deriva as métricas de posição do candidato a partir das POSIÇÕES
+    CONSOLIDADAS do HyperTracker (sem o teto de ~2.000 fills da HL).
+
+    Espelha a semântica dos campos calculados hoje em `funnel.deep_dive` a partir
+    de fills, mas sobre posições já agregadas (entrada/saída/pnl/hold por posição).
+    Função PURA (sem I/O) — testável com posições sintéticas. NÃO toca em
+    `simulate_copy`: a simulação de cópia (F15/F17/F18/F19) segue em fills HL.
+    """
+    liquid = liquid or set()
+    closed = [p for p in positions if _ht_is_closed(p)]
+    open_pos = [p for p in positions if not _ht_is_closed(p)]
+
+    def _pnl(p: dict[str, Any]) -> float:
+        return float(_ht_first(p, "realizedPnl", "realized_pnl", "closedPnl",
+                               "pnl", "netPnl") or 0.0)
+
+    def _notional(p: dict[str, Any]) -> float:
+        n = _ht_first(p, "volume", "notional", "positionValue", "notionalUsd")
+        if n is not None:
+            return abs(float(n or 0.0))
+        size = float(_ht_first(p, "size", "sz", "szi") or 0.0)
+        price = float(_ht_first(p, "avgEntryPrice", "entryPx", "price", "avgPrice") or 0.0)
+        return abs(size * price)
+
+    def _coin(p: dict[str, Any]) -> str:
+        return str(_ht_first(p, "coin", "symbol", "asset", "market") or "")
+
+    def _close_ms(p: dict[str, Any]) -> float | None:
+        return _ht_ms(_ht_first(p, "closedAt", "closed_at", "closeTime", "endTime"))
+
+    def _open_ms(p: dict[str, Any]) -> float | None:
+        return _ht_ms(_ht_first(p, "openedAt", "opened_at", "openTime", "startTime"))
+
+    closed_pnls = [_pnl(p) for p in closed]
+    wins = [p for p in closed_pnls if p > 0]
+
+    def _closed_in(days: int) -> list[dict[str, Any]]:
+        cutoff = now_ms - days * DAY_MS
+        out = []
+        for p in closed:
+            cm = _close_ms(p)
+            if cm is None or cm >= cutoff:
+                out.append(p)
+        return out
+
+    closed_30d = _closed_in(window_days_30)
+    closed_7d = _closed_in(window_days_7)
+    pnls_30d = [_pnl(p) for p in closed_30d]
+    wins_30d = [p for p in pnls_30d if p > 0]
+
+    # hold: mediana entre openedAt e closedAt das posições fechadas.
+    holds = []
+    for p in closed:
+        om, cm = _open_ms(p), _close_ms(p)
+        if om is not None and cm is not None and cm >= om:
+            holds.append((cm - om) / HOUR_MS)
+    median_hold = statistics.median(holds) if holds else None
+
+    gains = sum(wins)
+    losses = abs(sum(p for p in closed_pnls if p < 0))
+    unrealized = sum(float(_ht_first(p, "unrealizedPnl", "unrealized_pnl") or 0.0)
+                     for p in open_pos)
+    pf = profit_factor(gains, losses, unrealized) if (gains or losses or unrealized) else None
+
+    levs = [float(_ht_first(p, "leverage", "lev") or 0.0) for p in open_pos]
+    levs = [l for l in levs if l > 0]
+    avg_leverage = statistics.mean(levs) if levs else None
+
+    total_vol = sum(_notional(p) for p in positions)
+    liquid_share = 1.0
+    if liquid and total_vol > 0:
+        liquid_vol = sum(_notional(p) for p in positions if _coin(p) in liquid)
+        liquid_share = liquid_vol / total_vol
+
+    opens = [om for p in positions if (om := _open_ms(p)) is not None]
+    covered_days = max((now_ms - min(opens)) / DAY_MS, 0.0) if opens else None
+
+    return {
+        "n_trades": len(closed),
+        "n_trades_30d": len(closed_30d),
+        "n_trades_7d": len(closed_7d),
+        "win_rate": (len(wins) / len(closed_pnls)) if closed_pnls else None,
+        "win_rate_30d": (len(wins_30d) / len(pnls_30d)) if pnls_30d else None,
+        "profit_factor": pf,
+        "median_hold_hours": median_hold,
+        "top3_concentration": top_n_concentration(closed_pnls, 3),
+        "avg_leverage": avg_leverage,
+        "liquid_volume_share": liquid_share,
+        "covered_days": covered_days,
+    }
+
+
 # --- Simulação retroativa de cópia (v7 — F15 · v8 — Estágio 4) ----------------
 @dataclass
 class CopySimulation:

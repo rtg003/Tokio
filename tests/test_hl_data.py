@@ -11,7 +11,7 @@ envelope EXATO do Hermes é casado por endereço e que os formatos legados
 continuam funcionando por robustez."""
 from __future__ import annotations
 
-from engine.strategies.copy_trade.hl_data import _parse_ht_wallet
+from engine.strategies.copy_trade.hl_data import HLDataClient, _parse_ht_wallet
 
 ADDR = "0x3bca" + "00" * 18  # 42 chars, minúsculo
 
@@ -97,3 +97,101 @@ def test_non_mapping_returns_empty() -> None:
     """Tipo inesperado (None/str) ⇒ {}."""
     assert _parse_ht_wallet(None, ADDR) == {}
     assert _parse_ht_wallet("boom", ADDR) == {}
+
+
+# ============================================================================
+# UPDATE-0062 (v15) — HyperTracker como fonte primária de POSIÇÕES
+# ============================================================================
+class _FakeResp:
+    """Resposta HTTP mínima para o transporte de `HLDataClient._request`."""
+
+    def __init__(self, payload: object) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:  # noqa: D401 — sempre 200 nos testes
+        return None
+
+    def json(self) -> object:
+        return self._payload
+
+
+class _FakePositionsHttp:
+    """`_http` sintético: pagina `/positions` por `cursor`/`nextCursor`."""
+
+    def __init__(self, pages: list[dict]) -> None:
+        self.pages = pages
+        self.calls: list[dict] = []
+
+    def get(self, url: str, *, params: dict, headers: dict) -> _FakeResp:
+        self.calls.append(params)
+        cursor = params.get("cursor")
+        idx = 0 if cursor is None else int(cursor)
+        return _FakeResp(self.pages[idx])
+
+
+def _client_no_db() -> HLDataClient:
+    """Cliente sem BD e sem throttle (min_interval_s=0) para testes de rede fake."""
+    return HLDataClient(None, request_budget=100, min_interval_s=0.0)
+
+
+def test_ht_positions_paginates_by_next_cursor(monkeypatch) -> None:
+    """v15: `ht_positions` segue `nextCursor` e agrega TODAS as páginas."""
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    pages = [
+        {"items": [{"coin": "BTC"}, {"coin": "ETH"}], "nextCursor": "1"},
+        {"items": [{"coin": "SOL"}], "nextCursor": "2"},
+        {"items": [{"coin": "ARB"}], "nextCursor": None},
+    ]
+    client = _client_no_db()
+    fake = _FakePositionsHttp(pages)
+    client._http = fake  # type: ignore[assignment]
+
+    got = client.ht_positions(ADDR)
+
+    assert [p["coin"] for p in got] == ["BTC", "ETH", "SOL", "ARB"]
+    # 3 páginas visitadas; a última encerra por nextCursor vazio.
+    assert len(fake.calls) == 3
+    assert fake.calls[0].get("cursor") is None
+    assert fake.calls[1]["cursor"] == "1"
+    assert client.ht_requests_used == 3  # cada página consome 1 do orçamento HT
+
+
+def test_ht_positions_no_key_returns_empty_and_spends_nothing(monkeypatch) -> None:
+    """SOFT dependency: sem `HYPERTRACKER_API_KEY` → [] e zero requests HT/HTTP."""
+    monkeypatch.delenv("HYPERTRACKER_API_KEY", raising=False)
+    client = _client_no_db()
+
+    def _boom(*_a, **_k):  # qualquer toque na rede é bug (deve nem chamar)
+        raise AssertionError("ht_positions não pode tocar a rede sem chave")
+
+    client._http = type("H", (), {"get": staticmethod(_boom)})()  # type: ignore[assignment]
+
+    assert client.ht_positions(ADDR) == []
+    assert client.ht_segments() == []
+    assert client.ht_cohort_addresses([8, 9]) == []
+    assert client.ht_heatmap() == {}
+    assert client.ht_requests_used == 0
+
+
+def test_ht_positions_budget_exhausted_degrades_without_raising(
+        monkeypatch, caplog) -> None:
+    """v15: orçamento HT esgotado (free tier) → `ht_positions` degrada p/ [] e
+    LOGA `discovery.ht_budget_exhausted` — NUNCA levanta (o funil segue em fills)."""
+    import logging
+
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    # cap diário 0: qualquer request HT excede o orçamento antes de tocar a rede.
+    client = HLDataClient(None, request_budget=100, min_interval_s=0.0,
+                          ht_daily_cap=0, ht_per_scan_cap=0)
+
+    def _boom(*_a, **_k):  # se degradar corretamente, nem chega a chamar a rede
+        raise AssertionError("orçamento esgotado não pode tocar a rede")
+
+    client._http = type("H", (), {"get": staticmethod(_boom)})()  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING):
+        got = client.ht_positions(ADDR)   # não deve levantar HTBudgetExhausted
+
+    assert got == []
+    assert any("discovery.ht_budget_exhausted" in r.getMessage()
+               for r in caplog.records)

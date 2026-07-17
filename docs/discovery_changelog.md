@@ -438,3 +438,47 @@ f) **Ferramentas de calibração**:
   Com os dois flags no default (F20 só no hard filter; corte de inativos off),
   o funil aprova/reprova exatamente como na v13 — só muda O MOMENTO do corte F20.
 - Gate 2, promoção e caps continuam humanos e invioláveis.
+
+## logic_version: 15 — HyperTracker como fonte primária de posições + sourcing por cohort (2026-07-17)
+
+- **Autor**: Claude Code (construtor), por diretiva humana (UPDATE-0062).
+- **Motivo numérico**: o discovery reconstrói métricas de posição a partir de
+  **fills** da Hyperliquid (`userFills`/`userFillsByTime`), truncados em ~2.000
+  registros/página. Para traders **hiperativos** a amostra cobre só horas/dias,
+  então win_rate, profit_factor, hold mediano e concentração ficam
+  **subestimados** e as métricas caem para `sampled`/`insufficient`. O
+  HyperTracker expõe **posições consolidadas** por wallet, sem esse teto.
+- **O que mudou (antes → depois)**:
+  - **HT como fonte primária de POSIÇÕES** (soft): novo `ht_positions()`
+    (endpoint `/positions`, paginado por `nextCursor`). Quando disponível e
+    cobrindo a janela, as métricas de posição (n_trades_30d/7d, win_rate,
+    profit_factor, median_hold_hours, top3_concentration, avg_leverage,
+    liquid_volume_share) vêm do HT e `metrics_confidence` pode ser `complete`
+    **independentemente da contagem de fills**. Novo campo
+    `position_metrics_source` (`hypertracker` | `hl_fills`; default `hl_fills`).
+  - **Separação posição × simulação**: a simulação de cópia (F15/F17/F18/F19)
+    CONTINUA em fills HL e é gateada por `fills_metrics_confidence` (novo campo),
+    então posição `complete` via HT NÃO libera sim_* baseadas em fills truncados.
+  - **Sourcing por cohort** (`sources.hypertracker.cohorts`): wallets dos
+    segmentos do HT (Money Printer=8, Smart Money=9, whales=2–5) entram no funil
+    normal (dedup). Novos `funnel_stats`: `ht_cohort_novos`,
+    `ht_cohort_aprofundados`.
+  - **Heatmap → `market_bias`** (migration 0028): `/positions/heatmap` é
+    persistido por scan e exposto em `/api/copy-trade/market-bias` (informativo,
+    SEM efeito em ranking).
+  - **Orçamento HT separado** (`sources.hypertracker.budget`): contador por dia
+    UTC (`daily_request_cap: 90`, `per_scan_cap: 80`), só as
+    `deep_dive_positions_top_n: 60` wallets mais promissoras gastam
+    `ht_positions`; ao esgotar → degrada p/ fills e loga
+    `discovery.ht_budget_exhausted`. `_request` respeita `retry_after` em 429.
+
+### O que NÃO mudou (v15):
+
+- **A simulação de cópia (sim_*) SEGUE 100% em fills HL** — invariante
+  inegociável. Posição consolidada do HT não substitui a copy sim.
+- Filtros F1–F20, régua de score/Estágio 4, gates humanos de promoção
+  (TESTNET/MAINNET) e caps de risco permanecem invioláveis.
+- **Sem `HYPERTRACKER_API_KEY`** o funil roda **idêntico** ao da v14 (soft
+  dependency: `ht_positions`/cohorts/heatmap devolvem vazio).
+- Hot path §8.4.1 (execução de ordens) intocado; migration 0028 é só aditiva.
+- UPDATEs 0056–0059 (metrics_confidence/sample_*/anti-overwrite) preservados.

@@ -8,7 +8,7 @@
 # porquê, evidência, efeito de mudar): docs/discovery_logic_v9.md.
 # tests/test_docs_coverage.py QUEBRA se uma chave nova não estiver lá.
 # ============================================================================
-logic_version: 14
+logic_version: 15
 
 collection:
   leaderboard_top_n: 5000           # v6: era 500 (leaderboard tem 40k+ rows; 500 pegava só baleias)
@@ -60,6 +60,17 @@ sources:
     enabled: true
     api_key_env: HYPERTRACKER_API_KEY
     max_addresses: 300            # ~3-5 requests (100/página, pnlMonth+pnlWeek)
+    # v15 (UPDATE-0062): HT como fonte PRIMÁRIA de posições + sourcing por cohort.
+    # Tudo soft: sem HYPERTRACKER_API_KEY o funil roda idêntico ao atual.
+    heatmap_enabled: true         # v15: persiste /positions/heatmap (viés de mercado) em market_bias — informativo, SEM efeito em ranking
+    cohorts:                      # v15: segmentIds do HT puxados via /positions?segmentId=X&open=true (dedup no funil normal)
+      money_printer: 8            # segmento "Money Printer"
+      smart_money: 9              # segmento "Smart Money"
+      whales: [2, 3, 4, 5]        # faixas de whale (segmentIds 2–5)
+    budget:                       # v15: free tier 100 req/dia — contador HT separado do request_budget HL
+      daily_request_cap: 90       # teto de requests HT por dia UTC; atingido ⇒ degrada p/ fills (não derruba)
+      per_scan_cap: 80            # teto de requests HT por scan
+      deep_dive_positions_top_n: 60  # só as N wallets mais promissoras do scan gastam ht_positions
   nansen_leaderboard:
     enabled: false                # ligar exige NANSEN_API_KEY no ambiente
     api_key_env: NANSEN_API_KEY

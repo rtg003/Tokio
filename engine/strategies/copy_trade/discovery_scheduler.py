@@ -113,9 +113,12 @@ def run_scan(db: Database, logger: EventLogger, *, reason: str) -> bool:
         logger.info("discovery.scan_started",
                     {"reason": reason, "logic_version": cfg["logic_version"]})
         col = cfg["collection"]
+        ht_budget = ((cfg.get("sources") or {}).get("hypertracker") or {}).get("budget") or {}
         client = HLDataClient(db, request_budget=int(col["request_budget"]),
                               min_interval_s=float(col.get("min_request_interval_s", 1.3)),
-                              cache_ttl_hours=float(col["cache_ttl_hours"]))
+                              cache_ttl_hours=float(col["cache_ttl_hours"]),
+                              ht_daily_cap=int(ht_budget.get("daily_request_cap", 90)),
+                              ht_per_scan_cap=int(ht_budget.get("per_scan_cap", 80)))
         result = funnel.run_scan(client, db, cfg, logger=logger)
         funnel.persist_scan(db, result, cfg, client=client, logger=logger)
 

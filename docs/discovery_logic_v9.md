@@ -35,7 +35,7 @@ flowchart LR
 
 | Chave | Significado | Valor | Por quê | Evidência/efeito |
 |---|---|---|---|---|
-| `logic_version` | versão da lógica de discovery que produziu as métricas | 11 | v11 abre o funil e expõe flexibilidade fina ao Hermes sem afrouxar F16-F19 | scan v10 real: 5000 → 150 → 1 aprovado; lab: aprovação ~1-2% do pool |
+| `logic_version` | versão da lógica de discovery que produziu as métricas | 15 | v15 (UPDATE-0062): HT vira fonte PRIMÁRIA de posições + sourcing por cohort. `position_metrics_source=hypertracker` libera `metrics_confidence=complete` SEM o teto de fills; a simulação de cópia (sim_*) SEGUE em fills HL e é gateada por `fills_metrics_confidence` (posição completa × sim amostral são conceitos separados) | traders hiperativos deixam de ser rebaixados por truncamento; +pool via cohorts; viés de mercado visível |
 | `collection.leaderboard_top_n` | parâmetro de coleta/custo do scan | 5000 | mantido da v6/v5 para controlar universo e rate-limit | sem alteração v9; documentado para cobertura |
 | `collection.deep_dive_max` | vagas principais do leaderboard no deep dive | 300 | v11 dobra o funil de entrada; Hermes pode ajustar volume | taxa histórica ~1-2%; 300 + quota externa deve trazer ~3-7 sugestões |
 | `collection.external_dive_quota` | vagas extras reservadas a fontes externas | 60 | HyperTracker deixa de ser descartado quando o leaderboard enche o deep dive | corrige bug de starvation: antes slice `[:0]` descartava externos |
@@ -67,6 +67,13 @@ flowchart LR
 | `sources.hypertracker.enabled` | ativar HyperTracker como feed de endereços | true | aumenta pool sem delegar decisão | +274 endereços exclusivos; mediana +$11.79, hit 67% |
 | `sources.hypertracker.api_key_env` | nome da variável de ambiente da chave | HYPERTRACKER_API_KEY | segredo fora do repo; sem chave = off silencioso | teste de fonte sem chave |
 | `sources.hypertracker.max_addresses` | limite de candidatos do HyperTracker por scan | 300 | ~3-5 requests/scan dentro do free tier | free tier 100 req/dia; uso estimado < 5 |
+| `sources.hypertracker.heatmap_enabled` | v15: persiste `/positions/heatmap` (viés de mercado) em `market_bias` | true | viés de mercado visível na dashboard — informativo, SEM efeito em ranking | UPDATE-0062; soft (sem chave → nada persistido) |
+| `sources.hypertracker.cohorts.money_printer` | v15: segmentId do HT "Money Printer" p/ sourcing por cohort | 8 | segmentos consolidados do HT ampliam o pool sem depender do leaderboard | UPDATE-0062; wallets dedup no funil normal |
+| `sources.hypertracker.cohorts.smart_money` | v15: segmentId do HT "Smart Money" p/ sourcing por cohort | 9 | idem money_printer | UPDATE-0062 |
+| `sources.hypertracker.cohorts.whales` | v15: segmentIds das faixas de whale do HT | [2,3,4,5] | cobre as faixas de baleia como sub-fonte de endereços | UPDATE-0062 |
+| `sources.hypertracker.budget.daily_request_cap` | v15: teto de requests HT por dia UTC (contador separado do HL) | 90 | respeita o free tier de 100 req/dia; atingido ⇒ degrada p/ fills (não derruba) | UPDATE-0062; loga `discovery.ht_budget_exhausted` |
+| `sources.hypertracker.budget.per_scan_cap` | v15: teto de requests HT por scan | 80 | limita o gasto HT de um único scan | UPDATE-0062 |
+| `sources.hypertracker.budget.deep_dive_positions_top_n` | v15: nº de wallets mais promissoras que gastam `ht_positions` | 60 | só o topo do funil usa posições HT; as demais seguem em fills HL | UPDATE-0062 |
 | `sources.nansen_leaderboard.enabled` | fonte externa opcional de endereços candidatos | false | terceiros só alimentam wallets; métricas são nossas | sem dependência dura; flags off exceto HyperTracker |
 | `sources.nansen_leaderboard.api_key_env` | fonte externa opcional de endereços candidatos | NANSEN_API_KEY | terceiros só alimentam wallets; métricas são nossas | sem dependência dura; flags off exceto HyperTracker |
 | `sources.nansen_leaderboard.max_addresses` | fonte externa opcional de endereços candidatos | 100 | terceiros só alimentam wallets; métricas são nossas | sem dependência dura; flags off exceto HyperTracker |

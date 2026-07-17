@@ -1969,3 +1969,39 @@ Contratos de API novos (proxy `/api/control` já liberado no allowlist):
 `risk.max_daily_loss_usd` agora é cap **por (wallet, ambiente)**.
 
 Validação: `pytest tests/ -q` verde (428); `web` `tsc`/`next build` limpos.
+
+---
+
+## UPDATE-0062 · 2026-07-17 · Status: PENDENTE
+
+Origem: Claude Code (CONSTRUTOR) — discovery v15 (HT fonte primária de posições)
+Tipo: engine | gateway | web | config | docs
+
+Resumo: contratos novos relevantes ao construtor/operador:
+
+1. **`traders.position_metrics_source` (migration 0028).** Coluna aditiva
+   (`hypertracker` | `hl_fills`, default `hl_fills`). Marca a fonte das MÉTRICAS
+   DE POSIÇÃO (WR/PF/hold/concentração/alavancagem). `hypertracker` = posições
+   consolidadas do HT (sem o teto de fills) → libera `metrics_confidence=complete`.
+2. **`market_bias` (migration 0028).** Nova tabela: snapshot por scan do heatmap
+   de viés de mercado do HT (`scan_ts`, `logic_version`, `payload` json).
+   Informativa — SEM efeito em ranking.
+3. **Separação posição × copy sim.** A copy sim (`sim_*`, F15/F17/F18/F19) SEGUE
+   em fills HL e é gateada por um campo novo `fills_metrics_confidence` (no report
+   de sugestão). Portanto **posição `complete` via HT + copy sim `sampled`** é um
+   estado válido e esperado — não é bug.
+
+Contratos de API novos:
+- `GET /api/copy-trade/market-bias` — último snapshot do heatmap (`{}` se vazio).
+- `_suggestion_report`/`_suggestion_extras` agora incluem
+  `position_metrics_source` e `fills_metrics_confidence`.
+
+Config nova (`config/discovery_config.yaml`, `logic_version` 14→15): bloco
+`sources.hypertracker.{cohorts, heatmap_enabled, budget}` — todas as chaves-folha
+documentadas em `docs/discovery_logic_v9.md` (trava `test_docs_coverage`).
+
+Invariantes: hot path §8.4.1 intocado; migration 0028 só aditiva; `M.simulate_copy`
+e assinaturas protegidas intactas; soft dependency (sem `HYPERTRACKER_API_KEY` o
+funil = v14); UPDATEs 0056–0059 preservados.
+
+Validação: `pytest tests/ -q` verde (436); `web` `tsc`/`next build` limpos.

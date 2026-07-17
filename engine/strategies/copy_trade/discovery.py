@@ -35,18 +35,27 @@ def _db() -> Database:
     return db
 
 
+def _ht_caps(cfg: dict[str, Any]) -> dict[str, int]:
+    """v15: caps do orçamento HyperTracker (free tier) vindos da config."""
+    budget = ((cfg.get("sources") or {}).get("hypertracker") or {}).get("budget") or {}
+    return {"ht_daily_cap": int(budget.get("daily_request_cap", 90)),
+            "ht_per_scan_cap": int(budget.get("per_scan_cap", 80))}
+
+
 def _client(db: Database, cfg: dict[str, Any]) -> HLDataClient:
     col = cfg["collection"]
     return HLDataClient(db, request_budget=int(col["request_budget"]),
                         min_interval_s=float(col.get("min_request_interval_s", 1.3)),
-                        cache_ttl_hours=float(col["cache_ttl_hours"]))
+                        cache_ttl_hours=float(col["cache_ttl_hours"]),
+                        **_ht_caps(cfg))
 
 
 def _replay_client(db: Database, cfg: dict[str, Any]) -> HLDataClient:
     col = cfg["collection"]
     return HLDataClient(db, request_budget=0,
                         min_interval_s=float(col.get("min_request_interval_s", 1.3)),
-                        cache_ttl_hours=float(col["cache_ttl_hours"]))
+                        cache_ttl_hours=float(col["cache_ttl_hours"]),
+                        **_ht_caps(cfg))
 
 
 def reports_dir() -> Path:

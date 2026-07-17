@@ -855,6 +855,8 @@ def _suggestion_extras(c: Any) -> dict[str, Any]:
         "sample_sim_max_dd_pct": getattr(c, "sample_sim_max_dd_pct", None),
         "sample_sim_window_days": getattr(c, "sample_sim_window_days", None),
         "sample_sim_net_per_day": getattr(c, "sample_sim_net_per_day", None),
+        # UPDATE-0062 (v15): fonte das métricas de posição (hypertracker | hl_fills).
+        "position_metrics_source": getattr(c, "position_metrics_source", "hl_fills"),
         "score_components": serialize_components(c.components)
         if c.components is not None else None,
     }
@@ -874,6 +876,11 @@ def _suggestion_report(c: Any) -> dict[str, Any]:
         # UPDATE-0056: confiança da amostra + filtros indeterminados (o front
         # distingue DADOS COMPLETOS × AMOSTRA RECENTE × INDETERMINADO na Fase 3).
         "metrics_confidence": getattr(c, "metrics_confidence", "complete"),
+        # UPDATE-0062 (v15): fonte das métricas de posição + confiança dos fills
+        # (a copy sim segue em fills HL; posição pode ser complete via HT enquanto
+        # a sim permanece amostral). O front distingue os dois na Fase 3.
+        "position_metrics_source": getattr(c, "position_metrics_source", "hl_fills"),
+        "fills_metrics_confidence": getattr(c, "fills_metrics_confidence", "complete"),
         "wallet_age_days": getattr(c, "wallet_age_days", None),
         "fills_sample_days": getattr(c, "fills_sample_days", None),
         "fills_sample_count": getattr(c, "fills_sample_count", 0),
@@ -1879,6 +1886,31 @@ def build_app(state: GatewayState) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"strategies: {str(exc)[:200]}")
 
+    @app.get("/api/copy-trade/market-bias")
+    def api_market_bias() -> dict[str, Any]:
+        """UPDATE-0062 (v15): último snapshot do heatmap de viés de mercado do
+        HyperTracker (informativo — SEM efeito em ranking). Dashboard de Copy
+        Trade (§5.3). Retorna {} quando não há snapshot (sem chave HT/desligado)."""
+        try:
+            rows = state.db.query(
+                "SELECT scan_ts, logic_version, payload FROM market_bias "
+                "ORDER BY id DESC LIMIT 1")
+        except Exception:  # noqa: BLE001 — tabela pode não existir em bancos antigos
+            return {}
+        if not rows:
+            return {}
+        import json
+        row = rows[0]
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except (TypeError, ValueError):
+            payload = None
+        return {
+            "scan_ts": row["scan_ts"],
+            "logic_version": row["logic_version"],
+            "payload": payload,
+        }
+
     @app.get("/api/events")
     def api_events(
         event_type: str | None = None,
@@ -2280,10 +2312,13 @@ def build_app(state: GatewayState) -> FastAPI:
 
         cfg = funnel.load_config()
         col = cfg["collection"]
+        ht_budget = ((cfg.get("sources") or {}).get("hypertracker") or {}).get("budget") or {}
         client = HLDataClient(
             state.db, request_budget=int(col["request_budget"]),
             min_interval_s=float(col.get("min_request_interval_s", 1.3)),
-            cache_ttl_hours=float(col["cache_ttl_hours"]))
+            cache_ttl_hours=float(col["cache_ttl_hours"]),
+            ht_daily_cap=int(ht_budget.get("daily_request_cap", 90)),
+            ht_per_scan_cap=int(ht_budget.get("per_scan_cap", 80)))
         return client, cfg
 
     @app.post("/control/suggestions/analyze",
