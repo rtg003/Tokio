@@ -252,6 +252,36 @@ class CopyTradeExecutor:
                 )
                 self.logger.info("ws.subscribed_target", {"address": cfg.address},
                                  strategy_id=cfg.strategy_id)
+        # Defesa em profundidade (UPDATE-0064, Parte 1a): pausa qualquer strategy
+        # órfã — operante no BD mas com trader NÃO-copiável — no boot e em cada
+        # reload. Fecha a brecha em que uma linha `strategies` ficou active/dry_run
+        # após o trader ser rebaixado (ex.: reativação indevida do breaker).
+        self._pause_orphan_strategies()
+
+    def _pause_orphan_strategies(self) -> None:
+        """Pausa strategies de copy_trade operantes (active/dry_run) cujo trader
+        vinculado não está em TESTNET/MAINNET. Invariante: strategy só opera com
+        trader copiável (gate humano, AGENTS.md)."""
+        rows = self.db.query(
+            "SELECT id, json_extract(config_snapshot, '$.address') AS address "
+            "FROM strategies "
+            "WHERE module = 'copy_trade' AND status IN ('active', 'dry_run')"
+        )
+        for row in rows:
+            sid = row["id"]
+            address = row["address"]
+            trader_status = self._trader_status(address) if address else "REJEITADO"
+            if trader_status in ("TESTNET", "MAINNET"):
+                continue
+            self.db.execute(
+                "UPDATE strategies SET status = 'paused' WHERE id = ?", (sid,)
+            )
+            payload = {"address": address, "trader_status": trader_status,
+                       "by": "trader_status_guard"}
+            self.logger.warning("strategy.paused", payload, strategy_id=sid)
+            self.logger.warning("strategy.trader_not_copyable",
+                                {"address": address, "trader_status": trader_status},
+                                strategy_id=sid)
 
     def _register_strategy(self, cfg: TraderConfig) -> None:
         rows = self.db.query("SELECT id FROM strategies WHERE id = ?", (cfg.strategy_id,))

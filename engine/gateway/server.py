@@ -30,6 +30,24 @@ from engine.gateway.ledger import Ledger, make_cloid
 from engine.gateway.risk_enforcer import RiskEnforcer
 
 
+def _strategy_trader_status(db: Database, strategy_id: str) -> str:
+    """UPDATE-0064: status do trader vinculado a uma strategy de copy_trade.
+
+    Resolve o endereço do trader via `strategies.config_snapshot.$.address` e
+    devolve o `traders.status`. Ausência de vínculo/linha ⇒ 'REJEITADO' (não
+    copiável) — o chamador trata como não-operante (fail-safe)."""
+    rows = db.query(
+        "SELECT lower(json_extract(config_snapshot, '$.address')) AS address "
+        "FROM strategies WHERE id = ?",
+        (strategy_id,),
+    )
+    address = rows[0]["address"] if rows else None
+    if not address:
+        return "REJEITADO"
+    trows = db.query("SELECT status FROM traders WHERE address = ?", (address,))
+    return trows[0]["status"] if trows else "REJEITADO"
+
+
 def _max_drawdown_pct(realized_pnls: list[float]) -> float:
     """Máximo drawdown (%) da curva de PnL realizado acumulado no período.
 
@@ -243,6 +261,10 @@ class GatewayState:
         # conta do ambiente muda (novo master via keyring).
         self._balance_cache: dict[str, dict[str, Any]] = {}
         self._positions_cache: dict[str, dict[str, Any]] = {}
+        # UPDATE-0064 (Parte 3): strategy_id -> endereço do trader-mestre copiado.
+        # Cache em memória p/ atribuição EXPLÍCITA em fills/orders sem query nova
+        # no hot path §8.4.1 (custo amortizado: 1 query na 1ª ocorrência/strategy).
+        self._trader_addr_cache: dict[str, str | None] = {}
         for network, configured_adapter in self.adapters.items():
             configured_adapter.subscribe_own_fills(
                 lambda fill, env=network: self.on_own_fill({**fill, "_network": env})
@@ -465,6 +487,8 @@ class GatewayState:
             "realized_pnl": realized,
             "network": network,
             "master_address": getattr(fill_adapter, "account_address", None),
+            # UPDATE-0064: trader-mestre copiado (≠ master_address = wallet nossa).
+            "trader_address": self._trader_addr(strategy_id),
             "tid": tid,
             "fill_hash": fill_hash,
             "forced_close": 1 if is_forced_close else 0,
@@ -502,6 +526,25 @@ class GatewayState:
                 "fees": r["fees"] or 0.0,
             }, ("strategy_id", "day"))
         self._evaluate_circuit_breakers(day)
+
+    def _trader_addr(self, strategy_id: str | None) -> str | None:
+        """UPDATE-0064 (Parte 3): endereço do trader-mestre copiado por strategy.
+        Atribuição EXPLÍCITA de fills/orders (distinta de `master_address`, que é
+        a wallet EXECUTORA). Cache em memória: 1ª ocorrência por strategy faz 1
+        query (json_extract da config_snapshot); depois é O(1). NÃO adiciona query
+        no caminho quente §8.4.1 no caso comum (cache quente)."""
+        if not strategy_id:
+            return None
+        if strategy_id in self._trader_addr_cache:
+            return self._trader_addr_cache[strategy_id]
+        rows = self.db.query(
+            "SELECT lower(json_extract(config_snapshot, '$.address')) AS address "
+            "FROM strategies WHERE id = ?",
+            (strategy_id,),
+        )
+        addr = rows[0]["address"] if rows else None
+        self._trader_addr_cache[strategy_id] = addr
+        return addr
 
     def _active_strategy_ids(self) -> set[str]:
         """strategy_ids que DEVEM contar no total_cap (status operante). Fix 1a:
@@ -681,6 +724,9 @@ class GatewayState:
             # ambiente que executou a ordem. Só metadado p/ o filtro por Wallet
             # da UI — não altera o caminho de ordem (INVARIANTE Hermes).
             "master_address": getattr(adapter, "account_address", None),
+            # UPDATE-0064: trader-mestre copiado (≠ master_address). Cache quente
+            # ⇒ sem query nova no hot path §8.4.1.
+            "trader_address": self._trader_addr(intent.strategy_id),
         }
         self.db.insert("orders", order_row)
 
@@ -762,6 +808,7 @@ class GatewayState:
                 "status": res.status if res.ok else (res.status or "error"),
                 "created_at": utcnow(), "exchange_id": exchange_id,
                 "master_address": getattr(adapter, "account_address", None),
+                "trader_address": self._trader_addr(intent.strategy_id),
             })
             legs[tpsl] = {"cloid": leg_cloid, "ok": res.ok, "status": res.status,
                           "error": res.error, "trigger_px": trigger_px}
@@ -1175,6 +1222,7 @@ def build_app(state: GatewayState) -> FastAPI:
         scopes = {(w, e) for (w, e) in closed}
         scopes |= {(r["wallet"], r["environment"]) for r in db_scopes}
         reactivated: list[str] = []
+        skipped: list[str] = []
         for w, e in scopes:
             state.db.execute(
                 "UPDATE circuit_breaker_state SET open = 0, acknowledged_day = ?, "
@@ -1194,6 +1242,19 @@ def build_app(state: GatewayState) -> FastAPI:
                 sid = pr["strategy_id"]
                 if not sid:
                     continue
+                # UPDATE-0064 (Parte 2): NUNCA reativar cegamente. Revalida a
+                # invariante — o trader vinculado precisa estar copiável
+                # (TESTNET/MAINNET). Se foi rebaixado enquanto o breaker estava
+                # aberto, deixa pausada e registra em `skipped`.
+                trader_status = _strategy_trader_status(state.db, sid)
+                if trader_status not in ("TESTNET", "MAINNET"):
+                    skipped.append(sid)
+                    state.logger.warning(
+                        "strategy.reactivation_skipped",
+                        {"by": "circuit_breaker_reset", "wallet": w,
+                         "environment": e, "trader_status": trader_status},
+                        strategy_id=sid)
+                    continue
                 res = state.db.execute(
                     "UPDATE strategies SET status = 'active' "
                     "WHERE id = ? AND status = 'auto_paused'",
@@ -1208,9 +1269,9 @@ def build_app(state: GatewayState) -> FastAPI:
         state.logger.info("circuit_breaker.reset",
                           {"wallet": wallet, "environment": environment,
                            "scopes": [list(s) for s in scopes],
-                           "reactivated": reactivated})
+                           "reactivated": reactivated, "skipped": skipped})
         return {"ok": True, "scopes": [list(s) for s in scopes],
-                "reactivated": reactivated}
+                "reactivated": reactivated, "skipped": skipped}
 
     @app.get("/api/market-meta")
     def market_meta(symbol: str, environment: str | None = None) -> dict[str, Any]:

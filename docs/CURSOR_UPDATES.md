@@ -2070,3 +2070,50 @@ permanece PENDENTE até lá).
 chave → `position_metrics_source=hypertracker` em hiperativos,
 `ht_cohort_novos>0`, `market_bias` populada, `ht_requests_used ≤ 90`
 persistido e compartilhado, zero 400 sistemático nos logs.
+
+---
+
+## UPDATE-0064 · 2026-07-17 · Status: PENDENTE
+
+Origem: Claude Code (CONSTRUTOR) — invariante strategy↔trader + atribuição de trader
+Tipo: engine | gateway | web | db | docs
+
+Resumo: após incidente de 2026-07-17 (estratégia `ct_f5b0af85`, trader
+`0xf5b0af85…7645` em status **SALVO**/não-copiável, executou fills reais de HYPE
+na testnet `0x4124`), a invariante "estratégia operante ⇒ trader copiável" passa
+a ser garantida em **TRÊS camadas** de defesa em profundidade:
+
+1. **Guard no boot/reload** (`executor._pause_orphan_strategies`, roda no fim de
+   `reload_traders()`): qualquer linha `strategies` copy_trade `active`/`dry_run`
+   cujo trader não esteja em TESTNET/MAINNET é rebaixada para `paused`, emitindo
+   `strategy.paused {by:'trader_status_guard'}` + `strategy.trader_not_copyable`.
+2. **Demoção de trader** (`traders_store.set_status`, chokepoint único): ao
+   rebaixar trader operante para SALVO/SUGERIDO/REJEITADO, além de pausar a
+   strategy, emite `strategy.paused {by:'trader_demoted', old/new_trader_status}`.
+3. **`circuit_breaker_reset` revalida** antes de reativar: cada strategy pausada
+   pelo breaker só volta a `active` se o trader vinculado estiver TESTNET/MAINNET;
+   caso contrário entra em `skipped` na resposta + emite
+   `strategy.reactivation_skipped`. (Era o culpado mais provável do incidente:
+   reativava CEGAMENTE.)
+
+**Atribuição aditiva de trader** (migration **0029**): novas colunas
+`fills.trader_address` / `orders.trader_address` (+ índices + backfill
+idempotente via `config_snapshot.$.address`). Resolvidas por cache em memória
+(`_trader_addr`) → zero query nova no hot path §8.4.1. **`master_address`
+(wallet executora, filtro "por Wallet") preservado intacto** — são conceitos
+distintos: `trader_address` = mestre externo copiado; `master_address` = nossa
+conta executora.
+
+UI: coluna "Trader" (`TradesOrdersTable.tsx`) nunca mais exibe a wallet
+executora — resolução: (1) trader via `strategy_id`, (2) `trader_address` da
+linha, (3) `—` com tooltip "sem atribuição de trader".
+
+Contratos novos:
+- `POST /control/circuit-breaker/reset` agora retorna também `"skipped": [...]`
+  (strategies não reativadas por trader não-copiável).
+- `/api/fills` e `/api/orders` propagam `trader_address` automaticamente.
+
+Invariantes: hot path §8.4.1 intocado; migration 0029 só aditiva; `hl_agents.py`
+e `master_address` não tocados; isolamento §5.1/§5.2 mantido.
+
+Validação: `pytest tests/ -q` verde (446); `web` `tsc`/`next build` limpos.

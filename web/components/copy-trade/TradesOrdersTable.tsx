@@ -19,6 +19,7 @@ type Row = {
   cloid: string;
   strategyId?: string | null;
   master?: string | null;
+  traderAddr?: string | null;
   network?: string | null;
 };
 
@@ -45,10 +46,13 @@ export default function TradesOrdersTable({
   for (const t of traders ?? []) {
     if (t.strategy_id) traderMap.set(t.strategy_id, t);
   }
-  // Trader copiado (via strategy_id); fallback: carteira executora (master).
+  // UPDATE-0063: a coluna "Trader" mostra SEMPRE o trader-mestre copiado —
+  // NUNCA a wallet executora (master). Ordem: (1) trader via strategy_id;
+  // (2) coluna trader_address (atribuição explícita em fills/orders);
+  // (3) "—" (sem atribuição). O `master` foi REMOVIDO do fallback.
   function traderLabel(row: Row): string {
     const t = row.strategyId ? traderMap.get(row.strategyId) : undefined;
-    return t?.name ?? short6(t?.address) ?? short6(row.master) ?? "—";
+    return t?.name ?? short6(t?.address) ?? short6(row.traderAddr) ?? "—";
   }
 
   const openOrders: Row[] = (orders ?? [])
@@ -69,6 +73,7 @@ export default function TradesOrdersTable({
       cloid: o.cloid,
       strategyId: o.strategy_id,
       master: o.master_address,
+      traderAddr: o.trader_address,
       network: o.network,
     }));
 
@@ -89,6 +94,7 @@ export default function TradesOrdersTable({
       cloid: f.cloid,
       strategyId: f.strategy_id,
       master: f.master_address,
+      traderAddr: f.trader_address,
     }));
 
   // ordens em aberto no topo, trades executados abaixo
@@ -129,7 +135,10 @@ export default function TradesOrdersTable({
             <tbody>
               {rows.map((r) => (
                 <tr key={r.key}>
-                  <td className="addr">{traderLabel(r)}</td>
+                  <td className="addr"
+                      title={traderLabel(r) === "—" ? "sem atribuição de trader" : undefined}>
+                    {traderLabel(r)}
+                  </td>
                   <td>
                     <span className={`chip ${r.kind === "ORDEM" ? "ack" : "filled"}`}>{r.kind}</span>
                   </td>

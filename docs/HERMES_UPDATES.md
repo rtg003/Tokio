@@ -3650,3 +3650,70 @@ de viés de mercado fica visível na dashboard (informativo). `logic_version` 14
 4. **Sem chave HT** → comportamento inalterado (funil = v14).
 5. **Invariante**: a copy sim (sim_*/F15/F17/F18/F19) segue em fills HL; gates de
    promoção e caps permanecem humanos. Ao confirmar 1–4, marcar **APLICADO**.
+
+---
+
+## UPDATE-0064 · 2026-07-17 · Status: PENDENTE
+
+**Origem**: PR da invariante strategy↔trader (merged)
+
+**Tipo**: operacao + infra + config
+
+**Resumo**: fechamento de uma brecha de segurança confirmada em produção em
+2026-07-17: a estratégia `ct_f5b0af85` (trader
+`0xf5b0af852e3dedc03b551f7050b616b5c77c7645`, status **SALVO** — NÃO copiável)
+executou fills REAIS de HYPE na wallet de testnet `0x4124`. A invariante do
+AGENTS.md diz que uma estratégia de copy trade só pode operar (active/dry_run)
+se o trader vinculado estiver TESTNET/MAINNET. Agora essa invariante é garantida
+em TRÊS camadas de defesa em profundidade:
+
+1. **Guard no boot/reload do executor**: toda strategy operante cujo trader não
+   é copiável é pausada (`strategy.paused {by:'trader_status_guard'}` +
+   `strategy.trader_not_copyable`).
+2. **Demoção via `set_status`**: rebaixar um trader operante
+   (TESTNET/MAINNET → SALVO/SUGERIDO/REJEITADO) pausa a strategy e emite
+   `strategy.paused {by:'trader_demoted', old_trader_status, new_trader_status}`.
+   Vale para TODOS os caminhos (CLI, discovery, dashboard).
+3. **Reset do circuit breaker revalida**: o reset (1 clique) NÃO reativa mais
+   cegamente. Antes de reativar cada strategy pausada pelo breaker, confere o
+   status do trader; se ele foi rebaixado, a strategy fica pausada, entra no
+   novo campo `skipped` da resposta e emite `strategy.reactivation_skipped`.
+   **Este era o vetor mais provável do incidente.**
+
+Além disso, fills/orders passam a guardar o **trader-mestre copiado** de forma
+EXPLÍCITA na nova coluna `trader_address` (migration 0029, ADITIVA). Isso é
+DISTINTO de `master_address` (a wallet EXECUTORA da nossa conta, migration 0015,
+que alimenta o filtro "por Wallet"): os dois coexistem e NÃO se misturam. A UI
+("Trader" na tabela Trades/Ordens) agora resolve trader por strategy_id →
+`trader_address` → "—" (sem atribuição); NUNCA mais mostra a wallet executora.
+
+> **Separação crítica**: `trader_address` = quem COPIAMOS (externo);
+> `master_address` = qual CONTA NOSSA executou. Ao analisar, não trate "sem
+> atribuição de trader" (—) como erro em linhas históricas sem strategy
+> vinculada — o backfill preenche o que dá via config_snapshot; o resto fica
+> NULL por design.
+
+**Ações do Hermes**:
+1. Aplicar a **migration 0029** (`db/migrations/0029_trader_attribution.sql`) —
+   ADITIVA: adiciona `fills.trader_address` / `orders.trader_address` + índices
+   e faz o backfill idempotente pelo `strategies.config_snapshot.$.address`.
+2. Após aplicar, conferir o backfill: linhas de fills/orders de strategies
+   vinculadas passam a ter `trader_address` preenchido (o resto fica NULL).
+3. Reiniciar o engine para o guard de boot rodar; conferir nos eventos que
+   nenhuma strategy operante ficou com trader não-copiável (senão ela terá sido
+   pausada com `strategy.trader_not_copyable` — o que é o comportamento correto).
+
+**Validação**:
+1. **Demoção**: rebaixar um trader operante (TESTNET→SALVO) na dashboard ⇒ a
+   strategy correspondente vira `paused` e há evento
+   `strategy.paused {by:'trader_demoted'}`.
+2. **Boot guard**: se houver uma strategy `active`/`dry_run` de trader não
+   copiável, ela é pausada no boot/reload (`by:'trader_status_guard'`).
+3. **Reset do breaker**: com o breaker aberto e o trader rebaixado no meio do
+   dia, o reset devolve a strategy em `skipped` (não em `reactivated`) e emite
+   `strategy.reactivation_skipped`; com trader copiável, reativa normalmente.
+4. **Atribuição**: novos fills/orders trazem `trader_address` correto e
+   `master_address` preservado; a coluna "Trader" da UI nunca exibe a wallet
+   executora.
+5. **Invariante**: copy segue em fills reais na HL (nenhum gate novo no hot
+   path); gates humanos e caps inalterados. Ao confirmar 1–4, marcar **APLICADO**.

@@ -157,6 +157,10 @@ def set_status(db: Database, address: str, new_status: str, *, by: str,
     updated = db.query("SELECT * FROM traders WHERE address = ?", (address,))[0]
     db.upsert("traders", updated, ("address",))
     sid = strategy_id_for(address, updated.get("name"))
+    # Estado da strategy ANTES do upsert: precisamos saber se ela estava operante
+    # (active/dry_run) para emitir a auditoria de demoção (UPDATE-0064, Parte 1b).
+    prev_rows = db.query("SELECT status FROM strategies WHERE id = ?", (sid,))
+    prev_strategy_status = prev_rows[0]["status"] if prev_rows else None
     strategy_status = "active" if new_status in OPERATING_STATUSES else "paused"
     db.upsert("strategies", {
         "id": sid,
@@ -174,6 +178,21 @@ def set_status(db: Database, address: str, new_status: str, *, by: str,
                         event_type="trader.status_changed", level="info",
                         payload={"address": address, "from": current,
                                  "to": new_status, "by": by})
+    # UPDATE-0064 (Parte 1b): trader rebaixado para status NÃO-copiável
+    # (SALVO/SUGERIDO/REJEITADO) enquanto a strategy estava operante ⇒ pausa
+    # explícita + auditoria. Invariante: strategy só opera com trader
+    # TESTNET/MAINNET. Cobre TODOS os callers de set_status (chokepoint único).
+    if new_status not in OPERATING_STATUSES and prev_strategy_status in ("active", "dry_run"):
+        demote_payload = {"address": address, "by": by,
+                          "old_trader_status": current,
+                          "new_trader_status": new_status}
+        if logger:
+            logger.warning("strategy.paused", {**demote_payload, "by": "trader_demoted"},
+                           strategy_id=sid)
+        else:
+            db.insert_event(ts=utcnow(), strategy_id=sid,
+                            event_type="strategy.paused", level="warning",
+                            payload={**demote_payload, "by": "trader_demoted"})
     return {"ok": True, "from": current, "status": new_status}
 
 

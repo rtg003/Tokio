@@ -162,6 +162,36 @@ def test_saved_trader_is_not_mirrored(settings, db) -> None:
     assert gw.intents == []
 
 
+# ---------------------------------------------------------------------------
+# UPDATE-0064 (Parte 1a): guard de boot/reload pausa strategy órfã
+# ---------------------------------------------------------------------------
+def test_reload_pauses_orphan_strategy_with_non_copyable_trader(settings, db) -> None:
+    """Strategy operante (active) cujo trader não é copiável (SALVO) é pausada no
+    reload — defesa em profundidade contra estado herdado (ex.: reativação
+    indevida). Emite strategy.paused{by:'trader_status_guard'}."""
+    ex, watcher, gw = make_executor(settings, db)   # cria ct_whale01 active (TESTNET)
+    # trader rebaixado por FORA do set_status (edição direta / estado legado):
+    db.execute("UPDATE traders SET status = 'SALVO' WHERE address = ?", (TARGET,))
+    ex.reload_traders()
+    strat = db.query("SELECT status FROM strategies WHERE id = 'ct_whale01'")[0]
+    assert strat["status"] == "paused"
+    ev = db.query("SELECT payload FROM events WHERE event_type = 'strategy.paused' "
+                  "ORDER BY id DESC")
+    assert ev and json.loads(ev[0]["payload"])["by"] == "trader_status_guard"
+
+
+def test_reload_keeps_copyable_trader_strategy_active(settings, db) -> None:
+    """Strategy de trader TESTNET permanece active após o guard — nenhuma
+    pausa nem evento trader_status_guard indevido."""
+    ex, watcher, gw = make_executor(settings, db)   # ct_whale01 active (TESTNET)
+    ex.reload_traders()
+    strat = db.query("SELECT status FROM strategies WHERE id = 'ct_whale01'")[0]
+    assert strat["status"] == "active"
+    ev = db.query("SELECT 1 FROM events WHERE event_type = 'strategy.paused' "
+                  "AND json_extract(payload, '$.by') = 'trader_status_guard'")
+    assert ev == []
+
+
 def test_open_from_flat_fixed_usdc(settings, db) -> None:
     ex, watcher, gw = make_executor(settings, db)
     watcher.emit(TARGET, fill("BTC", "B", 2.0, 50_000.0, start_pos=0.0))

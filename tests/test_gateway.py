@@ -635,13 +635,27 @@ def test_circuit_breaker_excludes_forced_and_synthetic(client, gateway_state, se
         "SELECT status FROM strategies WHERE id = 'ct_fc'")[0]["status"] == "active"
 
 
+def _link_copyable_trader(db, strategy_id: str, address: str,
+                          status: str = "TESTNET") -> None:
+    """UPDATE-0064: vincula uma strategy a um trader copiável — grava o trader e
+    injeta o endereço em strategies.config_snapshot (json_extract $.address)."""
+    import json
+    db.upsert("traders", {"address": address.lower(), "name": strategy_id,
+                          "status": status, "dry_run": 0}, ("address",))
+    db.execute("UPDATE strategies SET config_snapshot = ? WHERE id = ?",
+               (json.dumps({"address": address.lower()}), strategy_id))
+
+
 def test_circuit_breaker_reset_reactivates_only_breaker_paused(
     client, gateway_state, settings) -> None:
     # Fix 2b: reset reativa SÓ estratégias pausadas PELO breaker (by=circuit_breaker),
     # deixa pausa manual intacta, marca acknowledged_day e emite circuit_breaker.reset.
+    # UPDATE-0064: reativação exige trader copiável — ct_auto vinculado a TESTNET.
     settings.risk.max_daily_loss_usd = 100.0
     day = _today()
     register_strategy(gateway_state.db, "ct_auto", module="copy_trade")
+    _link_copyable_trader(gateway_state.db, "ct_auto",
+                          "0x00000000000000000000000000000000000000a1")
     register_strategy(gateway_state.db, "ct_manual", module="copy_trade",
                       status="auto_paused")  # pausa manual pré-existente
     _seed_loss_fill(gateway_state.db, strategy_id="ct_auto", wallet="0x4124",
@@ -696,6 +710,104 @@ def test_circuit_breaker_reset_idempotent_until_rollover(
                     network="testnet", pnl=-300.0, day=tomorrow)
     gateway_state._evaluate_circuit_breakers(tomorrow)
     assert gateway_state.enforcer.is_open("0x4124", "testnet")
+
+
+# ---------------------------------------------------------------------------
+# UPDATE-0064 (Parte 2): reset do breaker revalida a invariante strategy↔trader
+# ---------------------------------------------------------------------------
+def test_reset_reactivates_when_trader_copyable(client, gateway_state, settings) -> None:
+    """Reset reativa a strategy pausada pelo breaker QUANDO o trader vinculado
+    continua copiável (TESTNET)."""
+    settings.risk.max_daily_loss_usd = 100.0
+    day = _today()
+    register_strategy(gateway_state.db, "ct_ok", module="copy_trade")
+    _link_copyable_trader(gateway_state.db, "ct_ok",
+                          "0x00000000000000000000000000000000000000b1",
+                          status="TESTNET")
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_ok", wallet="0x4124",
+                    network="testnet", pnl=-150.0, day=day)
+    gateway_state._evaluate_circuit_breakers(day)
+
+    r = client.post("/control/circuit-breaker/reset",
+                    headers={"X-Control-Token": "test-token"},
+                    json={"wallet": "0x4124", "environment": "testnet"}).json()
+    assert r["ok"] and "ct_ok" in r["reactivated"] and r["skipped"] == []
+    assert gateway_state.db.query(
+        "SELECT status FROM strategies WHERE id = 'ct_ok'")[0]["status"] == "active"
+
+
+def test_reset_skips_reactivation_when_trader_demoted(
+    client, gateway_state, settings) -> None:
+    """Trader rebaixado (SALVO) enquanto o breaker estava aberto: o reset NÃO
+    reativa — mantém pausada, devolve em `skipped` e emite
+    strategy.reactivation_skipped (invariante strategy↔trader, UPDATE-0064)."""
+    settings.risk.max_daily_loss_usd = 100.0
+    day = _today()
+    register_strategy(gateway_state.db, "ct_demoted", module="copy_trade")
+    _link_copyable_trader(gateway_state.db, "ct_demoted",
+                          "0x00000000000000000000000000000000000000b2",
+                          status="TESTNET")
+    _seed_loss_fill(gateway_state.db, strategy_id="ct_demoted", wallet="0x4124",
+                    network="testnet", pnl=-150.0, day=day)
+    gateway_state._evaluate_circuit_breakers(day)
+    # trader rebaixado para NÃO-copiável após o breaker abrir
+    gateway_state.db.execute(
+        "UPDATE traders SET status = 'SALVO' WHERE address = ?",
+        ("0x00000000000000000000000000000000000000b2",))
+
+    r = client.post("/control/circuit-breaker/reset",
+                    headers={"X-Control-Token": "test-token"},
+                    json={"wallet": "0x4124", "environment": "testnet"}).json()
+    assert r["ok"] and "ct_demoted" in r["skipped"]
+    assert "ct_demoted" not in r["reactivated"]
+    assert gateway_state.db.query(
+        "SELECT status FROM strategies WHERE id = 'ct_demoted'")[0]["status"] == "auto_paused"
+    assert gateway_state.db.query(
+        "SELECT COUNT(*) AS n FROM events "
+        "WHERE event_type = 'strategy.reactivation_skipped'")[0]["n"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# UPDATE-0064 (Parte 3): atribuição EXPLÍCITA de trader em fills/orders
+# ---------------------------------------------------------------------------
+def test_record_fill_sets_trader_address(client, gateway_state) -> None:
+    """record_fill grava trader_address resolvido da strategy (≠ master_address)."""
+    register_strategy(gateway_state.db, "ct_attr")
+    _link_copyable_trader(gateway_state.db, "ct_attr",
+                          "0x00000000000000000000000000000000000000c1",
+                          status="TESTNET")
+    gateway_state.db.insert("orders", {
+        "cloid": "0xattr1", "strategy_id": "ct_attr", "symbol": "BTC",
+        "side": "buy", "type": "market", "size": 0.001, "status": "created",
+    })
+    gateway_state.on_own_fill({
+        "cloid": "0xattr1", "coin": "BTC", "side": "buy",
+        "px": 100_000.0, "sz": 0.001, "fee": 0.01,
+    })
+    row = gateway_state.db.query(
+        "SELECT trader_address, master_address FROM fills WHERE cloid = '0xattr1'")[0]
+    assert row["trader_address"] == "0x00000000000000000000000000000000000000c1"
+
+
+def test_order_insert_sets_trader_address_and_preserves_master(
+    client, gateway_state) -> None:
+    """handle_intent grava trader_address na ordem e PRESERVA master_address
+    (wallet executora) — conceitos distintos e coexistentes."""
+    register_strategy(gateway_state.db, "ct_ord", module="copy_trade")
+    _link_copyable_trader(gateway_state.db, "ct_ord",
+                          "0x00000000000000000000000000000000000000c2",
+                          status="TESTNET")
+    resp = client.post("/intent", json={
+        "strategy_id": "ct_ord", "symbol": "BTC", "side": "buy",
+        "notional_usd": 100.0,
+    }).json()
+    assert resp["ok"] is True
+    row = gateway_state.db.query(
+        "SELECT trader_address, master_address FROM orders WHERE cloid = ?",
+        (resp["cloid"],))[0]
+    assert row["trader_address"] == "0x00000000000000000000000000000000000000c2"
+    # master_address (wallet executora) segue povoado independentemente.
+    assert "master_address" in row
 
 
 def test_api_positions_scoped_to_strategy_symbols(client, gateway_state) -> None:

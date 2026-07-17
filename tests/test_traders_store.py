@@ -204,6 +204,43 @@ def test_rescan_pinned_rejecting_keeps_status_and_reason(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# UPDATE-0064 (Parte 1b): demoção de trader operante pausa a strategy e audita
+# ---------------------------------------------------------------------------
+def test_demotion_pauses_strategy_and_emits_trader_demoted(db) -> None:
+    """TESTNET→SALVO: a strategy operante vira `paused` e emite
+    strategy.paused{by:'trader_demoted'} com os status antigo/novo do trader."""
+    upsert_candidate(db, address=ADDR, name="whale", score=80.0)
+    set_status(db, ADDR, "TESTNET", by="human", human_gate=True)
+    sid = db.query("SELECT id, status FROM strategies")[0]
+    assert sid["status"] == "active"           # promovido ⇒ operante
+
+    res = set_status(db, ADDR, "SALVO", by="dashboard_humano")
+    assert res["ok"]
+    strat = db.query("SELECT status FROM strategies")[0]
+    assert strat["status"] == "paused"         # rebaixado ⇒ pausado
+
+    ev = db.query(
+        "SELECT payload FROM events WHERE event_type = 'strategy.paused' "
+        "ORDER BY id DESC")
+    assert ev, "faltou o evento strategy.paused"
+    payload = json.loads(ev[0]["payload"])
+    assert payload["by"] == "trader_demoted"
+    assert payload["old_trader_status"] == "TESTNET"
+    assert payload["new_trader_status"] == "SALVO"
+
+
+def test_demotion_of_non_operating_strategy_emits_nothing(db) -> None:
+    """SUGERIDO→REJEITADO (strategy nunca operou): nenhum strategy.paused —
+    o gatilho só dispara quando havia estratégia active/dry_run."""
+    upsert_candidate(db, address=ADDR, score=50.0)   # cria strategy paused
+    set_status(db, ADDR, "REJEITADO", by="discovery_v9")   # automação permitida
+    ev = db.query(
+        "SELECT 1 FROM events WHERE event_type = 'strategy.paused' "
+        "AND json_extract(payload, '$.by') = 'trader_demoted'")
+    assert ev == []
+
+
+# ---------------------------------------------------------------------------
 # UPDATE-0057 (Fase 2, Parte 8): guarda anti-sobrescrita de métricas completas
 # ---------------------------------------------------------------------------
 def test_would_downgrade_metrics_logic() -> None:

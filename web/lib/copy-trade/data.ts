@@ -72,6 +72,8 @@ export type Order = Record<string, any> & {
   latency_ms?: number | null;
   reject_reason?: string | null;
   network?: "testnet" | "mainnet" | null;
+  master_address?: string | null;
+  trader_address?: string | null;
 };
 
 export type Fill = Record<string, any> & {
@@ -86,6 +88,8 @@ export type Fill = Record<string, any> & {
   realized_pnl?: number | null;
   ts: string;
   network?: "testnet" | "mainnet" | null;
+  master_address?: string | null;
+  trader_address?: string | null;
 };
 
 export type FillsSummary = {
