@@ -3442,7 +3442,7 @@ valores do leaderboard) fica intocado (guarda `key not in c.windows_pnl`).
 - **Re-validar (Hermes):** re-analisar `0x3bca`/`0x68f8`/`0xb7e0` e confirmar
   `pnl_30d` preenchido → então marcar UPDATE-0059 **APLICADO**.
 
-## UPDATE-0060 · 2026-07-17 · Status: PENDENTE
+## UPDATE-0060 · 2026-07-17 · Status: APLICADO em 2026-07-17
 
 **Auto-transfer spot→perp por conta + correções do auto-pause.** Corrige o
 incidente de 2026-07-16: o trader `0x1a5d` (mainnet) preencheu buy 300 AAVE @
@@ -3525,7 +3525,7 @@ follow-up a aprovar após a confirmação abaixo.
 
 ---
 
-## UPDATE-0061 · 2026-07-17 · Status: PENDENTE
+## UPDATE-0061 · 2026-07-17 · Status: APLICADO em 2026-07-17
 
 **Fix duplo: (1) exposição fantasma no ledger destrava `total_cap`; (2) circuit
 breaker escopado por (wallet, ambiente), visível na UI e com reset de um clique.**
