@@ -2241,3 +2241,39 @@ devolverem listas vazias.
 1 scan v15 com chave HT → `position_metrics_source=hypertracker` para
 hiperativos, `ht_cohort_novos > 0`, `market_bias` populada. Status do
 UPDATE-0062 e UPDATE-0065 seguem PENDENTE até lá.
+
+## UPDATE-0066 · 2026-07-18 · Status: APLICADO em 2026-07-18
+
+**Origem**: validação em produção do UPDATE-0065 (Hermes) — probe HT + deploy
+
+**Resumo**: UPDATE-0065 e UPDATE-0066 (hotfix parser `positions` vs `items`)
+deployados e validados parcialmente em produção (commit `7960731`).
+
+**O que foi validado**:
+- pytest: **455 passed**, 4 warnings
+- Web build + assets: OK, deployado (HTTP 200)
+- `module=copy_trade` na query do gateway: **OK** — substitui 1.579 IDs
+  concatenados; endpoint funciona sem 400
+- Guard 51 IDs → HTTP 414: **OK**
+- Dashboard `/copy-trade` sem filtro: tabelas carregam (usa `module=`, sem 400)
+- Leaderboard via `_ht_get`: agora conta no orçamento (antes vazava)
+
+**O que NÃO foi validado (probe + scan v15 bloqueados)**:
+- O discovery scheduler (que roda às 05:00 UTC) consumiu o free tier (100 req)
+  ANTES do probe manual → todos os endpoints HT retornaram 429
+  (`current: 100, plan: FREE`). O scheduler v15 fez leaderboard (contado) +
+  posições/cohorts/heatmap (provável com `start` ISO correto).
+- A revalidação do UPDATE-0062 (posições via HT, cohorts, heatmap) fica
+  **PENDENTE** até o próximo reset UTC + probe/seguinte scan v15 agendado.
+
+**Nota operacional**: o free tier (100 req/dia) é insuficiente para 1 scan
+v15 completo + probe manual no mesmo dia. O scheduler roda automaticamente às
+05:00 UTC e consome a cota. Para fazer probe + scan manual de validação no
+mesmo dia, é preciso pausar o scheduler ANTES do reset UTC, ou subir para o
+plano Pulse ($179/mês, 1.600 req/dia).
+
+**Ações para o próximo ciclo**: amanhã após reset UTC, pausar o scheduler,
+rodar probe manual (confirmar contrato `positions` com envelope `positions`
+e `nextCursor`), depois rodar 1 scan v15 e validar `ht_errors_400 == 0`,
+`position_metrics_source=hypertracker`, `ht_cohort_novos > 0`, `market_bias`
+populada. Só então reativar o scheduler.

@@ -3720,7 +3720,7 @@ que alimenta o filtro "por Wallet"): os dois coexistem e NÃO se misturam. A UI
 
 ---
 
-## UPDATE-0065 · 2026-07-17 · Status: PENDENTE
+## UPDATE-0065 · 2026-07-17 · Status: APLICADO em 2026-07-18
 
 **Origem**: PR do discovery HT (a·b·c) + dashboard copy-trade (4 itens) (merged)
 
