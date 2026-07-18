@@ -2643,3 +2643,100 @@ copia realmente abriria, nao ao closedPnl absoluto do trader escalado por ratio:
 - NAO tocar hot path 8.4.1.
 - NAO alterar F15/F17/F18/F19 (usam simulate_copy como black box).
 - .venv/bin/python -m pytest tests/ -q verde (467 hoje).
+
+
+## UPDATE-0069 - 2026-07-18 - Status: PENDENTE
+
+**Origem**: validacao em producao do UPDATE-0067 (Hermes) - fix do cap do ratio
+NAO resolveu o bug do simulate_copy.
+
+**Tipo**: logica_discovery (bugfix)
+
+**Resumo**: o fix do UPDATE-0067 (ratio = min(mirror_capital / trader_equity, 1.0))
+esta no codigo (metrics.py:493) mas NAO resolveu o problema. Re-analise de
+0xd487e26c62ed8c28ce3cc70b5791e501c2934982 em producao (2026-07-18 12:56 UTC):
+
+| Campo | Antes (UPDATE-0066) | Depois (UPDATE-0067) | Esperado |
+|---|---|---|---|
+| SIM NET | USD 542.202 | USD 337.894 | <= ~USD 50.000 |
+| SIM DD | 206,13% | 17.963% | <= 100% |
+| SIM EXP | USD 91,00 | USD 54,76 | <= ~USD 1 |
+| Score | 85,61 | 85,61 | recalculado |
+
+Piorou em vez de melhorar. O cap do ratio nao e a correcao certa.
+
+### Root cause REAL
+
+O ratio controla o sizing do notional (exposicao), mas o pnl da simulacao e
+calculado como closedPnl * ratio * scale (metrics.py ~linha 518). O closedPnl
+da HL e absoluto (dolares), nao relativo ao equity.
+
+Trader 0xd487e26c:
+- equity: USD 394
+- PnL 30d: USD 864.403 (2.192x o equity)
+- trades: 4.376
+- closedPnl medio: USD 197 por trade
+
+Com ratio = 1.0 (cap), a simulacao replica closedPnl * 1.0 = USD 197 por trade.
+Soma: ~USD 864k. Mas nossa simulacao usa USD 1.000 de capital - um PnL de USD 864k e
+retorno de 86.400%, impossivel.
+
+O bug: o trader opera com volume/notional MUITO maior que seu equity
+(leverage extremo ou capital externo adicionado/removido). O closedPnl absoluto
+dele nao reflete o que nossa copia com USD 1.000 geraria. O ratio capado em 1.0
+limita o sizing do notional, mas o PnL continua sendo closedPnl * ratio -
+replicando o PnL absoluto do trader quase 1:1.
+
+### Correcao exigida
+
+Arquivo: engine/strategies/copy_trade/metrics.py - funcao simulate_copy()
+
+O PnL da simulacao deve ser calculado proporcionalmente ao notional que nossa
+copia realmente abriria, nao ao closedPnl absoluto do trader escalado por ratio:
+
+    # Em vez de (linha ~518):
+    pnl = float(f.get("closedPnl", 0) or 0) * ratio * scale
+
+    # Calcular o PnL proporcional ao notional da copia:
+    # notional_trader = abs(sz * px) (notional do fill do trader)
+    # notional_copy = min(notional_trader * ratio, notional_cap)  (ja calculado)
+    # pnl_copy = closedPnl * (notional_copy / notional_trader)
+    #
+    # Isso garante que o PnL seja proporcional ao tamanho que DE FATO copiamos
+    # (limitado por notional_cap = mirror_capital * max_copy_leverage), nao ao
+    # closedPnl absoluto do trader.
+    if notional_trader > 0:
+        pnl = float(f.get("closedPnl", 0) or 0) * (copy_notional / notional_trader)
+    else:
+        pnl = 0.0
+
+### Asserts de sanidade (devem falhar se o bug persistir)
+
+    assert abs(net) <= mirror_capital * 50, f"SIM NET {net} > 50x capital (irreal)"
+    assert max_dd <= 1.0, f"SIM DD {max_dd*100}% > 100% (impossivel)"
+    max_dd = min(max_dd, 1.0)  # clamp de seguranca
+
+### Testes exigidos
+
+1. 0xd487e26c (equity USD 394, PnL USD 864k, 4376 trades): SIM NET <= USD 50.000 (nao
+   USD 337k), SIM DD <= 100%.
+2. 0x1a5db9 (equity USD 14k, PnL USD 23k, 142 trades): SIM NET ~= USD 1.336 (inalterado
+   - equity >> capital, ratio < 1.0 ja).
+3. Trader com equity = capital: resultado inalterado.
+4. Trader com PnL absoluto >> equity (caso extremo): SIM NET limitado por
+   notional_cap.
+5. assert sim.max_dd_pct <= 100.0 em todos os casos.
+6. assert abs(sim.net_pnl_usd) <= mirror_capital * 50 em todos os casos.
+
+### Validacao pos-deploy (Hermes)
+
+1. Re-analisar 0xd487e26c: SIM NET <= USD 50.000, SIM DD <= 100%, score recalculado.
+2. Re-analisar 0x1a5db9: SIM NET ~= USD 1.336 (inalterado).
+3. Proximo scan v15: nenhum trader com SIM DD > 100%.
+
+### Restricoes
+
+- NAO alterar assinatura de simulate_copy (protegida).
+- NAO tocar hot path 8.4.1.
+- NAO alterar F15/F17/F18/F19 (usam simulate_copy como black box).
+- .venv/bin/python -m pytest tests/ -q verde (467 hoje).
