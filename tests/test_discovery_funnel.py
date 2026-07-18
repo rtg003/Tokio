@@ -289,6 +289,17 @@ def test_report_contains_funnel_stats_and_ranking(db) -> None:
     assert "| 1 |" in md and "Funil:" in md
 
 
+def test_funnel_stats_surface_ht_http_errors(db) -> None:
+    # UPDATE-0065 (c): o funil expõe a contagem de erros HTTP atribuídos ao
+    # free tier HT (ht_errors_by_status[400]) em funnel_stats, para o run de
+    # amanhã ficar legível (400 "start ausente" antes deixava de aparecer).
+    client = make_client()
+    client.ht_errors_by_status = {400: 3, 429: 1}
+    result = run_scan(client, db, CFG, now_ms=NOW_MS)
+    assert result.funnel_stats["ht_errors_400"] == 3
+    assert result.funnel_stats["ht_errors"] == 4
+
+
 def test_entry_rule_windows() -> None:
     # v9: entrada por janelas de PnL DESATIVADA (poder preditivo ~0 no lab) —
     # até all-negative passa; quem decide é a simulação (F16-F19)
@@ -834,7 +845,9 @@ class HTFakeClient(FakeClient):
         self._heatmap = heatmap or {}
         self.ht_positions_calls: list[str] = []
 
-    def ht_positions(self, address: str) -> list[dict[str, Any]]:
+    def ht_positions(self, address: str, *, start_days: int = 60,
+                     **_: Any) -> list[dict[str, Any]]:
+        # UPDATE-0065 (a): o funil agora passa start_days (janela ISO 8601).
         self.ht_positions_calls.append(address.lower())
         return self._p(address).get("ht_positions", [])
 

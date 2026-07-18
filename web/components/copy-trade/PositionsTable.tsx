@@ -1,8 +1,26 @@
 import { fmtNum, fmtSigned, pnlClass } from "@/lib/format";
-import { Position } from "@/lib/copy-trade/data";
+import { Position, Trader } from "@/lib/copy-trade/data";
 import ClosePositionButton from "./ClosePositionButton";
 
-export default function PositionsTable({ positions }: { positions: Position[] | null }) {
+// Rótulo curto de carteira: 6 primeiros caracteres (mesmo padrão de
+// TradesOrdersTable). UPDATE-0065: coluna "Trader" mostra quem copiamos.
+const short6 = (a: string | null | undefined) => (a ? a.slice(0, 6) : null);
+
+export default function PositionsTable({
+  positions,
+  traders,
+}: {
+  positions: Position[] | null;
+  traders: Trader[] | null;
+}) {
+  const traderMap = new Map<string, Trader>();
+  for (const t of traders ?? []) {
+    if (t.strategy_id) traderMap.set(t.strategy_id, t);
+  }
+  const traderLabel = (p: Position): string => {
+    const t = p.strategy_id ? traderMap.get(p.strategy_id) : undefined;
+    return t?.name ?? short6(t?.address) ?? "—";
+  };
   const rows = (positions ?? [])
     .filter((p) => p.size !== 0)
     .sort((a, b) => Math.abs(b.position_value ?? 0) - Math.abs(a.position_value ?? 0));
@@ -21,6 +39,7 @@ export default function PositionsTable({ positions }: { positions: Position[] | 
           <table>
             <thead>
               <tr>
+                <th>Trader</th>
                 <th>Ativo</th>
                 <th className="num" aria-label="Fechar"></th>
                 <th>Lado</th>
@@ -37,7 +56,8 @@ export default function PositionsTable({ positions }: { positions: Position[] | 
             </thead>
             <tbody>
               {rows.map((p) => (
-                <tr key={p.symbol}>
+                <tr key={`${p.strategy_id ?? ""}:${p.symbol}`}>
+                  <td>{traderLabel(p)}</td>
                   <td>{p.symbol}</td>
                   <td className="num pos-close-cell">
                     <ClosePositionButton

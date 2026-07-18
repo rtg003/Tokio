@@ -382,7 +382,12 @@ def _apply_ht_positions(c: Candidate, client: DataClient, cfg: dict[str, Any],
     Não toca em sim_* (copy sim segue em fills HL — invariante). Retorna True
     quando o HT forneceu as métricas (fonte = hypertracker)."""
     try:
-        positions = client.ht_positions(c.address)
+        # UPDATE-0065 (a): reusa a janela `collection.fills_window_days` (=60) como
+        # `start` das posições HT — nenhuma nova chave de config (evita a trava
+        # docs-coverage). Sem `start`, o endpoint devolvia HTTP 400.
+        positions = client.ht_positions(
+            c.address,
+            start_days=int(cfg["collection"]["fills_window_days"]))
     except Exception:  # noqa: BLE001 — HT nunca derruba o deep dive
         return False
     if not positions:
@@ -1288,6 +1293,13 @@ def run_scan(client: DataClient, db: Database, cfg: dict[str, Any] | None = None
     else:
         approved.sort(key=lambda c: -c.score)
     stats["aprovados"] = len(approved)
+    # UPDATE-0065 (c): expõe a contagem de 400 do HyperTracker no funil. Flui p/ o
+    # evento PERSISTIDO `discovery.scan_completed`, então uma falha sistêmica (ex.:
+    # `start` inválido em massa) fica visível na auditoria — não confundível com
+    # soft degradation. Total opcional p/ diagnosticar outros status.
+    ht_errors = getattr(client, "ht_errors_by_status", {}) or {}
+    stats["ht_errors_400"] = int(ht_errors.get(400, 0))
+    stats["ht_errors"] = int(sum(ht_errors.values()))
     return ScanResult(scan_id=scan_id, approved=approved, rejected=rejected,
                       funnel_stats=stats, rekt_sample=rekt,
                       requests_used=getattr(client, "requests_used", 0),

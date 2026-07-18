@@ -25,6 +25,20 @@ HT_BASE_URL = "https://ht-api.coinmarketman.com/api/external"
 
 DAY_MS = 86_400_000
 
+# HyperTracker host — usado para atribuir erros HTTP ao free tier HT (UPDATE-0065).
+HT_HOST = "ht-api.coinmarketman.com"
+
+
+def _ht_start_iso(days: int) -> str:
+    """UPDATE-0065 (a): janela `start` ISO 8601 exigida por `/positions*`.
+
+    Os endpoints `/api/external/positions` (posições, cohort, heatmap) retornam
+    HTTP 400 ("start must be a valid ISO 8601 date string") sem este parâmetro —
+    era a causa do pipeline HT de posições nunca ter rodado em produção. Retorna
+    o instante UTC de `days` atrás no formato ``YYYY-MM-DDTHH:MM:SSZ``."""
+    start = datetime.now(timezone.utc) - timedelta(days=days)
+    return start.strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def _parse_ht_positions_page(data: Any) -> tuple[list[dict[str, Any]], str | None]:
     """Desembrulha UMA página de `/api/external/positions`.
@@ -133,6 +147,9 @@ class HLDataClient:
         # discovery_cache (chave `ht_budget:<dia>`) p/ sobreviver a múltiplos scans.
         self.ht_daily_cap = ht_daily_cap
         self.ht_per_scan_cap = ht_per_scan_cap
+        # UPDATE-0065 (c): contagem de erros HTTP do HyperTracker por status, p/
+        # distinguir falha sistêmica (ex.: 400 em massa) de soft degradation.
+        self.ht_errors_by_status: dict[int, int] = {}
         self._ht_scan_used = 0
         self._ht_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self._ht_day_used_base = self._load_ht_day_used()
@@ -233,11 +250,22 @@ class HLDataClient:
                 self._cache_put(key, data)
                 return data
             except httpx.HTTPStatusError as exc:
-                # v14: rastro do erro HTTP (URL + status) para diagnosticar 401/403
-                # intermitentes de fontes externas como o HyperTracker.
-                logger.warning("discovery.http_error url=%s status=%s",
-                               exc.request.url, exc.response.status_code)
-                if exc.response.status_code != 429 or attempt == self.max_retries:
+                # UPDATE-0065 (c): logar o CORPO truncado além de URL+status — sem
+                # ele a mensagem do 400 ("start must be a valid ISO 8601 date
+                # string") se perde. Seguro: a API key vai no header Authorization,
+                # não na URL nem no corpo da resposta.
+                status = exc.response.status_code
+                try:
+                    body = exc.response.text[:200]
+                except Exception:  # noqa: BLE001
+                    body = ""
+                logger.warning("discovery.http_error url=%s status=%s body=%s",
+                               exc.request.url, status, body)
+                # Atribui o erro ao free tier HT quando o host é o do HyperTracker.
+                if HT_HOST in str(exc.request.url):
+                    self.ht_errors_by_status[status] = (
+                        self.ht_errors_by_status.get(status, 0) + 1)
+                if status != 429 or attempt == self.max_retries:
                     raise
                 # v15: respeita o header Retry-After do 429 (HyperTracker manda o
                 # tempo exato) quando maior que o backoff exponencial corrente.
@@ -474,7 +502,8 @@ class HLDataClient:
         return _parse_ht_wallet(data, address)
 
     # -- v15: posições consolidadas + cohorts + heatmap --------------------
-    def ht_positions(self, address: str, *, max_pages: int = 10,
+    def ht_positions(self, address: str, *, start_days: int = 60,
+                     max_pages: int = 10,
                      page_limit: int = 100) -> list[dict[str, Any]]:
         """Posições CONSOLIDADAS de UMA wallet no HyperTracker
         (`/api/external/positions`), paginadas por `nextCursor`.
@@ -489,7 +518,10 @@ class HLDataClient:
         out: list[dict[str, Any]] = []
         cursor: str | None = None
         for _ in range(max_pages):
-            params: dict[str, Any] = {"address": address, "limit": page_limit}
+            # UPDATE-0065 (a): `start` ISO 8601 é OBRIGATÓRIO — sem ele o endpoint
+            # devolve HTTP 400 e o pipeline degrada p/ fills silenciosamente.
+            params: dict[str, Any] = {"address": address, "limit": page_limit,
+                                      "start": _ht_start_iso(start_days)}
             if cursor:
                 params["cursor"] = cursor
             try:
@@ -531,6 +563,7 @@ class HLDataClient:
         return data if isinstance(data, list) else []
 
     def ht_cohort_addresses(self, segment_ids: list[int], *,
+                            start_days: int = 60,
                             max_per_segment: int = 200,
                             page_limit: int = 100) -> list[str]:
         """Wallets com posição ABERTA por segmento
@@ -547,8 +580,11 @@ class HLDataClient:
             cursor: str | None = None
             collected = 0
             for _ in range(max(1, max_per_segment // page_limit) + 1):
+                # UPDATE-0065 (a): `start` ISO 8601 obrigatório (mesmo validador
+                # de /positions) — sem ele o cohort retornava HTTP 400.
                 params: dict[str, Any] = {"segmentId": sid, "open": "true",
-                                          "limit": page_limit}
+                                          "limit": page_limit,
+                                          "start": _ht_start_iso(start_days)}
                 if cursor:
                     params["cursor"] = cursor
                 try:
@@ -584,9 +620,13 @@ class HLDataClient:
         if not api_key:
             return {}
         try:
+            # UPDATE-0065 (a): inclui `start` (mesmo validador de /positions),
+            # mantendo `openedWithin`. O probe confirma se o heatmap exige mesmo
+            # `start` ou só `openedWithin`.
             data = self._ht_get(
                 f"ht_heatmap:{opened_within}", "/positions/heatmap",
-                {"openedWithin": opened_within}, api_key)
+                {"openedWithin": opened_within,
+                 "start": _ht_start_iso(60)}, api_key)
         except HTBudgetExhausted:
             logger.warning("discovery.ht_budget_exhausted endpoint=heatmap")
             return {}
@@ -606,15 +646,20 @@ class HLDataClient:
         pages = max(1, max_addresses // 100)
         for rank_by in ("pnlMonth", "pnlWeek"):
             for page in range(pages):
-                data = self._request(
-                    f"ht_lb:{rank_by}:{page}",
-                    lambda rb=rank_by, p=page: self._http.get(
-                        "https://ht-api.coinmarketman.com/api/external/leaderboards/perp-pnl",
-                        params={"rankBy": rb, "orderBy": rb, "order": "desc",
-                                "limit": 100, "offset": p * 100},
-                        headers={"Authorization": f"Bearer {api_key}",
-                                 "Accept": "application/json"},
-                    ))
+                # UPDATE-0065 (b): passa por `_ht_get` (não `_request` direto),
+                # então TODO request ao free tier HT conta no orçamento persistido
+                # `ht_requests_used` e respeita o cap. `HT_BASE_URL` já é
+                # `.../api/external`, então a URL final é idêntica à anterior.
+                try:
+                    data = self._ht_get(
+                        f"ht_lb:{rank_by}:{page}", "/leaderboards/perp-pnl",
+                        {"rankBy": rank_by, "orderBy": rank_by, "order": "desc",
+                         "limit": 100, "offset": page * 100},
+                        api_key)
+                except HTBudgetExhausted:
+                    logger.warning("discovery.ht_budget_exhausted "
+                                   "endpoint=leaderboard rankBy=%s", rank_by)
+                    return out[:max_addresses]
                 rows = (data or {}).get("data") or []
                 if not rows:
                     break

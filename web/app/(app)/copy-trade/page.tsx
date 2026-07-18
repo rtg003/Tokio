@@ -149,7 +149,7 @@ export default async function CopyTradeDashboard({
         periodLabel={PERIOD_LABEL[period]}
         envFiltered={true}
       />
-      <PositionsTable positions={positions} />
+      <PositionsTable positions={positions} traders={allTraders} />
       <MarketBiasCard bias={marketBias} />
       <TradesOrdersTable orders={orders} fills={fills} traders={allTraders} />
       <TradersTable

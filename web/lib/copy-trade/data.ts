@@ -270,11 +270,7 @@ export async function getMetrics(
   until: string,
 ): Promise<Metrics[] | null> {
   if (strategyIds.length === 0) return [];
-  const q = new URLSearchParams({
-    strategy_ids: strategyIds.join(","),
-    since,
-    until,
-  });
+  const q = appendScope(new URLSearchParams({ since, until }), strategyIds, "strategy_ids");
   return gatewayGet<Metrics[]>(`/api/metrics?${q.toString()}`);
 }
 
@@ -291,6 +287,28 @@ function withWallet(q: URLSearchParams, wallet?: string | null): URLSearchParams
   return q;
 }
 
+// UPDATE-0065 (Fix do HTTP 400): com o filtro de trader em "all", o dashboard
+// concatenava ~1579 strategy_ids (~19 KB) na URL e o Uvicorn rejeitava com 400
+// (tabelas vazias, sem rastro). Acima de SCOPE_MAX ids trocamos por
+// ?module=copy_trade — o gateway resolve o escopo por subquery, preservando o
+// isolamento (§5.1 / ADR 0010) sem estourar o tamanho da URL nem o limite de
+// bind-vars do SQLite.
+const COPY_MODULE = "copy_trade";
+const SCOPE_MAX = 50;
+
+function appendScope(
+  q: URLSearchParams,
+  strategyIds: string[],
+  key: "strategy_id" | "strategy_ids" = "strategy_id",
+): URLSearchParams {
+  if (strategyIds.length > 0 && strategyIds.length <= SCOPE_MAX) {
+    q.set(key, strategyIds.join(","));
+  } else {
+    q.set("module", COPY_MODULE);
+  }
+  return q;
+}
+
 export async function getFillsSummary(
   strategyIds: string[],
   since: string,
@@ -302,14 +320,7 @@ export async function getFillsSummary(
     return { n_trades: 0, net_pnl: 0, fees: 0, win_rate: null, profit_factor: null, max_drawdown: 0 };
   }
   const q = withWallet(
-    withNetwork(
-      new URLSearchParams({
-        strategy_id: strategyIds.join(","),
-        since,
-        until,
-      }),
-      network,
-    ),
+    withNetwork(appendScope(new URLSearchParams({ since, until }), strategyIds), network),
     wallet,
   );
   return gatewayGet<FillsSummary>(`/api/fills/summary?${q.toString()}`);
@@ -333,14 +344,7 @@ export async function getPnlSummary(
     };
   }
   const q = withWallet(
-    withNetwork(
-      new URLSearchParams({
-        strategy_id: strategyIds.join(","),
-        since,
-        until,
-      }),
-      network,
-    ),
+    withNetwork(appendScope(new URLSearchParams({ since, until }), strategyIds), network),
     wallet,
   );
   return gatewayGet<PnlSummary>(`/api/pnl/summary?${q.toString()}`);
@@ -356,12 +360,7 @@ export async function getOrders(
   if (strategyIds.length === 0) return [];
   const q = withWallet(
     withNetwork(
-      new URLSearchParams({
-        strategy_id: strategyIds.join(","),
-        since,
-        until,
-        limit: "15",
-      }),
+      appendScope(new URLSearchParams({ since, until, limit: "50" }), strategyIds),
       network,
     ),
     wallet,
@@ -379,12 +378,7 @@ export async function getFills(
   if (strategyIds.length === 0) return [];
   const q = withWallet(
     withNetwork(
-      new URLSearchParams({
-        strategy_id: strategyIds.join(","),
-        since,
-        until,
-        limit: "15",
-      }),
+      appendScope(new URLSearchParams({ since, until, limit: "50" }), strategyIds),
       network,
     ),
     wallet,
@@ -746,10 +740,7 @@ export async function getPositions(
   // Posições da venue são escopadas no gateway aos símbolos do módulo (§5.1).
   if (strategyIds.length === 0) return [];
   const q = withWallet(
-    withNetwork(
-      new URLSearchParams({ strategy_id: strategyIds.join(",") }),
-      network,
-    ),
+    withNetwork(appendScope(new URLSearchParams(), strategyIds), network),
     wallet,
   );
   return gatewayGet<Position[]>(`/api/positions?${q.toString()}`);

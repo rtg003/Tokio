@@ -2117,3 +2117,63 @@ Invariantes: hot path §8.4.1 intocado; migration 0029 só aditiva; `hl_agents.p
 e `master_address` não tocados; isolamento §5.1/§5.2 mantido.
 
 Validação: `pytest tests/ -q` verde (446); `web` `tsc`/`next build` limpos.
+
+## UPDATE-0065 · 2026-07-17 · Status: PENDENTE
+
+Origem: Claude Code (CONSTRUTOR) — fixes discovery HT (a·b·c) + 4 itens dashboard
+Tipo: engine | gateway | web | docs
+
+Resumo: fecha os três achados do HERMES UPDATE-0063 (o pipeline HT de posições
+nunca rodou: `/api/external/positions` voltava HTTP 400) + 4 correções da
+dashboard de Copy Trade. **Corrige DUAS premissas erradas** dos specs de origem:
+
+- **Premissa (b) do Hermes — ERRADA**: "budget em memória por processo". Falso:
+  `_ht_get` já PERSISTE o consumo por dia UTC em `discovery_cache`
+  (`ht_budget:<dia>`, recarga no `__init__`). O vazamento real era
+  `_hypertracker_leaderboard` chamando `self._request` DIRETO (mesmo host do free
+  tier, sem contar no cap). Corrigido roteando pelo `_ht_get`.
+- **Fix 1 do rtg003bot — ERRADO**: "omitir `strategy_id` p/ retornar tudo". Falso:
+  `_strategy_ids_csv` levanta 400 se vier vazio e "retornar tudo" violaria §5.1/
+  ADR 0010. A causa real do 400 é a URL gigante (~1579 ids/~19 KB) rejeitada pelo
+  Uvicorn. Corrigido com escopo `module=copy_trade` via subquery no servidor.
+
+**Bloco 1 — engine** (`engine/strategies/copy_trade/hl_data.py`, `funnel.py`):
+- (a) helper `_ht_start_iso(days)` + kwarg `start_days` em `ht_positions`/
+  `ht_cohort_addresses` e `start` fixo em `ht_heatmap`; param `start` (ISO 8601
+  UTC) enviado em todas as chamadas `/positions*`. Janela reusa
+  `collection.fills_window_days` (=60) → **zero nova chave de config**
+  (`test_docs_coverage` intacto). `funnel._apply_ht_positions` passa `start_days`.
+- (b) `_hypertracker_leaderboard` agora usa `_ht_get("ht_lb:…", "/leaderboards/
+  perp-pnl", …)`; `HT_BASE_URL` já é `.../api/external` → URL final idêntica, mas
+  agora conta em `_ht_incr` (persistente) e respeita o cap; `try/except
+  HTBudgetExhausted` degrada retornando o coletado + log `ht_budget_exhausted`.
+- (c) `_request` loga o corpo truncado (`discovery.http_error … body=…`); novo
+  `self.ht_errors_by_status[status]` (incrementado só p/ host `ht-api.
+  coinmarketman.com`); `funnel_stats.ht_errors_400` + `ht_errors` no
+  `discovery.scan_completed`.
+
+**Bloco 2 — gateway/web**:
+- Item 1 (`TradersTable.tsx`): `title` da célula do coorte revela `t.cohort`
+  completo no hover; texto visível segue só a faixa de tamanho.
+- Item 2 (`TradersTable.tsx`): coluna STATUS movida (header + corpo) para entre
+  "Ativos" e "Últ. atividade".
+- Item 3 (`PositionsTable.tsx` + `page.tsx`): coluna "Trader" antes do "Ativo",
+  resolvida via `traderMap` por `strategy_id` (`name ?? short6(address) ?? —`);
+  key de linha composta `strategy_id:symbol`; page passa `traders={allTraders}`.
+- Item 4 (`server.py` + `data.ts` + `gateway.ts`): helper `_scope(strategy_id,
+  module)` — >50 ids → HTTP 414; `module` fora de `_SCOPE_MODULES` → 400; nenhum
+  dos dois → 400. `module` resolvido por subquery (`strategy_id IN (SELECT id FROM
+  strategies WHERE module=? AND status!='archived')`). Aplicado em `/api/metrics`,
+  `/api/fills`, `/api/orders`, `/api/fills/summary`, `/api/pnl/summary` e
+  `/api/positions` (via `_scoped_positions(..., module=None)` — 5 callers internos
+  single-id inalterados). Front: `appendScope()` manda `strategy_id` até 50 ids,
+  senão `module=copy_trade`; `limit` de getOrders/getFills 15→50. `gatewayGet`
+  agora loga `console.warn` com path+status/erro (fim da falha silenciosa).
+
+Invariantes: soft dependency HT preservada (sem chave = v14); isolamento §5.1/
+§5.2/ADR 0010 mantido (nunca "todos os dados"); `withWallet`/`withNetwork`,
+`Promise.all` do page e hot path §8.4.1 intocados; nenhuma migration.
+
+Validação: `.venv/bin/python -m pytest tests/ -q` → 455 passed (baseline 446 + 9
+novos: hl_data start/400/leaderboard, funnel ht_errors_400, gateway module/414/
+400); `web` `tsc --noEmit` e `next build` limpos.

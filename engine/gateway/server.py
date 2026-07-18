@@ -1706,6 +1706,50 @@ def build_app(state: GatewayState) -> FastAPI:
     def _in_clause(values: list[str]) -> str:
         return ", ".join("?" for _ in values)
 
+    # UPDATE-0065 (Fix do HTTP 400): escopo de isolamento por strategy_id OU
+    # módulo. O dashboard de copy trade, com o filtro de trader em "all",
+    # concatenava ~1579 ids (~19 KB) em ?strategy_id — o Uvicorn rejeitava a URL
+    # gigante com 400 e as tabelas ficavam vazias. O escopo `?module=copy_trade`
+    # resolve a lista no SERVIDOR via subquery (sem URL gigante e sem estourar o
+    # limite de bind-vars do SQLite) SEM violar o isolamento (§5.1 / ADR 0010):
+    # continua filtrando por módulo (permitido em dashboard de módulo, §5.3),
+    # nunca "todos os dados".
+    _SCOPE_MODULES = {"copy_trade", "tradingview", "standalone", "dummy"}
+    _SCOPE_MAX_IDS = 50
+
+    def _scope(strategy_id: str | None, module: str | None,
+               *, field: str = "strategy_id") -> tuple[str, list[Any]]:
+        """Retorna (fragmento `strategy_id IN (...)`, params) p/ o WHERE.
+
+        - `strategy_id` CSV: lista explícita (<=50 ids; >50 → 414 defesa em
+          profundidade, o cliente já troca p/ ?module nesse ponto).
+        - `module`: subquery `SELECT id FROM strategies WHERE module=? AND
+          status != 'archived'`.
+        - nenhum dos dois → 400 (isolamento exige escopo).
+        """
+        if strategy_id and strategy_id.strip():
+            ids = _strategy_ids_csv(strategy_id, field=field)
+            if len(ids) > _SCOPE_MAX_IDS:
+                raise HTTPException(
+                    414,
+                    f"{field}: {len(ids)} ids excede o limite de "
+                    f"{_SCOPE_MAX_IDS} (use ?module=… p/ escopo por módulo)",
+                )
+            return f"strategy_id IN ({_in_clause(ids)})", list(ids)
+        if module and module.strip():
+            mod = module.strip()
+            if mod not in _SCOPE_MODULES:
+                raise HTTPException(400, f"module inválido: {mod}")
+            return (
+                "strategy_id IN (SELECT id FROM strategies "
+                "WHERE module = ? AND status != 'archived')",
+                [mod],
+            )
+        raise HTTPException(
+            400,
+            f"{field} ou module é obrigatório (ADR 0010 — isolamento de módulo)",
+        )
+
     _VALID_NETWORKS = {"testnet", "mainnet"}
 
     def _parse_network(network: str | None) -> str | None:
@@ -1800,6 +1844,7 @@ def build_app(state: GatewayState) -> FastAPI:
     @app.get("/api/fills/summary")
     def api_fills_summary(
         strategy_id: str | None = None,
+        module: str | None = None,
         since: str | None = None,
         until: str | None = None,
         network: str | None = None,
@@ -1817,10 +1862,10 @@ def build_app(state: GatewayState) -> FastAPI:
         strategy_metrics_daily, onde nunca eram gravados (ficavam zerados).
         """
         try:
-            strategy_ids = _strategy_ids_csv(strategy_id)
+            scope_sql, scope_params = _scope(strategy_id, module)
             network_filter = _parse_network(network)
-            where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
-            params: list[Any] = [*strategy_ids]
+            where = [scope_sql]
+            params: list[Any] = [*scope_params]
             if network_filter:
                 where.append("network = ?")
                 params.append(network_filter)
@@ -1878,6 +1923,7 @@ def build_app(state: GatewayState) -> FastAPI:
     @app.get("/api/fills")
     def api_fills(
         strategy_id: str | None = None,
+        module: str | None = None,
         since: str | None = None,
         until: str | None = None,
         network: str | None = None,
@@ -1894,11 +1940,11 @@ def build_app(state: GatewayState) -> FastAPI:
         migration 0015); histórico sem atribuição (NULL) só aparece sem filtro.
         """
         try:
-            strategy_ids = _strategy_ids_csv(strategy_id)
+            scope_sql, scope_params = _scope(strategy_id, module)
             network_filter = _parse_network(network)
             limit = max(1, min(int(limit), 500))
-            where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
-            params: list[Any] = [*strategy_ids]
+            where = [scope_sql]
+            params: list[Any] = [*scope_params]
             if network_filter:
                 where.append("network = ?")
                 params.append(network_filter)
@@ -2114,6 +2160,7 @@ def build_app(state: GatewayState) -> FastAPI:
     @app.get("/api/orders")
     def api_orders(
         strategy_id: str | None = None,
+        module: str | None = None,
         since: str | None = None,
         until: str | None = None,
         network: str | None = None,
@@ -2122,10 +2169,12 @@ def build_app(state: GatewayState) -> FastAPI:
     ):
         try:
             limit = max(1, min(500, limit))
-            strategy_ids = _strategy_ids_csv(strategy_id)
+            # UPDATE-0065: escopo por strategy_id OU módulo. O `_scope` devolve o
+            # fragmento sem prefixo; `orders` usa alias `o`, então prefixamos.
+            scope_sql, scope_params = _scope(strategy_id, module)
             network_filter = _parse_network(network)
-            where = [f"o.strategy_id IN ({_in_clause(strategy_ids)})"]
-            params: list[Any] = [*strategy_ids]
+            where = [f"o.{scope_sql}"]
+            params: list[Any] = [*scope_params]
             if network_filter:
                 where.append("e.network = ?")
                 params.append(network_filter)
@@ -2159,7 +2208,7 @@ def build_app(state: GatewayState) -> FastAPI:
 
     def _scoped_positions(
         strategy_ids: list[str], network_filter: str | None,
-        wallet: str | None = None,
+        wallet: str | None = None, *, module: str | None = None,
     ) -> list[dict[str, Any]]:
         """Posições da venue ESCOPADAS aos símbolos que o(s) strategy_id(s)
         negocia(m) (ADR 0010 §5.1). A venue não atribui posição por strategy_id,
@@ -2175,22 +2224,32 @@ def build_app(state: GatewayState) -> FastAPI:
             adapter = state._adapter_for(network_filter)
         except ValueError:
             return []   # ambiente não configurado → sem posições
-        placeholders = _in_clause(strategy_ids)
+        # UPDATE-0065: escopo por lista de strategy_id OU por módulo (subquery).
+        # O escopo é o MESMO fragmento nas duas metades do UNION.
+        if module is not None:
+            if module not in _SCOPE_MODULES:
+                raise HTTPException(400, f"module inválido: {module}")
+            scope_frag = ("strategy_id IN (SELECT id FROM strategies "
+                          "WHERE module = ? AND status != 'archived')")
+            scope_args: list[Any] = [module]
+        else:
+            scope_frag = f"strategy_id IN ({_in_clause(strategy_ids)})"
+            scope_args = list(strategy_ids)
         if wallet:
             sym_rows = state.db.query(
                 f"SELECT DISTINCT strategy_id, symbol FROM orders "
-                f"WHERE strategy_id IN ({placeholders}) AND master_address = ? "
+                f"WHERE {scope_frag} AND master_address = ? "
                 f"UNION "
                 f"SELECT DISTINCT strategy_id, symbol FROM fills "
-                f"WHERE strategy_id IN ({placeholders}) AND master_address = ?",
-                [*strategy_ids, wallet, *strategy_ids, wallet],
+                f"WHERE {scope_frag} AND master_address = ?",
+                [*scope_args, wallet, *scope_args, wallet],
             )
         else:
             sym_rows = state.db.query(
-                f"SELECT DISTINCT strategy_id, symbol FROM orders WHERE strategy_id IN ({placeholders}) "
+                f"SELECT DISTINCT strategy_id, symbol FROM orders WHERE {scope_frag} "
                 f"UNION "
-                f"SELECT DISTINCT strategy_id, symbol FROM fills WHERE strategy_id IN ({placeholders})",
-                [*strategy_ids, *strategy_ids],
+                f"SELECT DISTINCT strategy_id, symbol FROM fills WHERE {scope_frag}",
+                [*scope_args, *scope_args],
             )
         # symbol -> strategy_id: atribuição p/ o botão de fechar posição da UI.
         # Se >1 estratégia negocia o símbolo, escolhe deterministicamente o menor
@@ -2223,18 +2282,28 @@ def build_app(state: GatewayState) -> FastAPI:
     @app.get("/api/positions")
     def api_positions(
         strategy_id: str | None = None,
+        module: str | None = None,
         network: str | None = None,
         wallet: str | None = None,
     ) -> list[dict[str, Any]]:
         """Posições abertas no clearinghouse do ambiente, ESCOPADAS aos símbolos
         que o módulo negocia (ADR 0010 §5.1).
 
-        ?strategy_id é OBRIGATÓRIO; ?network=testnet|mainnet escolhe o adapter
-        (default = ambiente configurado); ?wallet=0x… consulta a conta daquele
-        master. Falha da venue devolve [] (não derruba a UI)."""
+        ?strategy_id OU ?module é OBRIGATÓRIO (UPDATE-0065); ?network=testnet|
+        mainnet escolhe o adapter (default = ambiente configurado); ?wallet=0x…
+        consulta a conta daquele master. Falha da venue devolve [] (não derruba
+        a UI)."""
         try:
-            strategy_ids = _strategy_ids_csv(strategy_id)
             network_filter = _parse_network(network)
+            if module and not (strategy_id and strategy_id.strip()):
+                return _scoped_positions([], network_filter, wallet, module=module)
+            strategy_ids = _strategy_ids_csv(strategy_id)
+            if len(strategy_ids) > _SCOPE_MAX_IDS:
+                raise HTTPException(
+                    414,
+                    f"strategy_id: {len(strategy_ids)} ids excede o limite de "
+                    f"{_SCOPE_MAX_IDS} (use ?module=… p/ escopo por módulo)",
+                )
             return _scoped_positions(strategy_ids, network_filter, wallet)
         except HTTPException:
             raise
@@ -2562,6 +2631,7 @@ def build_app(state: GatewayState) -> FastAPI:
     @app.get("/api/pnl/summary")
     def api_pnl_summary(
         strategy_id: str | None = None,
+        module: str | None = None,
         since: str | None = None,
         until: str | None = None,
         network: str | None = None,
@@ -2575,10 +2645,13 @@ def build_app(state: GatewayState) -> FastAPI:
         ?wallet=0x… filtra pela conta de trading (fills.master_address) e escopa
         as posições ao mesmo master. Falha da venue → unrealized_pnl = 0."""
         try:
-            strategy_ids = _strategy_ids_csv(strategy_id)
+            # UPDATE-0065: escopo por strategy_id OU módulo. `use_module` decide
+            # como escopar as posições abertas (`_scoped_positions`) mais abaixo.
+            use_module = bool(module) and not (strategy_id and strategy_id.strip())
+            scope_sql, scope_params = _scope(strategy_id, module)
             network_filter = _parse_network(network)
-            where = [f"strategy_id IN ({_in_clause(strategy_ids)})"]
-            params: list[Any] = [*strategy_ids]
+            where = [scope_sql]
+            params: list[Any] = [*scope_params]
             if network_filter:
                 where.append("network = ?")
                 params.append(network_filter)
@@ -2620,7 +2693,12 @@ def build_app(state: GatewayState) -> FastAPI:
                 except ValueError:
                     include_unrealized = True
             if include_unrealized:
-                positions = _scoped_positions(strategy_ids, network_filter, wallet)
+                # No caminho por ids, `scope_params` É a lista de ids (ver _scope).
+                positions = (
+                    _scoped_positions([], network_filter, wallet, module=module)
+                    if use_module
+                    else _scoped_positions(list(scope_params), network_filter, wallet)
+                )
                 unrealized = sum(
                     float(p.get("unrealized_pnl") or 0) for p in positions)
             else:
@@ -2642,13 +2720,16 @@ def build_app(state: GatewayState) -> FastAPI:
     @app.get("/api/metrics")
     def api_metrics(
         strategy_ids: str | None = None,
+        module: str | None = None,
         since: str | None = None,
         until: str | None = None,
     ):
         try:
-            ids = _strategy_ids_csv(strategy_ids, field="strategy_ids")
-            where = [f"strategy_id IN ({_in_clause(ids)})"]
-            params: list[Any] = [*ids]
+            # UPDATE-0065: escopo por strategy_ids CSV OU módulo (subquery).
+            scope_sql, scope_params = _scope(
+                strategy_ids, module, field="strategy_ids")
+            where = [scope_sql]
+            params: list[Any] = [*scope_params]
             if since:
                 where.append("day >= ?")
                 params.append(since)

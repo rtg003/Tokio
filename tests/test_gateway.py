@@ -869,3 +869,44 @@ def test_ensure_margin_routes_to_adapter(client) -> None:
     }).json()
     assert resp["transferred"] == 0.0
     assert resp["reason"] == "nao_suportado"
+
+
+# ---------------------------------------------------------------------------
+# UPDATE-0065 (Item 4): escopo por módulo via subquery + guardas 414/400.
+# O "all" da dashboard não pode mais concatenar ~1579 ids (URL gigante → 400 do
+# Uvicorn); passa `module=copy_trade` e o servidor resolve o escopo via subquery
+# PRESERVANDO o isolamento §5.1/ADR 0010 (nunca "todos os dados").
+# ---------------------------------------------------------------------------
+def test_api_fills_module_scope_via_subquery(client, gateway_state) -> None:
+    """?module=copy_trade escopa via subquery e vê SÓ strategies do módulo."""
+    db = gateway_state.db
+    register_strategy(db, "ct_mod_a", module="copy_trade")
+    register_strategy(db, "ct_mod_b", module="copy_trade")
+    register_strategy(db, "dm_other", module="dummy")
+    for sid in ("ct_mod_a", "ct_mod_b", "dm_other"):
+        db.insert("fills", {
+            "cloid": f"0x{sid}", "strategy_id": sid, "symbol": "BTC",
+            "side": "buy", "price": 100_000.0, "size": 0.001, "fee": 0.01,
+            "network": "testnet", "ts": "2026-07-05T10:00:00Z",
+        })
+
+    scoped = client.get("/api/fills?module=copy_trade&limit=50").json()
+    sids = {f["strategy_id"] for f in scoped}
+    assert sids == {"ct_mod_a", "ct_mod_b"}  # dummy fica de fora (isolamento)
+
+    summary = client.get("/api/fills/summary?module=copy_trade").json()
+    assert summary["n_trades"] == 2
+
+
+def test_api_fills_too_many_ids_returns_414(client, gateway_state) -> None:
+    """>50 ids em strategy_id → HTTP 414 (defesa em profundidade da URL gigante)."""
+    register_strategy(gateway_state.db, "ct_guard", module="copy_trade")
+    ids = ",".join(f"ct_{i}" for i in range(51))
+    resp = client.get(f"/api/fills?strategy_id={ids}&limit=50")
+    assert resp.status_code == 414
+
+
+def test_api_fills_invalid_or_missing_scope_returns_400(client) -> None:
+    """module inválido → 400; nem strategy_id nem module → 400 (ADR 0010)."""
+    assert client.get("/api/fills?module=todos&limit=50").status_code == 400
+    assert client.get("/api/fills?limit=50").status_code == 400

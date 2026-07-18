@@ -336,10 +336,10 @@ export default function TradersTable({
                 <Th label="Trades 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Hold méd." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Ativos" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Últ. atividade" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Confiança" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Idade" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <Th label="Status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="TWRR 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="SIM EXP" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="SIM DD" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -403,7 +403,7 @@ export default function TradersTable({
                           href={`https://app.coinmarketman.com/hypertracker/wallet/${t.address}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          title={`Abrir ${t.cohort} no Coinmarketman`}
+                          title={`${t.cohort} · abrir no Coinmarketman`}
                         >
                           {String(t.cohort).split(" · ")[0]}
                         </a>
@@ -451,26 +451,6 @@ export default function TradersTable({
                         : `${fmtNum(t.avg_holding_hours, 1)}h`}
                     </td>
                     <td className="addr">{topAssets.length ? topAssets.join(" ") : "—"}</td>
-                    <td className="addr">{fmtDateTime(t.last_activity)}</td>
-                    <td>
-                      <ConfidenceBadge confidence={t.metrics_confidence} />
-                      {legacy && <ReclassifyButton address={t.address} />}
-                    </td>
-                    <td
-                      className="num"
-                      title={
-                        t.wallet_age_days === null || t.wallet_age_days === undefined
-                          ? "idade não disponível"
-                          : `idade real da wallet · fonte: ${ageSource({
-                              htEarliestMs: t.ht_earliest_activity_ms,
-                              walletAgeDays: t.wallet_age_days,
-                            })}`
-                      }
-                    >
-                      {t.wallet_age_days === null || t.wallet_age_days === undefined
-                        ? "—"
-                        : `${fmtNum(t.wallet_age_days, 0)}d`}
-                    </td>
                     <td>
                       <StatusSelect
                         address={t.address}
@@ -492,6 +472,26 @@ export default function TradersTable({
                         }}
                         equity={t.equity}
                       />
+                    </td>
+                    <td className="addr">{fmtDateTime(t.last_activity)}</td>
+                    <td>
+                      <ConfidenceBadge confidence={t.metrics_confidence} />
+                      {legacy && <ReclassifyButton address={t.address} />}
+                    </td>
+                    <td
+                      className="num"
+                      title={
+                        t.wallet_age_days === null || t.wallet_age_days === undefined
+                          ? "idade não disponível"
+                          : `idade real da wallet · fonte: ${ageSource({
+                              htEarliestMs: t.ht_earliest_activity_ms,
+                              walletAgeDays: t.wallet_age_days,
+                            })}`
+                      }
+                    >
+                      {t.wallet_age_days === null || t.wallet_age_days === undefined
+                        ? "—"
+                        : `${fmtNum(t.wallet_age_days, 0)}d`}
                     </td>
                     {/* UPDATE-0059 (Parte A): TWRR 30d vem do portfolio — medição. */}
                     <td

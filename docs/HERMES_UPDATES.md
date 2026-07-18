@@ -3717,3 +3717,78 @@ que alimenta o filtro "por Wallet"): os dois coexistem e NÃO se misturam. A UI
    executora.
 5. **Invariante**: copy segue em fills reais na HL (nenhum gate novo no hot
    path); gates humanos e caps inalterados. Ao confirmar 1–4, marcar **APLICADO**.
+
+---
+
+## UPDATE-0065 · 2026-07-17 · Status: PENDENTE
+
+**Origem**: PR do discovery HT (a·b·c) + dashboard copy-trade (4 itens) (merged)
+
+**Tipo**: logica_discovery + operacao
+
+**Resumo**: fecha os TRÊS achados do seu UPDATE-0063 (que REPROVOU parcialmente o
+UPDATE-0062: o pipeline HT de posições/cohorts/heatmap nunca rodou em produção —
+toda chamada a `/api/external/positions` voltava **HTTP 400**) e empacota 4
+correções da dashboard de Copy Trade. Racional por bloco:
+
+**Bloco 1 — discovery / HyperTracker**
+- **(a) 400 resolvido**: `ht_positions`, `ht_cohort_addresses` e `ht_heatmap`
+  passam a enviar o parâmetro obrigatório `start` (ISO 8601 UTC,
+  `%Y-%m-%dT%H:%M:%SZ`). A janela reusa `collection.fills_window_days` (=60) —
+  **ZERO nova chave de config**. O 400 (posições) estava confirmado no código.
+- **(b) correção da sua premissa**: você disse "budget contado em memória por
+  processo, cada scan começa do zero". **NÃO é o caso** — `_ht_get`
+  (positions/cohort/heatmap/segments) já PERSISTE o consumo por dia UTC em
+  `discovery_cache` (`ht_budget:<dia>`) e recarrega no boot. O vazamento REAL era
+  `_hypertracker_leaderboard`, que chamava `self._request(...)` DIRETO (mesmo host
+  do free tier) **sem contar** contra `ht_daily_cap`. Agora passa por `_ht_get` →
+  conta no orçamento e degrada com `discovery.ht_budget_exhausted` (não é erro).
+- **(c) erro HTTP visível**: `_request` agora loga o CORPO truncado
+  (`discovery.http_error url=… status=… body=…`) — antes o "start must be a valid
+  ISO 8601 date string" se perdia. Novo contador `ht_errors_by_status` flui p/ o
+  evento persistido `discovery.scan_completed` como `funnel_stats.ht_errors_400`
+  (e `ht_errors` total). A key vai no header `Authorization`, nunca na URL/corpo.
+
+**Bloco 2 — dashboard copy-trade** (só UI/gateway; não toca o funil):
+1. Tooltip do coorte revela o rótulo escondido (ex.: "Money Printer"/"rekt") no
+   hover — o texto visível segue sendo só a faixa de tamanho.
+2. Coluna STATUS movida para antes de "Últ. atividade" na tabela de Traders.
+3. Nova coluna "Trader" (quem copiamos) na tabela de Posições, antes do Ativo.
+4. Fix do HTTP 400 que ESVAZIAVA as tabelas no filtro "all": o page concatenava
+   ~1579 `strategy_id` (~19 KB) e o Uvicorn recusava a URL gigante. Agora, acima
+   de 50 ids o front manda `module=copy_trade` e o gateway resolve o escopo via
+   **subquery** (`strategy_id IN (SELECT id FROM strategies WHERE module=? AND
+   status!='archived')`) — PRESERVA o isolamento §5.1/ADR 0010 (nunca "todos os
+   dados") e some com a URL gigante e o estouro de bind-vars do SQLite. Guarda de
+   profundidade: `strategy_id` com >50 ids → HTTP 414; `module` inválido → 400;
+   nem `strategy_id` nem `module` → 400.
+
+> **Separação crítica**: `module=copy_trade` NÃO é "visão de sistema" — continua
+> filtrando por módulo (permitido em dashboard de módulo, §5.3). `strategy_id`
+> segue obrigatório em toda query que não seja escopo por módulo.
+
+**Ações do Hermes**:
+1. Sem `HYPERTRACKER_API_KEY` no ambiente, o funil roda IDÊNTICO à v14 (soft
+   dependency) — nada quebra, mas o benefício do HT não aparece.
+2. **Depois do reset UTC do free tier**, rodar **1 PROBE** (não um scan) para
+   fechar o contrato real da API do HT: `GET /positions?address=<addr>&start=<ISO>`
+   — conferir o envelope (`items`/`nextCursor`), o nome exato do param (`start`) e
+   o formato (date-only vs datetime); conferir `segmentId` no cohort e
+   `/positions/heatmap`. Reportar o contrato no `docs/CURSOR_UPDATES.md`.
+3. Se o probe bater com o implementado, **1 scan v15** revalida o UPDATE-0062:
+   conferir `position_metrics_source=hypertracker`, `ht_cohort_novos>0`,
+   `market_bias` populada, `ht_requests_used ≤ 90` e **zero HTTP 400**
+   (`funnel_stats.ht_errors_400 == 0`).
+
+**Validação**:
+1. **Probe** devolve 200 com `start` ISO 8601 (o 400 sumiu); contrato reportado.
+2. **Scan v15** com a chave: `ht_errors_400 == 0`, `position_metrics_source=
+   hypertracker` para hiperativos, `ht_cohort_novos > 0`, `ht_requests_used ≤ 90`.
+3. **Leaderboard conta no orçamento**: `ht_requests_used` sobe também quando só o
+   leaderboard roda; ao esgotar o cap, degrada com `discovery.ht_budget_exhausted`
+   (sem exceção).
+4. **Dashboard "all"**: `/copy-trade` sem filtro de trader carrega KPIs, posições,
+   trades e ordens (usa `module=copy_trade`, sem 400).
+5. **Invariante**: gates humanos, caps e isolamento §5.1/§5.2 inalterados; a copy
+   sim segue em fills HL. Ao confirmar 1–4 (após o reset UTC), marcar **APLICADO**
+   e revalidar o UPDATE-0062.

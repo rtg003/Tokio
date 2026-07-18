@@ -10,9 +10,15 @@ export async function gatewayGet<T>(path: string): Promise<T | null> {
       cache: "no-store",
       signal: AbortSignal.timeout(4000),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      // UPDATE-0065 (Fix 4): a falha era silenciosa — um 400/500 do gateway virava
+      // `null` e a tabela ficava vazia sem rastro. Loga path + status p/ diagnóstico.
+      console.warn(`gatewayGet: ${path} → HTTP ${response.status}`);
+      return null;
+    }
     return (await response.json()) as T;
-  } catch {
+  } catch (err) {
+    console.warn(`gatewayGet: ${path} → ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

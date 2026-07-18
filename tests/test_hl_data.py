@@ -195,3 +195,124 @@ def test_ht_positions_budget_exhausted_degrades_without_raising(
     assert got == []
     assert any("discovery.ht_budget_exhausted" in r.getMessage()
                for r in caplog.records)
+
+
+# ============================================================================
+# UPDATE-0065 — (a) `start` ISO 8601; (b) leaderboard no orçamento HT; (c) erro
+# HTTP visível + contagem por status
+# ============================================================================
+from datetime import datetime  # noqa: E402
+
+
+def _parse_iso(value: str) -> datetime:
+    """Aceita o formato `...Z` emitido por `_ht_start_iso`."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def test_ht_positions_sends_start_iso8601(monkeypatch) -> None:
+    """UPDATE-0065 (a): `ht_positions` envia `start` ISO 8601 (sem ele → 400)."""
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    client = _client_no_db()
+    fake = _FakePositionsHttp([{"items": [{"coin": "BTC"}], "nextCursor": None}])
+    client._http = fake  # type: ignore[assignment]
+
+    client.ht_positions(ADDR, start_days=60)
+
+    assert "start" in fake.calls[0]
+    parsed = _parse_iso(fake.calls[0]["start"])  # não levanta = ISO 8601 válido
+    assert parsed.year >= 2020
+
+
+def test_ht_cohort_addresses_sends_start_iso8601(monkeypatch) -> None:
+    """UPDATE-0065 (a): `ht_cohort_addresses` também envia `start`."""
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    client = _client_no_db()
+    fake = _FakePositionsHttp([
+        {"items": [{"address": "0x" + "ab" * 20}], "nextCursor": None},
+    ])
+    client._http = fake  # type: ignore[assignment]
+
+    client.ht_cohort_addresses([7], start_days=30)
+
+    assert "start" in fake.calls[0]
+    _parse_iso(fake.calls[0]["start"])  # ISO 8601 válido
+    assert fake.calls[0]["segmentId"] == 7
+
+
+class _Http400:
+    """`_http` sintético que devolve HTTP 400 do HyperTracker (start ausente)."""
+
+    BODY = "start must be a valid ISO 8601 date string"
+
+    def get(self, url: str, *, params: dict, headers: dict):
+        import httpx
+
+        req = httpx.Request("GET", url, params=params)
+        return httpx.Response(400, request=req, text=self.BODY)
+
+
+def test_ht_400_degrades_logs_body_and_counts_status(monkeypatch, caplog) -> None:
+    """UPDATE-0065 (c): 400 do HT degrada p/ [], LOGA o corpo (status + mensagem)
+    e incrementa `ht_errors_by_status[400]`."""
+    import logging
+
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    client = _client_no_db()
+    client._http = _Http400()  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING):
+        got = client.ht_positions(ADDR)
+
+    assert got == []
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("discovery.http_error" in m and "status=400" in m
+               and "ISO 8601" in m for m in msgs)
+    assert client.ht_errors_by_status.get(400) == 1
+
+
+class _FakeLeaderboardHttp:
+    """`_http` sintético do leaderboard perp-pnl (`{"data": [...]}`)."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get(self, url: str, *, params: dict, headers: dict) -> _FakeResp:
+        self.calls.append(url)
+        return _FakeResp({"data": [{"address": "0x" + "cd" * 20}]})
+
+
+def test_leaderboard_counts_ht_budget_and_persists(monkeypatch, db) -> None:
+    """UPDATE-0065 (b): `_hypertracker_leaderboard` passa por `_ht_get` — conta no
+    orçamento HT persistido (`ht_requests_used` > 0 e grava em discovery_cache)."""
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    client = HLDataClient(db, request_budget=100, min_interval_s=0.0)
+    client._http = _FakeLeaderboardHttp()  # type: ignore[assignment]
+
+    out = client._hypertracker_leaderboard("k", max_addresses=2)
+
+    assert out  # coletou pelo menos 1 endereço
+    assert client.ht_requests_used > 0
+    rows = db.query("SELECT payload FROM discovery_cache WHERE cache_key LIKE ?",
+                    ("ht_budget:%",))
+    assert rows, "consumo do leaderboard deve persistir em discovery_cache"
+
+
+def test_leaderboard_degrades_when_budget_exhausted(monkeypatch, caplog) -> None:
+    """UPDATE-0065 (b): com cap diário 0, o leaderboard degrada SEM levantar."""
+    import logging
+
+    monkeypatch.setenv("HYPERTRACKER_API_KEY", "k")
+    client = HLDataClient(None, request_budget=100, min_interval_s=0.0,
+                          ht_daily_cap=0, ht_per_scan_cap=0)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("orçamento esgotado não pode tocar a rede")
+
+    client._http = type("H", (), {"get": staticmethod(_boom)})()  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING):
+        out = client._hypertracker_leaderboard("k", max_addresses=2)
+
+    assert out == []
+    assert any("discovery.ht_budget_exhausted" in r.getMessage()
+               and "leaderboard" in r.getMessage() for r in caplog.records)
