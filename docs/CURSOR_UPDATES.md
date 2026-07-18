@@ -2636,3 +2636,58 @@ DD, custos por perna, contadores. Como a equity nao realimenta mais o sizing:
 - Demais testes (caps, liquidacao, DD ≤ 100%, custos, guards) verdes.
 
 **Sem** config/migration; nada em `web/`. `traders.sim_*` sobrescrito no proximo scan.
+
+
+## UPDATE-0071 - validacao em producao (Hermes) - PARCIAL
+
+**Origem**: validacao do UPDATE-0071 (sizing base fixa mirror_capital).
+
+**Tipo**: logica_discovery (bugfix - parcial)
+
+**Resumo**: o overflow numerico foi resolvido (SIM NET agora finito) e a
+regressao do 0x1a5db9 foi reduzida, mas o 0xd487e26c ainda gera SIM NET irreal.
+
+### Resultados em producao (2026-07-18 14:30 UTC)
+
+| Endereco | Campo | Antes (0070) | Depois (0071) | Esperado |
+|---|---|---|---|---|
+| 0xd487e26c (equity $394) | SIM NET | 1.3e+191 | $542.280 | <= $50k ou liquidacao |
+| 0xd487e26c | SIM DD | 100% | 49.23% (ok) | <= 100% |
+| 0x1a5db9 (equity $14k) | SIM NET | $8.600 | $2.336 | ~$1.336 |
+| 0x1a5db9 | SIM DD | 26.48% | 10.59% (ok) | ~5.7% |
+
+### Avancos
+
+1. OVERFLOW RESOLVIDO: SIM NET agora e finito (nao mais 1e+191).
+2. SIM DD voltou a valores realistas (49% e 10.6%).
+3. 0x1a5db9 se aproximou do pre-0070 (SIM NET de $8.600 para $2.336).
+
+### Problema remanescente
+
+0xd487e26c ainda gera SIM NET de $542.280 (54.000% de retorno sobre $1k).
+Causa: o sizing fixo em mirror_capital para o NOTIONAL, mas o PnL continua
+sendo closedPnl * ratio onde ratio=1.0 - replicando o PnL absoluto do trader.
+O trader tem equity $394 mas PnL 30d real de $864k (2.192x o equity),
+operando com volume muito maior que o equity. O sizing do notional nao
+limita o PnL porque o PnL vem do closedPnl absoluto, nao do notional.
+
+### Correcao exigida
+
+O PnL da copia deve ser limitado pelo notional que DE FATO abrimos, nao pelo
+closedPnl absoluto do trader. Quando o trader tem PnL/notional muito alto
+(alavancagem implicita extremamente alta), nossa copia com mirror_capital
+e max_copy_leverage nao pode replicar esse retorno.
+
+pnl_copy = closedPnl * (copy_notional / notional_trader)
+
+onde copy_notional = min(notional_trader * ratio, mirror_capital *
+max_copy_leverage).
+
+Isso garante que o PnL seja proporcional ao tamanho que DE FATO copiamos.
+
+### Testes obrigatorios
+
+1. 0xd487e26c: SIM NET <= $50.000, SIM DD <= 100%.
+2. 0x1a5db9: SIM NET ~= $1.336 (pre-0070), SIM DD ~= 5.7%.
+3. assert abs(sim.net_pnl_usd) <= mirror_capital * 50 sempre.
+4. assert sim.max_dd_pct <= 100.0 sempre.
