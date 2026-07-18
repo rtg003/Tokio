@@ -2691,3 +2691,67 @@ Isso garante que o PnL seja proporcional ao tamanho que DE FATO copiamos.
 2. 0x1a5db9: SIM NET ~= $1.336 (pre-0070), SIM DD ~= 5.7%.
 3. assert abs(sim.net_pnl_usd) <= mirror_capital * 50 sempre.
 4. assert sim.max_dd_pct <= 100.0 sempre.
+
+---
+
+## UPDATE-0072 · 2026-07-18 · Status: APLICADO
+
+**Origem**: sua validacao PARCIAL do UPDATE-0071 (acima). Diagnostico do "problema
+remanescente" (0xd487e26c com SIM NET $542k) investigado e refutado. SEM mudanca de
+codigo.
+
+**Tipo**: esclarecimento (nenhum arquivo .py alterado)
+
+**Veredito**: nao ha bug remanescente no `simulate_copy`. O SIM NET $542k e um numero
+de DIAGNOSTICO pre-gate; nunca chega ao ranking. Antes de mexer no codigo, pedi os
+`reject_reasons` completos dos enderecos — e eles fecharam o caso.
+
+### A "correcao exigida" e um no-op algebrico (3a vez)
+
+Voce pediu `pnl_copy = closedPnl * (copy_notional / notional_trader)` com
+`copy_notional = min(notional_trader * ratio, mirror_capital * max_lev)`. Isso e
+EXATAMENTE o codigo atual:
+
+```
+atual:  pnl = ron * copy_notional = (closedPnl/notional) * copy_notional
+            = closedPnl * (copy_notional / notional)          <- identico ao seu
+onde    copy_notional = mirror_capital * (notional/trader_equity)
+                     = notional * (mirror_capital/trader_equity)   <- seu "ratio"
+        capado por mirror_capital * max_lev                        <- seu cap
+```
+
+E a terceira vez que a proposta chega igual ao shippado (report 0070 -> "fix definitivo"
+-> PARCIAL). O SIM NET nao vem de formula errada; vem de replicar honestamente um trader
+que com equity $394 gerou ~$864k de PnL em 30d (2.192x o equity).
+
+### Mecanismo diagnostico-vs-gate
+
+- `analyze_single_wallet` (funnel.py:1382-1489): NUNCA short-circuita de proposito
+  (docstring 1386-1390); exibe sim_* bruto e poe os motivos so em `reject_reasons`
+  (informativo), `reject_reason=None`. **O SIM NET do analyze e pre-gate.**
+- scan em massa (funnel.py:1241-1278): short-circuita em qualquer motivo de
+  `hard_filters_all` (incl. F19 DD>25% e F9 MM/arb) ANTES de ranquear.
+
+### Evidencia (dados do proprio bot)
+
+| Endereco | reject_reasons | DD-sim | Ranking? |
+|---|---|---|---|
+| 0xd487e26c | F19 (49,2%>25%) + F9 (MM/arb) + F8 + F2c | 49,23% | NAO |
+| 0x1f7b0d0c (ctrl) | F19 (30,0%>25%) | 30,03% | NAO |
+| 0x1a5db9 | [] aprovado | 10,58% | SIM (correto) |
+| 0x8d7d49eb | F2c inativo | null (sampled) | indeterminado (correto) |
+
+### Nota 0x1a5db9
+
+$2.336/10,58% (esperado ~$1.336/~5,7%) NAO e regressao: a propriedade "equity >= capital
+= soma linear sem composicao" e do codigo (testes verdes); o numero mudou por DRIFT DE
+DADOS (mais fills dias depois). $1.336 era snapshot antigo, nao alvo fixo.
+
+### Band-aids reafirmados como REJEITADOS
+
+`assert abs(net)<=capital*50`, `assert dd<=100`, `MAX_TRADES_PER_DAY`, cap de retorno por
+fill, cap do ratio — todos desnecessarios (overflow ja eliminado pela soma limitada do
+0071; DD ja <=100% pelo piso; misranking ja barrado por F19/F9).
+
+**Recomendacao ao operador**: marcar UPDATE-0071 como validado. Regra: ao ver SIM NET alto
+no analyze, checar `reject_reasons` antes de reportar bug.

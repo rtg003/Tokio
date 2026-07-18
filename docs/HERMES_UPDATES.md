@@ -3991,3 +3991,83 @@ ser **exata** (sem drift de arredondamento).
 2. `0x1a5db9` → `SIM NET ≈ $1.336` (regressão corrigida).
 3. Scan v15 sem `SIM NET > 50x capital` nem `SIM DD > 100%`. Ao confirmar 1–3, marcar
    **APLICADO** (validação).
+
+---
+
+## UPDATE-0072 · 2026-07-18 · Status: APLICADO em 2026-07-18
+
+**Origem**: sua validação PARCIAL do UPDATE-0071 (CURSOR_UPDATES) — o overflow foi
+resolvido e a DD voltou ao real, mas você apontou que `0xd487e26c` ainda mostra
+`SIM NET $542.280` e exigiu nova correção no `simulate_copy`.
+
+**Tipo**: esclarecimento (SEM mudança de código)
+
+**Veredito**: **não há bug remanescente no `simulate_copy`.** O `SIM NET $542.280` é um
+número de **diagnóstico pré-gate** do endpoint `/control/suggestions/analyze` — ele
+**NUNCA chega ao ranking**. O trader é rejeitado no scan por **F19** (DD-cópia 49,23% >
+25%) **e** **F9** (MM/arb). Nenhuma correção é necessária; a "correção exigida" que você
+enviou é um **no-op algébrico**.
+
+### Por que a "correção exigida" não muda nada
+
+Você pediu `pnl_copy = closedPnl × (copy_notional / notional_trader)` com
+`copy_notional = min(notional_trader · ratio, mirror_capital · max_lev)`. Isso é
+**exatamente** o que o código já faz hoje:
+
+```
+código atual:  pnl = ron · copy_notional = (closedPnl/notional) · copy_notional
+                   = closedPnl · (copy_notional / notional)     ← idêntico ao seu
+onde           copy_notional = mirror_capital · (notional/trader_equity)
+                            = notional · (mirror_capital/trader_equity)   ← seu "ratio"
+                (capado por mirror_capital · max_lev)                     ← seu cap
+```
+
+É a **terceira vez** que a proposta chega algebricamente igual ao código shippado
+(report do 0070 → "fix definitivo" → esta PARCIAL). O `SIM NET` não vem de uma fórmula
+errada; vem de replicar honestamente um trader que, com equity $394, gerou PnL real de
+~$864k em 30d (2.192× o próprio equity) operando a alavancagem implícita altíssima. A
+resposta correta a esse trader **não** é achatar o número na fórmula — é a **rejeição
+pelos gates**, que já acontece.
+
+### Diagnóstico vs. gate (a distinção que gera o alarme)
+
+- `/control/suggestions/analyze` (`analyze_single_wallet`, funnel.py:1382-1489) **NUNCA
+  dá short-circuit de propósito**: sempre calcula e exibe `sim_net`/`sim_dd`, e acumula os
+  motivos apenas em `reject_reasons` (informativo); `reject_reason` fica `None` (curadoria
+  manual pode forçar salvar). **O SIM NET exibido aí é bruto, pré-gate.**
+- O **scan em massa** (funnel.py:1241-1278) faz short-circuit em qualquer motivo de
+  `hard_filters_all` — incluindo **F19** (DD > 25%) e **F9** (MM/arb) — **antes** de
+  ranquear/promover.
+
+### Evidência (seus próprios dados, 2026-07-18)
+
+| Endereço | `reject_reasons` | DD-sim | Entra no ranking? |
+|---|---|---|---|
+| `0xd487e26c` | **F19** (49,2% > 25%) **+ F9** (MM/arb) + F8 + F2c | 49,23% | **NÃO** — rejeitado |
+| `0x1f7b0d0c` (controle) | **F19** (30,0% > 25%) | 30,03% | **NÃO** — rejeitado |
+| `0x1a5db9` | `[]` (aprovado) | 10,58% | SIM — correto |
+| `0x8d7d49eb` | F2c (inativo) | null (`sampled`) | indeterminado — correto |
+
+### Nota `0x1a5db9` (não é regressão)
+
+Você esperava `~$1.336`/`~5,7%` e viu `$2.336`/`10,58%`. **Não é regressão**: a
+propriedade "equity ≥ capital = soma linear sem composição" é do *código* (testes verdes)
+e continua valendo; o número absoluto mudou porque os *dados* mudaram (dias depois: mais
+fills, equity/DD diferentes — DD subiu pelo mesmo motivo). O `$1.336` era um snapshot
+antigo, não um alvo fixo.
+
+### Band-aids reafirmados como rejeitados
+
+`assert abs(net) ≤ capital·50`, `assert dd ≤ 100`, `MAX_TRADES_PER_DAY`, cap de retorno
+por fill, cap do ratio — todos desnecessários (o overflow já foi eliminado pela soma
+limitada do 0071; a DD já é ≤ 100% pelo piso de liquidação; o misranking já é barrado por
+F19/F9). Nenhum entra.
+
+**Ação do Hermes**:
+1. Marcar o **UPDATE-0071 como APLICADO/validado** — o overflow foi corrigido e não há bug
+   residual (a parte "PARCIAL" era um número de diagnóstico, não um defeito).
+2. Regra operacional: ao ver `SIM NET` alto no `analyze`, **checar `reject_reasons`
+   ANTES de reportar** — se contém F19/F9/F20, o trader já está barrado no scan e o número
+   é só diagnóstico.
+3. Não reenviar variações da mesma fórmula: `pnl = closedPnl · copy_notional/notional` já
+   é o que roda em produção.
