@@ -3653,7 +3653,7 @@ de viés de mercado fica visível na dashboard (informativo). `logic_version` 14
 
 ---
 
-## UPDATE-0064 · 2026-07-17 · Status: PENDENTE
+## UPDATE-0064 · 2026-07-17 · Status: APLICADO em 2026-07-18
 
 **Origem**: PR da invariante strategy↔trader (merged)
 
