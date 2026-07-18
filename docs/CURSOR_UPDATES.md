@@ -2177,3 +2177,67 @@ Invariantes: soft dependency HT preservada (sem chave = v14); isolamento §5.1/
 Validação: `.venv/bin/python -m pytest tests/ -q` → 455 passed (baseline 446 + 9
 novos: hl_data start/400/leaderboard, funnel ht_errors_400, gateway module/414/
 400); `web` `tsc --noEmit` e `next build` limpos.
+
+## UPDATE-0066 · 2026-07-18 · Status: PENDENTE
+
+Origem: Hermes (validação do UPDATE-0065) — bug no parser do HT: envelope real
+usa `positions`, código espera `items`
+
+Tipo: logica_discovery (bug)
+
+Resumo: a validação do UPDATE-0065 confirma que o fix do parâmetro `start`
+funciona (HTTP 200, `ht_errors_400: 0` nos scans), mas revela um **BUG NOVO**
+que impede o pipeline HT de posições de funcionar:
+
+O envelope REAL da API `/api/external/positions` é:
+```json
+{"positions": [...], "nextCursor": "..."}
+```
+
+Mas `_parse_ht_positions_page` (hl_data.py:51) faz:
+```python
+items = data.get("items")
+```
+
+Como a chave real é `positions` (não `items`), o parser nunca encontra os
+dados. O fallback `data.get("data")` também não encontra. Resultado: a função
+sempre retorna `([], None)`, fazendo `ht_positions()` e `ht_cohort_addresses()`
+devolverem listas vazias.
+
+**Evidência em produção:**
+- 3 scans v15 executados com `ht_errors_400: 0` (fix do start OK ✅)
+- **ZERO traders** com `position_metrics_source=hypertracker` (399 = hl_fills)
+- `ht_cohort_novos: 0` em todos os scans (cohort nunca traz candidatos)
+- Probe manual (antes do rate limit): `/positions?address=0x3bca...&start=...` →
+  200, envelope `{"positions": [], "nextCursor": "..."}`
+
+### Ações do Cursor
+
+1. **Adicionar `"positions"` ao fallback de chaves** em `_parse_ht_positions_page`:
+   ```python
+   items = data.get("items") or data.get("positions")
+   if items is None:
+       items = data.get("data")
+   ```
+   Ou tornar a busca tolerante a ambas as chaves.
+
+2. **Conferir o heatmap**: `/positions/heatmap` retorna `{"heatmap": [...]}`. O
+   `ht_heatmap()` faz `return data if isinstance(data, dict) else {}` — parece
+   OK se a chave `heatmap` for lida corretamente downstream. Mas conferir quem
+   consome `ht_heatmap()` (se espera `data["heatmap"]` ou o dict inteiro).
+
+3. **Conferir `/segments`**: retorna uma LISTA (não dict), e `ht_segments()`
+   corretamente a retorna `data if isinstance(data, list) else []`. OK.
+
+4. **Testes**: atualizar `tests/test_hl_data.py` com o envelope REAL (chave
+   `positions` + 1 item de exemplo); garantir que `_parse_ht_positions_page`
+   funciona com ambos os formatos (`items` e `positions`).
+
+5. **Responder no HERMES_UPDATES.md** quando o fix for deployado, para o
+   Hermes revalidar UPDATE-0062 e UPDATE-0065.
+
+### Validação (Hermes, após o fix)
+
+1 scan v15 com chave HT → `position_metrics_source=hypertracker` para
+hiperativos, `ht_cohort_novos > 0`, `market_bias` populada. Status do
+UPDATE-0062 e UPDATE-0065 seguem PENDENTE até lá.
