@@ -2277,3 +2277,43 @@ rodar probe manual (confirmar contrato `positions` com envelope `positions`
 e `nextCursor`), depois rodar 1 scan v15 e validar `ht_errors_400 == 0`,
 `position_metrics_source=hypertracker`, `ht_cohort_novos > 0`, `market_bias`
 populada. Só então reativar o scheduler.
+
+## UPDATE-0067 · 2026-07-18 · Status: PENDENTE
+
+Origem: Claude Code (CONSTRUTOR) — fix `simulate_copy` (equity < capital infla PnL/DD)
+Tipo: engine
+
+Resumo: bug confirmado em produção (2026-07-18): `metrics.simulate_copy` inflava
+`sim_net_pnl_usd`/`sim_expectancy_usd`/`sim_max_dd_pct` (e o componente `sim_net`
+do score) para traders com equity menor que `f11_mirror_capital_usd` ($1.000).
+Caso real `0xd487e26c…` (equity ~$394): SIM NET ~$542k, SIM DD 206% (curva a
+negativo — impossível), score com `sim_net=1.0` falso.
+
+Causa raiz (`metrics.py:481`): `ratio = mirror_capital / trader_equity` fica > 1.0
+quando `trader_equity < mirror_capital`, amplificando PnL/custo/DD linearmente.
+
+**Duas premissas do spec do rtg003bot corrigidas na implementação**:
+1. O parâmetro real é `mirror_capital`, NÃO `capital_usdc` (nome no spec).
+2. O `max_copy_leverage` (teto por-fill, já existente) NÃO resolve o caso: ele
+   corta o notional por perna e escala o PnL, mas não limita o `ratio` — fills
+   abaixo do cap seguiam escalando por 2,54x.
+
+Correção (Approach B do spec, o mais limpo): `ratio = min(mirror_capital /
+trader_equity, 1.0)` em `simulate_copy` — nunca replicamos com alavancagem maior
+que a do trader; a base do DD segue em `mirror_capital` ($1.000, nosso capital
+real). Companion de consistência: o estimador de notional do **F11**
+(`funnel.py:846`) usa a MESMA razão capada. NÃO foram adicionados `assert` dentro
+de `simulate_copy` (o spec pedia): `python -O` os removeria e um trader com
+histórico de equity > atual pode ter DD realizado > equity → derrubaria o scan;
+as asserções de sanidade ficam nos testes.
+
+Invariantes: assinatura de `simulate_copy` intacta (protegida); F15/F17/F18/F19
+herdam a correção como black box; hot path §8.4.1/`executor.py` não tocados;
+nenhuma config nova (`test_docs_coverage` intacto); sem migration (upsert do
+próximo scan sobrescreve `traders.sim_*`); traders com equity ≥ capital
+inalterados; `test_simulate_copy_sign_is_capital_invariant` e
+`_caps_notional_by_max_copy_leverage` seguem verdes.
+
+Validação: `.venv/bin/python -m pytest tests/ -q` → 461 passed (455 + 6 novos:
+reprodução do caso real, ratio-capado==ratio-1.0, equity alto inalterado,
+equity==capital, equity 0 → None, DD ≤ 100% extremo).

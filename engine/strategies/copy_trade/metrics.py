@@ -452,6 +452,17 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     ratio, então o SINAL do net independe do capital — o capital afeta a
     executabilidade (notional mínimo por ordem, checada no F11).
 
+    UPDATE-0066 — CAP DO RATIO EM 1.0: quando `trader_equity < mirror_capital` o
+    ratio cru fica > 1.0 e amplificaria TUDO (PnL, custo, curva de DD) — copiar
+    um trader de $394 a 5x com $1.000 viraria ~5x de alavancagem sobre a nossa
+    conta, MAIS que o próprio trader, gerando SIM NET de dezenas de milhares e
+    SIM DD > 100% (curva de equity a negativo — impossível com capital fixo).
+    O ratio é capado em 1.0: nunca replicamos com alavancagem maior que a do
+    trader. Efeito colateral: nesse regime (equity < capital) o net DEIXA de
+    escalar linearmente com o capital, e o DD passa a ser mensurável (≤100% para
+    quem não foi liquidado — o drawdown realizado do trader ≤ equity dele <
+    mirror_capital, a base da nossa curva).
+
     v8 — Estágio 4: `latency_slippage_pct` modela o custo da latência de
     espelhamento (200ms–2s entre o fill do trader e a nossa ordem) como
     slippage EXTRA por perna — sem tick data histórico, o deslocamento de
@@ -478,7 +489,8 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
                     key=lambda f: float(f.get("time", 0)))
     if not window:
         return None
-    ratio = mirror_capital / trader_equity
+    # UPDATE-0066: cap em 1.0 — ver docstring (equity < capital inflava o PnL/DD).
+    ratio = min(mirror_capital / trader_equity, 1.0)
     notional_cap = (mirror_capital * float(max_copy_leverage)
                     if max_copy_leverage else None)
     base_rate = (taker_fee_pct + slippage_pct) / 100.0        # por perna

@@ -275,6 +275,75 @@ def test_copy_sim_factor_clamped() -> None:
     assert copy_sim_factor(50.0, 0.0) == 1.0                      # sem capital
 
 
+# --- UPDATE-0066: cap do ratio quando trader_equity < mirror_capital ----------
+def test_simulate_copy_caps_ratio_when_equity_below_capital() -> None:
+    # Caso real 0xd487e26c: equity $394 copiado com $1.000. Sem o cap, ratio 2.54x
+    # inflaria PnL/DD (SIM DD 206% em produção). Com o cap (ratio 1.0), o net é o
+    # PnL real do trader − custos e o DD é mensurável (≤100%).
+    fills = [sim_fill(NOW - 5 * 86_400_000.0, 1, 2_000, closed_pnl=-500),
+             sim_fill(NOW - 2 * 86_400_000.0, 1, 2_000, closed_pnl=800)]
+    sim = simulate_copy(fills, 394.0, 1_000.0, now_ms=NOW)
+    assert sim is not None
+    # ratio capado em 1.0: gross = -500 + 800 = 300; custo = 2×2000×0.00065 = 2.6
+    assert sim.gross_pnl_usd == pytest.approx(300.0)
+    assert sim.cost_usd == pytest.approx(2.6)
+    assert sim.net_pnl_usd == pytest.approx(297.4)      # NÃO 2.54x (=~760)
+    # equity 1000 → 1000-500-1.3=498.7 (peak 1000) → DD 50.13%; depois recupera
+    assert sim.max_dd_pct == pytest.approx(50.13, abs=0.02)
+    assert sim.max_dd_pct <= 100.0
+
+
+def test_simulate_copy_ratio_capped_matches_ratio_one() -> None:
+    # equity < capital (ratio cru 2.0 → cap 1.0) deve bater exatamente com o caso
+    # equity == capital (ratio 1.0): mesmo net/gross/DD.
+    fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 5_000, closed_pnl=120)]
+    below = simulate_copy(fills, 500.0, 1_000.0, now_ms=NOW)    # ratio cru 2.0
+    at = simulate_copy(fills, 1_000.0, 1_000.0, now_ms=NOW)     # ratio 1.0
+    assert below is not None and at is not None
+    assert below.net_pnl_usd == pytest.approx(at.net_pnl_usd)
+    assert below.gross_pnl_usd == pytest.approx(at.gross_pnl_usd)
+    assert below.max_dd_pct == pytest.approx(at.max_dd_pct)
+
+
+def test_simulate_copy_high_equity_unchanged_by_cap() -> None:
+    # equity $10k, capital $1k → ratio 0.1 (< 1.0): o cap NÃO dispara, resultado
+    # idêntico ao comportamento pré-UPDATE-0066.
+    fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=300)]
+    sim = simulate_copy(fills, 10_000.0, 1_000.0, now_ms=NOW)
+    assert sim is not None
+    assert sim.gross_pnl_usd == pytest.approx(30.0)             # 300 × 0.1
+    assert sim.cost_usd == pytest.approx(0.65)                  # 1000 × 0.00065
+    assert sim.net_pnl_usd == pytest.approx(29.35)
+
+
+def test_simulate_copy_equity_equals_capital_ratio_one() -> None:
+    # equity == capital → ratio exatamente 1.0, sem normalização.
+    fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 4_000, closed_pnl=200)]
+    sim = simulate_copy(fills, 1_000.0, 1_000.0, now_ms=NOW)
+    assert sim is not None
+    assert sim.gross_pnl_usd == pytest.approx(200.0)
+    assert sim.cost_usd == pytest.approx(2.6)                   # 4000 × 0.00065
+    assert sim.net_pnl_usd == pytest.approx(197.4)
+
+
+def test_simulate_copy_zero_equity_returns_none() -> None:
+    # guard existente preservado: sem equity não há como dimensionar a cópia.
+    fills = [sim_fill(NOW - 1 * 86_400_000.0, 1, 2_000, closed_pnl=100)]
+    assert simulate_copy(fills, 0.0, 1_000.0, now_ms=NOW) is None
+
+
+def test_simulate_copy_dd_never_exceeds_100pct() -> None:
+    # dados sintéticos extremos: 10 perdas grandes num trader de equity baixo.
+    # Sem o cap (ratio 3.33x) a curva iria a negativo (DD > 100%); com o cap fica
+    # ≤ 100% (a asserção de sanidade que o spec queria — aqui no teste, não no
+    # código de produção, onde `python -O` removeria o assert).
+    fills = [sim_fill(NOW - (10 - i) * 86_400_000.0, 1, 3_000, closed_pnl=-90)
+             for i in range(10)]
+    sim = simulate_copy(fills, 300.0, 1_000.0, now_ms=NOW)
+    assert sim is not None
+    assert 0.0 < sim.max_dd_pct <= 100.0
+
+
 # --- Score composto: régua inteira -------------------------------------------------
 WEIGHTS = {"consistency": 0.25, "profit_factor": 0.20, "roi_log": 0.15,
            "drawdown_quality": 0.15, "copyability": 0.15, "net_expectancy": 0.10}

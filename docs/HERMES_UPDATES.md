@@ -3792,3 +3792,49 @@ correções da dashboard de Copy Trade. Racional por bloco:
 5. **Invariante**: gates humanos, caps e isolamento §5.1/§5.2 inalterados; a copy
    sim segue em fills HL. Ao confirmar 1–4 (após o reset UTC), marcar **APLICADO**
    e revalidar o UPDATE-0062.
+
+---
+
+## UPDATE-0067 · 2026-07-18 · Status: PENDENTE
+
+**Origem**: PR do fix de `simulate_copy` (equity < capital) (merged)
+
+**Tipo**: logica_discovery (bugfix)
+
+**Resumo**: a cópia simulada (`sim_*`: F15/F17/F18/F19 + score) inflava PnL/DD/
+expectância para traders cujo **equity é menor que o capital de cópia**
+(`f11_mirror_capital_usd`, $1.000). Confirmado em produção (2026-07-18) no trader
+`0xd487e26c…` (equity ~$394): **SIM NET ~$542k (54.200%)**, **SIM DD 206%**
+(impossível — DD > 100% = a curva de equity simulada foi a NEGATIVO), expectância
+$91, e o componente `sim_net` do score no teto (1.0) por PnL falso.
+
+Causa: o dimensionamento usava `ratio = mirror_capital / trader_equity`; quando
+`trader_equity < mirror_capital` o `ratio > 1.0` amplificava tudo linearmente
+(copiar um trader de $394 a 5x com $1.000 = ~5x de alavancagem sobre a NOSSA
+conta, mais que o próprio trader). O teto por-fill `max_copy_leverage` NÃO cobria
+esse caso (ele corta notional por perna, não o ratio).
+
+Correção: o `ratio` passa a ser **capado em 1.0** — nunca replicamos com
+alavancagem maior que a do trader. Para quem sobreviveu (drawdown realizado ≤
+equity < capital), o DD fica ≤ 100% por construção, sem clamps artificiais. O
+mesmo cap foi aplicado ao estimador de executabilidade do **F11** (notional
+mínimo), para o gate refletir o tamanho que DE FATO copiaremos.
+
+> **Impacto na sua análise**: traders de **equity baixo** vão ter `sim_net_pnl_usd`,
+> `sim_expectancy_usd`, `sim_max_dd_pct` e **score** MENORES (mais honestos) a
+> partir do próximo scan — não "corrija" isso de volta: os números antigos eram
+> inflados. Traders com equity ≥ capital ($1.000) ficam INALTERADOS. A persistência
+> (`traders.sim_*`) é sobrescrita no próximo scan (upsert) — sem migration.
+
+**Ações do Hermes**:
+1. Re-analisar `0xd487e26c62ed8c28ce3cc70b5791e501c2934982` via
+   `/control/suggestions/analyze`: `SIM DD ≤ 100%` (era 206,13%), `SIM NET`
+   proporcionalmente menor (era ~$542k), score sem `sim_net=1.0` falso.
+2. Re-analisar `0x1a5db9…` (equity ~$14k): `SIM NET` INALTERADO (~$1.336) — o cap
+   não dispara para equity ≥ capital.
+3. No próximo scan v15: conferir que **nenhum trader** aparece com `SIM DD > 100%`.
+
+**Validação**:
+1. `0xd487e26c` → `SIM DD ≤ 100%`, `SIM NET`/expectância menores, score recalculado.
+2. `0x1a5db9` → `SIM NET` inalterado (equity alto).
+3. Scan v15 sem nenhum `SIM DD > 100%`. Ao confirmar 1–3, marcar **APLICADO**.
