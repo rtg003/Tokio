@@ -1,6 +1,8 @@
 """Métricas do funil v2 (spec v5) — fixtures sintéticas, incl. casos-armadilha."""
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from engine.strategies.copy_trade.metrics import (
@@ -187,12 +189,12 @@ def test_simulate_copy_profitable_trader_nets_positive() -> None:
              sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=500)]
     sim = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
     assert sim is not None
-    # UPDATE-0069 (sizing fractional): base ~$100/fill (equity 1k × notional 10k/eq
-    # 100k = 0.1x) e leve composição sobre a equity que cresce a cada win.
-    assert sim.gross_pnl_usd == pytest.approx(10.0237)
-    assert sim.cost_usd == pytest.approx(0.2606)
-    assert sim.net_pnl_usd == pytest.approx(9.7631)
-    assert sim.median_copy_notional_usd == pytest.approx(100.2402)
+    # UPDATE-0071 (sizing fractional sobre capital FIXO): $100/fill (capital 1k ×
+    # notional 10k / eq 100k = 0.1x), sem composição → soma linear exata.
+    assert sim.gross_pnl_usd == pytest.approx(10.0)          # 2 wins × 0.05 ron × 100
+    assert sim.cost_usd == pytest.approx(0.26)               # 4 × 100 × 0.00065
+    assert sim.net_pnl_usd == pytest.approx(9.74)
+    assert sim.median_copy_notional_usd == pytest.approx(100.0)
     assert sim.n_fills == 4
 
 
@@ -306,15 +308,16 @@ def test_simulate_copy_liquidation_floors_net_and_dd() -> None:
     assert sim.n_closed == 1                                       # 2º fill ignorado
 
 
-def test_simulate_copy_sizing_scales_with_current_equity() -> None:
-    # composição: com 2 wins idênticos, o net de 2 fills > 2× o net de 1 fill —
-    # o 2º copy_notional é dimensionado sobre a equity JÁ crescida pelo 1º.
+def test_simulate_copy_no_compounding_fixed_base() -> None:
+    # UPDATE-0071: sizing sobre o capital FIXO (não a equity que compõe). Com 2 wins
+    # idênticos, o net de 2 fills == 2× o net de 1 fill (soma linear, SEM composição)
+    # — foi a composição do 0070 que gerava overflow/regressão.
     win = sim_fill(NOW - 5 * 86_400_000.0, 1, 10_000, closed_pnl=500)
     win2 = sim_fill(NOW - 4 * 86_400_000.0, 1, 10_000, closed_pnl=500)
     one = simulate_copy([win], 100_000, 1_000, now_ms=NOW)
     two = simulate_copy([win, win2], 100_000, 1_000, now_ms=NOW)
     assert one is not None and two is not None
-    assert two.net_pnl_usd > 2 * one.net_pnl_usd
+    assert two.net_pnl_usd == pytest.approx(2 * one.net_pnl_usd)
 
 
 def test_simulate_copy_high_equity_matches_old_ratio_model() -> None:
@@ -329,16 +332,15 @@ def test_simulate_copy_high_equity_matches_old_ratio_model() -> None:
 
 
 def test_simulate_copy_net_scales_linearly_with_capital() -> None:
-    # invariância de capital preservada no modelo fractional (multi-fill): tudo é
-    # relativo à equity corrente → net($1k) × 100 ≈ net($100k).
+    # UPDATE-0071: invariância de capital agora EXATA (multi-fill). Sizing sobre o
+    # capital fixo → cada termo ∝ mirror_capital, sem drift de composição:
+    # net($1k) × 100 == net($100k).
     fills = [sim_fill(NOW - 5 * 86_400_000.0, 1, 10_000, closed_pnl=500),
              sim_fill(NOW - 4 * 86_400_000.0, 1, 10_000, closed_pnl=500)]
     small = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
     big = simulate_copy(fills, 100_000, 100_000, now_ms=NOW)
     assert small is not None and big is not None
-    # tolerância frouxa: o arredondamento a 4 casas do net pequeno (9.8944) perde
-    # precisão ao ser multiplicado por 100; a invariância é exata antes do round().
-    assert small.net_pnl_usd * 100 == pytest.approx(big.net_pnl_usd, rel=1e-3)
+    assert small.net_pnl_usd * 100 == pytest.approx(big.net_pnl_usd)
 
 
 def test_simulate_copy_zero_equity_returns_none() -> None:
@@ -358,6 +360,34 @@ def test_simulate_copy_dd_never_exceeds_100pct() -> None:
     assert sim is not None
     assert 0.0 < sim.max_dd_pct <= 100.0
     assert sim.net_pnl_usd >= -1_000.0
+
+
+def test_simulate_copy_high_equity_multi_fill_no_regression() -> None:
+    # UPDATE-0071 (não-regressão 0x1a5db9): equity $14k ≥ capital $1k, MULTI-fill.
+    # Sem composição, o net de N fills == Σ dos nets por-fill isolados (linear) —
+    # o modelo antigo. O 0070 compunha e inflava (6x) este caso.
+    a = sim_fill(NOW - 5 * 86_400_000.0, 1, 10_000, closed_pnl=300)
+    b = sim_fill(NOW - 4 * 86_400_000.0, 1, 10_000, closed_pnl=200)
+    only_a = simulate_copy([a], 14_208.0, 1_000.0, now_ms=NOW)
+    only_b = simulate_copy([b], 14_208.0, 1_000.0, now_ms=NOW)
+    both = simulate_copy([a, b], 14_208.0, 1_000.0, now_ms=NOW)
+    assert only_a is not None and only_b is not None and both is not None
+    assert both.net_pnl_usd == pytest.approx(only_a.net_pnl_usd + only_b.net_pnl_usd)
+
+
+def test_simulate_copy_no_overflow_many_winning_fills() -> None:
+    # UPDATE-0071 (guarda de overflow 0xd487e26c): equity $394, muitos fills
+    # vencedores ao teto de 3x. Com base fixa o net é SOMA linear (não produto):
+    # finito e limitado — nada de 1e+191 como no 0070.
+    n = 200
+    fills = [sim_fill(NOW - (n - i) * 3_600_000.0, 1, 2_000, closed_pnl=100)
+             for i in range(n)]
+    sim = simulate_copy(fills, 394.0, 1_000.0, max_copy_leverage=3.0, now_ms=NOW)
+    assert sim is not None
+    assert math.isfinite(sim.net_pnl_usd)
+    assert sim.net_pnl_usd < 1_000.0 * n           # soma limitada, sem explosão
+    # 200 fills × (0.05 ron × 3000 copy − 3000 × 0.00065 custo) = 200 × 148.05
+    assert sim.net_pnl_usd == pytest.approx(200 * 148.05)
 
 
 # --- Score composto: régua inteira -------------------------------------------------

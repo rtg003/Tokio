@@ -2580,3 +2580,59 @@ multiplicado pela equity acumula sem bound.
 
 UPDATE-0070 permanece PENDENTE. O UPDATE-0067 (cap do ratio) tambem permanece
 PENDENTE (superseded pelo 0070 que ainda nao funciona).
+
+---
+
+## UPDATE-0071 · 2026-07-18 · Status: APLICADO
+
+**Origem**: sua re-analise (REPROVADO acima) do UPDATE-0070. Diagnostico ACEITO — os
+dois sintomas (overflow numerico + regressao no 0x1a5db9) sao reais e tem a **mesma
+causa-raiz**. UPDATE-0070 marcado SUPERSEDED (em HERMES_UPDATES.md).
+
+**Tipo**: logica_discovery (bugfix estrutural)
+
+**Causa-raiz (unica)**: o UPDATE-0070 dimensionava a copia sobre a **equity simulada
+corrente**, que **compoe** a cada fill (`equity_{t+1} = equity_t · (1 + L·(ron−rate))`).
+Sendo um **produto multiplicativo**: (a) sobre milhares de fills vencedores ao teto de
+alavancagem, **explode** (o 1.3e+191 do 0xd487e26c); (b) mesmo para
+`trader_equity ≥ mirror_capital`, a composicao **diverge** do modelo antigo — a regressao
+do 0x1a5db9 ($1.336 → $8.600).
+
+**Fix aplicado**: base de sizing = **capital de copia FIXO** (`mirror_capital`), nao a
+equity que compoe (`engine/strategies/copy_trade/metrics.py`, `simulate_copy`, 2 linhas):
+
+```python
+copy_notional = mirror_capital * fill_leverage            # base FIXA (era: equity * …)
+if max_lev is not None:
+    copy_notional = min(copy_notional, mirror_capital * max_lev)   # (era: equity * max_lev)
+```
+
+Resto do loop **intacto**: piso de liquidacao (`equity = max(equity + pnl − custos, 0)`),
+DD, custos por perna, contadores. Como a equity nao realimenta mais o sizing:
+- **Overflow eliminado**: `net = Σ(pnlᵢ − custoᵢ)` (soma limitada por
+  `mirror_capital·max_lev`), nao produto.
+- **Regressao eliminada**: p/ `trader_equity ≥ mirror_capital`,
+  `copy_notional = notional·(mirror_capital/trader_equity)` em **todo** fill = modelo
+  antigo exato (0x1a5db9 volta a ~$1.336).
+- **DD ∈ [0,100%]** e **net ≥ −capital** seguem garantidos pelo piso de liquidacao.
+- **Invariancia** `net ∝ mirror_capital` agora **exata** (sem drift).
+- **F11 (funnel.py) inalterado**: o estimador ja usava base fixa capada por alavancagem.
+
+**Band-aids do seu report REJEITADOS** (garantias ja sao estruturais):
+1. Cap do ratio do 0067 — desnecessario: `copy_notional ≤ mirror_capital·max_lev` ja
+   limita; o cap encolheria a copia de traders de equity baixa, **escondendo a
+   liquidacao honesta**.
+2. `assert abs(net) ≤ capital·50` — derruba o scan em producao (ou some sob `python -O`).
+3. Clamp de net/DD em 50x — constante arbitraria que **mascara sinal**.
+
+**Testes** (`tests/test_discovery_v2_metrics.py`, suite verde):
+- `..._no_compounding_fixed_base` (era `..._sizing_scales_with_current_equity`): 2 wins
+  iguais → `two.net == approx(2 * one.net)` (linear, nao composto).
+- `..._high_equity_multi_fill_no_regression` (equity $14.2k ≥ capital, multi-fill): net =
+  soma linear dos por-fill (sem drift de composicao).
+- `..._no_overflow_many_winning_fills` (200 fills vencedores, equity baixa): net
+  **finito** e limitado (`math.isfinite`, `net < capital·n`), sem `1e+191`.
+- Invariancia de capital agora **exata** (removida a tolerancia `rel=1e-3`).
+- Demais testes (caps, liquidacao, DD ≤ 100%, custos, guards) verdes.
+
+**Sem** config/migration; nada em `web/`. `traders.sim_*` sobrescrito no proximo scan.

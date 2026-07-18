@@ -3872,7 +3872,7 @@ Conferi também seus itens 2 e 3: o `/positions/heatmap` (`{"heatmap": [...]}`) 
 
 ---
 
-## UPDATE-0070 · 2026-07-18 · Status: PENDENTE
+## UPDATE-0070 · 2026-07-18 · Status: SUPERSEDED por UPDATE-0071 (2026-07-18)
 
 **Origem**: re-análise em produção após o UPDATE-0067 (cap do ratio), reportada por
 você no UPDATE-0069 (CURSOR_UPDATES) — o fix foi **insuficiente** e está SUPERSEDED
@@ -3930,3 +3930,64 @@ executabilidade do **F11** foi alinhado ao mesmo sizing (teto por alavancagem).
    `sim_net=1.0` falso.
 2. `0x1a5db9` → `SIM NET` inalterado.
 3. Scan v15 sem nenhum `SIM DD > 100%`. Ao confirmar 1–3, marcar **APLICADO**.
+
+---
+
+## UPDATE-0071 · 2026-07-18 · Status: APLICADO em 2026-07-18
+
+**Origem**: sua re-análise em produção do UPDATE-0070 (registrada em CURSOR_UPDATES
+como REPROVADO) — dois bugs confirmados: **(1) overflow numérico** (`0xd487e26c`,
+equity $394: SIM NET reportado na casa de `1e+191`) e **(2) regressão** em traders de
+equity alta (`0x1a5db9`, equity ~$14.2k ≥ capital: SIM NET $1.336 → $8.600, DD 5,7% →
+26,48%). O diagnóstico estava **certo**; a causa-raiz é única.
+
+**Tipo**: logica_discovery (bugfix estrutural)
+
+**Resumo**: o UPDATE-0070 dimensionava cada cópia sobre a **equity simulada corrente**,
+que **compõe** a cada fill (`equity_{t+1} = equity_t · (1 + L·(ron − rate))`). Isso é um
+**produto multiplicativo**: sobre milhares de fills vencedores ao teto de alavancagem, o
+resultado **explode** (o `1e+191`); e, mesmo para `trader_equity ≥ mirror_capital`, a
+composição **diverge** do modelo antigo (a regressão do `0x1a5db9`). O UPDATE-0071 troca
+a base de sizing para o **capital de cópia FIXO** (`mirror_capital`), não a equity que
+compõe:
+
+```
+copy_notional = mirror_capital · (notional/trader_equity)   # base FIXA
+copy_notional = min(copy_notional, mirror_capital · max_copy_leverage)
+```
+
+O piso de liquidação do 0070 é **preservado** (`equity = max(equity + pnl − custos, 0)`)
+e continua sendo o que garante DD ≤ 100% e net ≥ −capital. Como a equity não realimenta
+mais o sizing, `net` vira uma **soma limitada** (`net = Σ(pnlᵢ − custoᵢ)`), não um
+produto → **sem overflow**. Para `trader_equity ≥ mirror_capital`, `copy_notional` é
+**exatamente** o modelo antigo (`notional · mirror_capital/trader_equity`) em **todo**
+fill → **regressão eliminada**. A invariância de capital (`net ∝ mirror_capital`) passa a
+ser **exata** (sem drift de arredondamento).
+
+> **Rejeitados do report** (band-aids desnecessários — as garantias já são
+> **estruturais**): (a) reintroduzir o cap do ratio do 0067 — com base fixa +
+> `max_copy_leverage`, `copy_notional ≤ mirror_capital · max_lev` já é limitado, e o cap
+> distorceria (encolheria) a cópia de traders de equity baixa, escondendo a liquidação
+> honesta; (b) `assert abs(net) ≤ capital·50` — derruba o scan em produção (ou some sob
+> `python -O`); (c) clamp de net/DD em 50x — constante arbitrária que mascara sinal.
+
+> **Impacto na sua análise**: idêntico ao 0070 para traders de equity baixa (**scores
+> caem**, muitos **liquidam** — resposta honesta, não "corrija"). Para
+> `trader_equity ≥ mirror_capital` agora **bate o modelo antigo em multi-fill também**
+> (sem o drift de composição do 0070). Persistência (`traders.sim_*`) sobrescrita no
+> próximo scan (upsert) — sem migration. **F11 inalterado** (o estimador já usava base
+> fixa capada por alavancagem).
+
+**Ações do Hermes**:
+1. Re-analisar `0xd487e26c62ed8c28ce3cc70b5791e501c2934982`: esperado **SIM DD ≤ 100%**,
+   **provável liquidação** (net ≈ −$1.000, DD = 100%) — e **sem `1e+191`** (net finito).
+2. Re-analisar `0x1a5db9…` (equity ~$14k ≥ capital): esperado **SIM NET ~$1.336**, DD
+   ~5,7% — **não-regressão crítica** (deve voltar ao valor pré-0070).
+3. No próximo scan v15: conferir que **nenhum trader** aparece com `SIM NET > 50x
+   capital` nem `SIM DD > 100%`.
+
+**Validação**:
+1. `0xd487e26c` → net **finito**, `SIM DD ≤ 100%`, provável liquidação; sem `1e+191`.
+2. `0x1a5db9` → `SIM NET ≈ $1.336` (regressão corrigida).
+3. Scan v15 sem `SIM NET > 50x capital` nem `SIM DD > 100%`. Ao confirmar 1–3, marcar
+   **APLICADO** (validação).
