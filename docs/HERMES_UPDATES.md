@@ -3795,7 +3795,7 @@ correções da dashboard de Copy Trade. Racional por bloco:
 
 ---
 
-## UPDATE-0067 · 2026-07-18 · Status: PENDENTE
+## UPDATE-0067 · 2026-07-18 · Status: SUPERSEDED por UPDATE-0070 (2026-07-18)
 
 **Origem**: PR do fix de `simulate_copy` (equity < capital) (merged)
 
@@ -3869,3 +3869,64 @@ Conferi também seus itens 2 e 3: o `/positions/heatmap` (`{"heatmap": [...]}`) 
    hypertracker` para hiperativos, `ht_cohort_novos > 0`, `market_bias` populada.
 3. Ao confirmar 1–2, marcar **APLICADO** e revalidar UPDATE-0062 e UPDATE-0065
    (ambos seguem PENDENTE até este pipeline de posições funcionar em produção).
+
+---
+
+## UPDATE-0070 · 2026-07-18 · Status: PENDENTE
+
+**Origem**: re-análise em produção após o UPDATE-0067 (cap do ratio), reportada por
+você no UPDATE-0069 (CURSOR_UPDATES) — o fix foi **insuficiente** e está SUPERSEDED
+por este.
+
+**Tipo**: logica_discovery (bugfix estrutural)
+
+**Resumo**: o cap `ratio = min(mirror_capital/trader_equity, 1.0)` do UPDATE-0067
+**não resolveu** a inflação de PnL/DD para traders de equity muito menor que o
+capital de cópia. Você reportou em produção `0xd487e26c…` (equity ~$394, PnL 30d
+~$864k, 4376 fills): **SIM NET ~$337k, SIM DD 17.963%** (impossível), e o
+componente `sim_net` do score **saturado em 1.0** — ranqueando um provável anomaly
+no topo.
+
+Causa raiz (verificada nesta sessão, corrigindo o diagnóstico do bot): com o ratio
+capado em 1.0 copiávamos o **`closedPnl` absoluto** de cada fill; para um trader de
+equity minúscula cujos fills ficam abaixo do `notional_cap`, a soma ≈ o PnL total
+do trader ($864k). O denominador era um **snapshot de equity** ($394), que não
+representa o capital girado. Pior: **não havia restrição de buying-power** — o PnL
+acumulava por milhares de fills sem a nossa conta nunca "acabar" → DD > 100%.
+
+> Nota técnica: a fórmula que o rtg003bot propôs (`pnl = closedPnl *
+> (copy_notional/notional)`) é **algebricamente idêntica** à antiga (`ratio*scale ≡
+> copy_notional/notional` nos dois ramos) — seria um no-op. O mecanismo real do bug
+> não era esse. Detalhes no CURSOR_UPDATES UPDATE-0070.
+
+Correção (UPDATE-0070): **sizing proporcional à equity simulada corrente**
+(fractional). Cada cópia é dimensionada como fração da NOSSA equity, replicando a
+alavancagem do fill (`copy_notional = equity · notional/trader_equity`, capado por
+`equity · max_copy_leverage`); o PnL vem do **retorno-sobre-notional** do trader
+(`ron = closedPnl/notional`, limpo do snapshot); e a equity tem **piso de
+liquidação** (`equity = max(equity + pnl − custos, 0)`). Consequências garantidas
+por construção: **DD ∈ [0, 100%]** e **net ≥ −mirror_capital** (não dá para perder
+mais do que se aloca). O cap do ratio do UPDATE-0067 foi REMOVIDO. O estimador de
+executabilidade do **F11** foi alinhado ao mesmo sizing (teto por alavancagem).
+
+> **Impacto na sua análise**: **scores de traders de equity baixa CAEM** (mais
+> honestos) — muitos vão **liquidar** na simulação (net ≈ −capital, DD = 100%). Não
+> "corrija" isso de volta: é a resposta correta ("copiar esse trader te quebra").
+> Traders com `trader_equity ≥ mirror_capital` ficam ~INALTERADOS (single-fill é
+> idêntico ao modelo antigo; multi-fill tem leve drift de composição). A
+> persistência (`traders.sim_*`) é sobrescrita no próximo scan (upsert) — sem
+> migration.
+
+**Ações do Hermes**:
+1. Re-analisar `0xd487e26c62ed8c28ce3cc70b5791e501c2934982` via
+   `/control/suggestions/analyze`: esperado **SIM DD ≤ 100%** (era 17.963%),
+   **provável liquidação** (net ≈ −$1.000, DD = 100%), `sim_net` do score **sem
+   saturar** em 1.0.
+2. Re-analisar `0x1a5db9…` (equity ~$14k ≥ capital): `SIM NET` ~INALTERADO.
+3. No próximo scan v15: conferir que **nenhum trader** aparece com `SIM DD > 100%`.
+
+**Validação**:
+1. `0xd487e26c` → `SIM DD ≤ 100%`, provável net negativo/liquidação, score sem
+   `sim_net=1.0` falso.
+2. `0x1a5db9` → `SIM NET` inalterado.
+3. Scan v15 sem nenhum `SIM DD > 100%`. Ao confirmar 1–3, marcar **APLICADO**.

@@ -187,11 +187,12 @@ def test_simulate_copy_profitable_trader_nets_positive() -> None:
              sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=500)]
     sim = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
     assert sim is not None
-    # ratio 0.01: gross = 1000×0.01 = 10; custo = 4×100×0.00065 = 0.26
-    assert sim.gross_pnl_usd == pytest.approx(10.0)
-    assert sim.cost_usd == pytest.approx(0.26)
-    assert sim.net_pnl_usd == pytest.approx(9.74)
-    assert sim.median_copy_notional_usd == pytest.approx(100.0)
+    # UPDATE-0069 (sizing fractional): base ~$100/fill (equity 1k × notional 10k/eq
+    # 100k = 0.1x) e leve composição sobre a equity que cresce a cada win.
+    assert sim.gross_pnl_usd == pytest.approx(10.0237)
+    assert sim.cost_usd == pytest.approx(0.2606)
+    assert sim.net_pnl_usd == pytest.approx(9.7631)
+    assert sim.median_copy_notional_usd == pytest.approx(100.2402)
     assert sim.n_fills == 4
 
 
@@ -275,55 +276,69 @@ def test_copy_sim_factor_clamped() -> None:
     assert copy_sim_factor(50.0, 0.0) == 1.0                      # sem capital
 
 
-# --- UPDATE-0066: cap do ratio quando trader_equity < mirror_capital ----------
-def test_simulate_copy_caps_ratio_when_equity_below_capital() -> None:
-    # Caso real 0xd487e26c: equity $394 copiado com $1.000. Sem o cap, ratio 2.54x
-    # inflaria PnL/DD (SIM DD 206% em produção). Com o cap (ratio 1.0), o net é o
-    # PnL real do trader − custos e o DD é mensurável (≤100%).
-    fills = [sim_fill(NOW - 5 * 86_400_000.0, 1, 2_000, closed_pnl=-500),
-             sim_fill(NOW - 2 * 86_400_000.0, 1, 2_000, closed_pnl=800)]
-    sim = simulate_copy(fills, 394.0, 1_000.0, now_ms=NOW)
+# --- UPDATE-0069: sizing proporcional à equity (fractional) -------------------
+def test_simulate_copy_low_equity_copies_at_max_leverage() -> None:
+    # Caso real 0xd487e26c: equity $394 copiado com $1.000. O fill_leverage do
+    # trader (2000/394 = 5.08x) excede max_copy_leverage 3.0 → copiamos no TETO
+    # sobre a NOSSA equity: copy_notional = 1000 × 3 = $3.000 (não o closedPnl
+    # absoluto inflado). ron = 100/2000 = 5% → pnl = 0.05 × 3000 = $150.
+    fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 2_000, closed_pnl=100)]
+    sim = simulate_copy(fills, 394.0, 1_000.0, max_copy_leverage=3.0, now_ms=NOW)
     assert sim is not None
-    # ratio capado em 1.0: gross = -500 + 800 = 300; custo = 2×2000×0.00065 = 2.6
-    assert sim.gross_pnl_usd == pytest.approx(300.0)
-    assert sim.cost_usd == pytest.approx(2.6)
-    assert sim.net_pnl_usd == pytest.approx(297.4)      # NÃO 2.54x (=~760)
-    # equity 1000 → 1000-500-1.3=498.7 (peak 1000) → DD 50.13%; depois recupera
-    assert sim.max_dd_pct == pytest.approx(50.13, abs=0.02)
+    assert sim.median_copy_notional_usd == pytest.approx(3_000.0)   # capital × teto
+    assert sim.gross_pnl_usd == pytest.approx(150.0)
+    assert sim.cost_usd == pytest.approx(1.95)                      # 3000 × 0.00065
+    assert sim.net_pnl_usd == pytest.approx(148.05)
+    assert sim.net_pnl_usd >= -1_000.0                              # ≥ −capital
     assert sim.max_dd_pct <= 100.0
 
 
-def test_simulate_copy_ratio_capped_matches_ratio_one() -> None:
-    # equity < capital (ratio cru 2.0 → cap 1.0) deve bater exatamente com o caso
-    # equity == capital (ratio 1.0): mesmo net/gross/DD.
-    fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 5_000, closed_pnl=120)]
-    below = simulate_copy(fills, 500.0, 1_000.0, now_ms=NOW)    # ratio cru 2.0
-    at = simulate_copy(fills, 1_000.0, 1_000.0, now_ms=NOW)     # ratio 1.0
-    assert below is not None and at is not None
-    assert below.net_pnl_usd == pytest.approx(at.net_pnl_usd)
-    assert below.gross_pnl_usd == pytest.approx(at.gross_pnl_usd)
-    assert below.max_dd_pct == pytest.approx(at.max_dd_pct)
+def test_simulate_copy_liquidation_floors_net_and_dd() -> None:
+    # perda de 40% do notional a 3x de alavancagem (fill_leverage 10000/1000 = 10x
+    # → capado em 3x): pnl = -0.4 × 3000 = -1200 > equity → LIQUIDA. net = −capital,
+    # DD = 100%, e o fill seguinte não move mais a equity (conta zerada).
+    fills = [sim_fill(NOW - 3 * 86_400_000.0, 0.3, 10_000, closed_pnl=-1_200),
+             sim_fill(NOW - 2 * 86_400_000.0, 0.3, 10_000, closed_pnl=500)]
+    sim = simulate_copy(fills, 1_000.0, 1_000.0, max_copy_leverage=3.0, now_ms=NOW)
+    assert sim is not None
+    assert sim.net_pnl_usd == pytest.approx(-1_000.0)              # não perde > capital
+    assert sim.max_dd_pct == pytest.approx(100.0)
+    assert sim.n_closed == 1                                       # 2º fill ignorado
 
 
-def test_simulate_copy_high_equity_unchanged_by_cap() -> None:
-    # equity $10k, capital $1k → ratio 0.1 (< 1.0): o cap NÃO dispara, resultado
-    # idêntico ao comportamento pré-UPDATE-0066.
+def test_simulate_copy_sizing_scales_with_current_equity() -> None:
+    # composição: com 2 wins idênticos, o net de 2 fills > 2× o net de 1 fill —
+    # o 2º copy_notional é dimensionado sobre a equity JÁ crescida pelo 1º.
+    win = sim_fill(NOW - 5 * 86_400_000.0, 1, 10_000, closed_pnl=500)
+    win2 = sim_fill(NOW - 4 * 86_400_000.0, 1, 10_000, closed_pnl=500)
+    one = simulate_copy([win], 100_000, 1_000, now_ms=NOW)
+    two = simulate_copy([win, win2], 100_000, 1_000, now_ms=NOW)
+    assert one is not None and two is not None
+    assert two.net_pnl_usd > 2 * one.net_pnl_usd
+
+
+def test_simulate_copy_high_equity_matches_old_ratio_model() -> None:
+    # equity $10k ≥ capital $1k, fill único → sizing = notional × (capital/equity),
+    # idêntico ao modelo antigo (ratio 0.1): sem drift de composição em 1 fill.
     fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=300)]
     sim = simulate_copy(fills, 10_000.0, 1_000.0, now_ms=NOW)
     assert sim is not None
-    assert sim.gross_pnl_usd == pytest.approx(30.0)             # 300 × 0.1
+    assert sim.gross_pnl_usd == pytest.approx(30.0)             # 0.03 ron × 1000
     assert sim.cost_usd == pytest.approx(0.65)                  # 1000 × 0.00065
     assert sim.net_pnl_usd == pytest.approx(29.35)
 
 
-def test_simulate_copy_equity_equals_capital_ratio_one() -> None:
-    # equity == capital → ratio exatamente 1.0, sem normalização.
-    fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 4_000, closed_pnl=200)]
-    sim = simulate_copy(fills, 1_000.0, 1_000.0, now_ms=NOW)
-    assert sim is not None
-    assert sim.gross_pnl_usd == pytest.approx(200.0)
-    assert sim.cost_usd == pytest.approx(2.6)                   # 4000 × 0.00065
-    assert sim.net_pnl_usd == pytest.approx(197.4)
+def test_simulate_copy_net_scales_linearly_with_capital() -> None:
+    # invariância de capital preservada no modelo fractional (multi-fill): tudo é
+    # relativo à equity corrente → net($1k) × 100 ≈ net($100k).
+    fills = [sim_fill(NOW - 5 * 86_400_000.0, 1, 10_000, closed_pnl=500),
+             sim_fill(NOW - 4 * 86_400_000.0, 1, 10_000, closed_pnl=500)]
+    small = simulate_copy(fills, 100_000, 1_000, now_ms=NOW)
+    big = simulate_copy(fills, 100_000, 100_000, now_ms=NOW)
+    assert small is not None and big is not None
+    # tolerância frouxa: o arredondamento a 4 casas do net pequeno (9.8944) perde
+    # precisão ao ser multiplicado por 100; a invariância é exata antes do round().
+    assert small.net_pnl_usd * 100 == pytest.approx(big.net_pnl_usd, rel=1e-3)
 
 
 def test_simulate_copy_zero_equity_returns_none() -> None:
@@ -333,15 +348,16 @@ def test_simulate_copy_zero_equity_returns_none() -> None:
 
 
 def test_simulate_copy_dd_never_exceeds_100pct() -> None:
-    # dados sintéticos extremos: 10 perdas grandes num trader de equity baixo.
-    # Sem o cap (ratio 3.33x) a curva iria a negativo (DD > 100%); com o cap fica
-    # ≤ 100% (a asserção de sanidade que o spec queria — aqui no teste, não no
-    # código de produção, onde `python -O` removeria o assert).
+    # dados sintéticos extremos: 10 perdas grandes num trader de equity baixo a
+    # alta alavancagem. O piso de liquidação garante DD ≤ 100% por construção
+    # (a asserção de sanidade que o spec queria — aqui no teste, não em produção,
+    # onde `python -O` removeria o assert e o piso já é estrutural).
     fills = [sim_fill(NOW - (10 - i) * 86_400_000.0, 1, 3_000, closed_pnl=-90)
              for i in range(10)]
-    sim = simulate_copy(fills, 300.0, 1_000.0, now_ms=NOW)
+    sim = simulate_copy(fills, 300.0, 1_000.0, max_copy_leverage=3.0, now_ms=NOW)
     assert sim is not None
     assert 0.0 < sim.max_dd_pct <= 100.0
+    assert sim.net_pnl_usd >= -1_000.0
 
 
 # --- Score composto: régua inteira -------------------------------------------------

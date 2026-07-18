@@ -843,11 +843,15 @@ def hard_filters_all(c: Candidate, cfg: dict[str, Any],
     # estimava US$ 50 de cópia onde o real era US$ 1.80 — dossiê #6 do Hermes)
     f11_min = _float_or_none(f.get("f11_min_mirror_notional_usd"))
     if f11_min is not None and c.equity > 0 and c.median_fill_notional is not None:
-        # UPDATE-0066: mesma razão de simulate_copy, capada em 1.0 — o estimador
-        # do F11 reflete o tamanho que DE FATO copiaremos (nunca mais alavancado
-        # que o trader), não o notional inflado de traders com equity < capital.
-        copy_notional = c.median_fill_notional * \
-            min(float(f["f11_mirror_capital_usd"]) / c.equity, 1.0)
+        # UPDATE-0069: espelha o sizing fractional de simulate_copy no 1º fill
+        # (equity = mirror_capital): copy_notional = median × (capital/equity),
+        # limitado por capital × max_copy_leverage. Reflete o tamanho que DE FATO
+        # copiaremos — teto de ALAVANCAGEM sobre o nosso capital, não cap de ratio.
+        mirror_capital = float(f["f11_mirror_capital_usd"])
+        copy_notional = c.median_fill_notional * (mirror_capital / c.equity)
+        _max_lev = (cfg.get("copy_simulation") or {}).get("max_copy_leverage")
+        if _max_lev:
+            copy_notional = min(copy_notional, mirror_capital * float(_max_lev))
         if copy_notional < f11_min:
             reasons.append(f"F11: cópia estimada US$ {copy_notional:.2f} < "
                            f"{f['f11_min_mirror_notional_usd']} com capital configurado")

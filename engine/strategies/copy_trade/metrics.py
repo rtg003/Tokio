@@ -447,38 +447,52 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     """Espelhamento retroativo: "se tivéssemos copiado este trader com
     `mirror_capital` na janela, qual seria o PnL LÍQUIDO de taxas+slippage?"
 
-    Cada fill do trader vira uma perna copiada com size proporcional
-    (ratio = mirror_capital / trader_equity); o PnL escala linearmente com o
-    ratio, então o SINAL do net independe do capital — o capital afeta a
-    executabilidade (notional mínimo por ordem, checada no F11).
+    UPDATE-0069 — SIZING PROPORCIONAL À EQUITY (fractional). Cada fill do trader
+    é replicado como uma FRAÇÃO da NOSSA equity simulada CORRENTE, não do notional
+    absoluto do trader. Modelo canônico de copy-trade com fração fixa:
 
-    UPDATE-0066 — CAP DO RATIO EM 1.0: quando `trader_equity < mirror_capital` o
-    ratio cru fica > 1.0 e amplificaria TUDO (PnL, custo, curva de DD) — copiar
-    um trader de $394 a 5x com $1.000 viraria ~5x de alavancagem sobre a nossa
-    conta, MAIS que o próprio trader, gerando SIM NET de dezenas de milhares e
-    SIM DD > 100% (curva de equity a negativo — impossível com capital fixo).
-    O ratio é capado em 1.0: nunca replicamos com alavancagem maior que a do
-    trader. Efeito colateral: nesse regime (equity < capital) o net DEIXA de
-    escalar linearmente com o capital, e o DD passa a ser mensurável (≤100% para
-    quem não foi liquidado — o drawdown realizado do trader ≤ equity dele <
-    mirror_capital, a base da nossa curva).
+      ron           = closedPnl / notional         # retorno-sobre-notional do trader
+      fill_leverage = notional / trader_equity     # alavancagem do trader no fill
+      copy_notional = min(equity * fill_leverage, equity * max_copy_leverage)
+      pnl           = ron * copy_notional
+      equity        = max(equity + pnl - custos, 0.0)   # PISO DE LIQUIDAÇÃO
 
-    v8 — Estágio 4: `latency_slippage_pct` modela o custo da latência de
-    espelhamento (200ms–2s entre o fill do trader e a nossa ordem) como
-    slippage EXTRA por perna — sem tick data histórico, o deslocamento de
-    preço nesse intervalo é aproximado por um custo fixo em bps (config).
-    A curva de equity da cópia (capital + PnL líquido acumulado, na ordem
-    cronológica dos fills) produz `max_dd_pct` e `expectancy_usd`.
+    O `ron` é limpo (não depende do snapshot de equity); o snapshot só entra via
+    `fill_leverage`, que é limitado por `max_copy_leverage`. O PISO em 0.0 modela
+    liquidação: uma vez zerada a conta, `copy_notional = 0` e nada mais se move.
 
-    v9 — TETO DE ALAVANCAGEM: `max_copy_leverage` limita o notional espelhado
-    por fill a `mirror_capital × teto`; o PnL do fill é escalado pelo MESMO
-    fator do corte (copiamos 40% do tamanho → recebemos 40% do PnL). Sem o
-    teto, um fill de $1,47M numa conta de $11k viraria "cópia" de $128k sobre
-    $1k — 128x, inexecutável (auditoria do top 1, 2026-07-04).
+    Por que substitui o UPDATE-0067 (cap `ratio = min(mirror_capital/equity, 1.0)`):
+    aquele cap NÃO resolvia o caso `trader_equity << mirror_capital` — copiávamos o
+    `closedPnl` ABSOLUTO de milhares de fills abaixo do teto de notional, somando o
+    PnL total do trader ($864k de um trader de $394 de equity) e gerando SIM NET de
+    centenas de milhares e SIM DD > 100% (curva a negativo, impossível). O snapshot
+    de equity não representa o capital girado (saques/aporte/anomaly) e não havia
+    restrição de buying-power. O sizing fractional corrige a RAIZ.
 
-    Aproximações documentadas: equity ATUAL como denominador (equity da janela
-    não é conhecido ponto a ponto); só PnL REALIZADO (rejeitar lucro 100%
-    não-realizado é intencional — dossiê #1 do Hermes); funding ignorado.
+    Garantias por construção:
+      • DD ∈ [0, 100%]  — o piso de liquidação impede equity negativa.
+      • net ≥ −mirror_capital  — não se perde mais do que se aloca.
+      • net ∝ mirror_capital  — tudo é relativo à equity corrente, então
+        equity_t = mirror_capital · Π(1+…); o SINAL do net independe do capital
+        (invariância de capital preservada).
+      • traders com `trader_equity ≥ mirror_capital` ficam ~inalterados: no 1º
+        fill copy_notional = notional·(mirror_capital/trader_equity), idêntico ao
+        modelo antigo; só há leve drift de composição em janelas multi-fill.
+
+    `max_copy_leverage` (v9): agora limita a alavancagem SOBRE A NOSSA EQUITY
+    (copy_notional ≤ equity × teto), não sobre o notional do trader. Um trader de
+    equity minúscula é copiado no teto em todo fill; com o `ron` real (volátil) a
+    alta alavancagem, a conta simulada normalmente LIQUIDA (net ≈ −capital, DD 100%)
+    — a resposta honesta: "copiar esse trader te quebra".
+
+    v8 — `latency_slippage_pct` modela o custo da latência de espelhamento (200ms–2s)
+    como slippage EXTRA por perna (bps fixo, config). A curva de equity da cópia
+    produz `max_dd_pct` e `expectancy_usd`.
+
+    Aproximações documentadas: equity ATUAL do trader como denominador do
+    `fill_leverage` (equity da janela não é conhecido ponto a ponto); só PnL
+    REALIZADO (rejeitar lucro não-realizado é intencional — dossiê #1 do Hermes);
+    funding ignorado.
     """
     if trader_equity <= 0 or mirror_capital <= 0:
         return None
@@ -489,10 +503,7 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
                     key=lambda f: float(f.get("time", 0)))
     if not window:
         return None
-    # UPDATE-0066: cap em 1.0 — ver docstring (equity < capital inflava o PnL/DD).
-    ratio = min(mirror_capital / trader_equity, 1.0)
-    notional_cap = (mirror_capital * float(max_copy_leverage)
-                    if max_copy_leverage else None)
+    max_lev = float(max_copy_leverage) if max_copy_leverage else None
     base_rate = (taker_fee_pct + slippage_pct) / 100.0        # por perna
     lat_rate = latency_slippage_pct / 100.0                    # por perna
     gross = 0.0
@@ -505,25 +516,30 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     max_dd = 0.0
     for f in window:
         notional = abs(float(f.get("sz", 0) or 0) * float(f.get("px", 0) or 0))
-        copy_notional = notional * ratio
-        scale = 1.0
-        if notional_cap is not None and copy_notional > notional_cap:
-            scale = notional_cap / copy_notional
-            copy_notional = notional_cap
+        if notional <= 0 or equity <= 0:      # sem notional / conta liquidada
+            notionals.append(0.0)
+            continue
+        # UPDATE-0069: sizing fractional — cópia = fração da NOSSA equity corrente,
+        # replicando a alavancagem do trader e limitada por max_copy_leverage.
+        ron = float(f.get("closedPnl", 0) or 0) / notional
+        fill_leverage = notional / trader_equity
+        copy_notional = equity * fill_leverage
+        if max_lev is not None:
+            copy_notional = min(copy_notional, equity * max_lev)
         notionals.append(copy_notional)
         leg_cost = copy_notional * base_rate
         leg_lat = copy_notional * lat_rate
         cost += leg_cost + leg_lat
         lat_cost += leg_lat
-        pnl = float(f.get("closedPnl", 0) or 0) * ratio * scale
+        pnl = ron * copy_notional
         gross += pnl
         if pnl != 0.0:
             n_closed += 1
-        equity += pnl - leg_cost - leg_lat
+        equity = max(equity + pnl - leg_cost - leg_lat, 0.0)   # piso de liquidação
         peak = max(peak, equity)
         if peak > 0:
             max_dd = max(max_dd, (peak - equity) / peak)
-    net = gross - cost
+    net = equity - mirror_capital     # honesto: ≥ −mirror_capital pelo piso
     return CopySimulation(
         gross_pnl_usd=round(gross, 4),
         cost_usd=round(cost, 4),

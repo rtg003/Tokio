@@ -2447,296 +2447,65 @@ max_dd = min(max_dd, 1.0)
 - NÃO alterar F15/F17/F18/F19 (usam `simulate_copy` como black box).
 - `.venv/bin/python -m pytest tests/ -q` verde (467 hoje).
 
-## UPDATE-0069 · 2026-07-18 · Status: PENDENTE
-
-**Origem**: validação em produção do UPDATE-0067 (Hermes) — fix do cap do ratio
-NÃO resolveu o bug do simulate_copy.
-
-**Tipo**: logica_discovery (bugfix)
-
-**Resumo**: o fix do UPDATE-0067 (`ratio = min(mirror_capital / trader_equity, 1.0)`)
-está no código (metrics.py:493) mas **NÃO resolveu o problema**. Re-análise de
-`0xd487e26c62ed8c28ce3cc70b5791e501c2934982` em produção (2026-07-18 12:56 UTC):
-
-| Campo | Antes (UPDATE-0066) | Depois (UPDATE-0067) | Esperado |
-|---|---|---|---|
-| SIM NET | $542.202 | **$337.894** | ≤ ~$50.000 |
-| SIM DD | 206,13% | **17.963%** | ≤ 100% |
-| SIM EXP | $91,00 | $54,76 | ≤ ~$1 |
-| Score | 85,61 | 85,61 | recalculado |
-
-**Piorou em vez de melhorar.** O cap do ratio não é a correção certa.
-
-### Root cause REAL
-
-O `ratio` controla o sizing do **notional** (exposição), mas o `pnl` da simulação é
-calculado como `closedPnl * ratio * scale` (metrics.py ~linha 518). O `closedPnl`
-da HL é **absoluto** (dólares), não relativo ao equity.
-
-Trader `0xd487e26c`:
-- equity: $394
-- PnL 30d: $864.403 (2.192x o equity)
-- trades: 4.376
-- `closedPnl` médio: $197 por trade
-
-Com `ratio = 1.0` (cap), a simulação replica `closedPnl * 1.0 = $197` por trade.
-Soma: ~$864k. Mas nossa simulação usa `$1.000` de capital — um PnL de $864k é
-retorno de 86.400%, impossível.
-
-**O bug**: o trader opera com volume/notional MUITO maior que seu equity
-(leverage extremo ou capital externo adicionado/removido). O `closedPnl` absoluto
-dele não reflete o que nossa cópia com $1.000 geraria. O `ratio` capado em 1.0
-limita o sizing do notional, mas o PnL continua sendo `closedPnl * ratio` —
-replicando o PnL absoluto do trader quase 1:1.
-
-### Correção exigida
-
-**Arquivo**: `engine/strategies/copy_trade/metrics.py` — função `simulate_copy()`
-
-O PnL da simulação deve ser calculado proporcionalmente ao **notional** que nossa
-cópia realmente abriria, não ao `closedPnl` absoluto do trader escalado por `ratio`:
-
-```python
-# Em vez de (linha ~518):
-pnl = float(f.get("closedPnl", 0) or 0) * ratio * scale
-
-# Calcular o PnL proporcional ao notional da cópia:
-# notional_trader = abs(sz * px) (notional do fill do trader)
-# notional_copy = min(notional_trader * ratio, notional_cap)  (já calculado)
-# pnl_copy = closedPnl * (notional_copy / notional_trader)
-#
-# Isso garante que o PnL seja proporcional ao tamanho que DE FATO copiamos
-# (limitado por notional_cap = mirror_capital * max_copy_leverage), não ao
-# closedPnl absoluto do trader.
-if notional_trader > 0:
-    pnl = float(f.get("closedPnl", 0) or 0) * (copy_notional / notional_trader)
-else:
-    pnl = 0.0
-```
-
-### Asserts de sanidade (devem falhar se o bug persistir)
-
-```python
-assert abs(net) <= mirror_capital * 50, f"SIM NET {net} > 50x capital (irreal)"
-assert max_dd <= 1.0, f"SIM DD {max_dd*100}% > 100% (impossível)"
-# clamp de segurança (não deve ser necessário se o cálculo estiver certo):
-max_dd = min(max_dd, 1.0)
-```
-
-### Testes exigidos
-
-1. `0xd487e26c` (equity $394, PnL $864k, 4376 trades): SIM NET ≤ $50.000 (não
-   $337k), SIM DD ≤ 100%.
-2. `0x1a5db9` (equity $14k, PnL $23k, 142 trades): SIM NET ≈ $1.336 (inalterado
-   — equity >> capital, ratio < 1.0 já).
-3. Trader com equity = capital: resultado inalterado.
-4. Trader com PnL absoluto >> equity (caso extremo): SIM NET limitado por
-   `notional_cap`.
-5. `assert sim.max_dd_pct <= 100.0` em todos os casos.
-6. `assert abs(sim.net_pnl_usd) <= mirror_capital * 50` em todos os casos.
-
-### Validação pós-deploy (Hermes)
-
-1. Re-analisar `0xd487e26c`: SIM NET ≤ $50.000, SIM DD ≤ 100%, score recalculado.
-2. Re-analisar `0x1a5db9`: SIM NET ≈ $1.336 (inalterado).
-3. Próximo scan v15: nenhum trader com SIM DD > 100%.
-
-### Restrições
-
-- NÃO alterar assinatura de `simulate_copy` (protegida).
-- NÃO tocar hot path §8.4.1.
-- NÃO alterar F15/F17/F18/F19 (usam `simulate_copy` como black box).
-- `.venv/bin/python -m pytest tests/ -q` verde (467 hoje).
-
-## UPDATE-0069 - 2026-07-18 - Status: PENDENTE
-
-**Origem**: validacao em producao do UPDATE-0067 (Hermes) - fix do cap do ratio
-NAO resolveu o bug do simulate_copy.
-
-**Tipo**: logica_discovery (bugfix)
-
-**Resumo**: o fix do UPDATE-0067 (ratio = min(mirror_capital / trader_equity, 1.0))
-esta no codigo (metrics.py:493) mas NAO resolveu o problema. Re-analise de
-0xd487e26c62ed8c28ce3cc70b5791e501c2934982 em producao (2026-07-18 12:56 UTC):
-
-| Campo | Antes (UPDATE-0066) | Depois (UPDATE-0067) | Esperado |
-|---|---|---|---|
-| SIM NET | $542.202 | $337.894 | <= ~$50.000 |
-| SIM DD | 206,13% | 17.963% | <= 100% |
-| SIM EXP | $91,00 | $54,76 | <= ~$1 |
-| Score | 85,61 | 85,61 | recalculado |
-
-Piorou em vez de melhorar. O cap do ratio nao e a correcao certa.
-
-### Root cause REAL
-
-O ratio controla o sizing do notional (exposicao), mas o pnl da simulacao e
-calculado como closedPnl * ratio * scale (metrics.py ~linha 518). O closedPnl
-da HL e absoluto (dolares), nao relativo ao equity.
-
-Trader 0xd487e26c:
-- equity: $394
-- PnL 30d: $864.403 (2.192x o equity)
-- trades: 4.376
-- closedPnl medio: $197 por trade
-
-Com ratio = 1.0 (cap), a simulacao replica closedPnl * 1.0 = $197 por trade.
-Soma: ~$864k. Mas nossa simulacao usa $1.000 de capital - um PnL de $864k e
-retorno de 86.400%, impossivel.
-
-O bug: o trader opera com volume/notional MUITO maior que seu equity
-(leverage extremo ou capital externo adicionado/removido). O closedPnl absoluto
-dele nao reflete o que nossa copia com $1.000 geraria. O ratio capado em 1.0
-limita o sizing do notional, mas o PnL continua sendo closedPnl * ratio -
-replicando o PnL absoluto do trader quase 1:1.
-
-### Correcao exigida
-
-Arquivo: engine/strategies/copy_trade/metrics.py - funcao simulate_copy()
-
-O PnL da simulacao deve ser calculado proporcionalmente ao notional que nossa
-copia realmente abriria, nao ao closedPnl absoluto do trader escalado por ratio:
-
-    # Em vez de (linha ~518):
-    pnl = float(f.get("closedPnl", 0) or 0) * ratio * scale
-
-    # Calcular o PnL proporcional ao notional da copia:
-    # notional_trader = abs(sz * px) (notional do fill do trader)
-    # notional_copy = min(notional_trader * ratio, notional_cap)  (ja calculado)
-    # pnl_copy = closedPnl * (notional_copy / notional_trader)
-    #
-    # Isso garante que o PnL seja proporcional ao tamanho que DE FATO copiamos
-    # (limitado por notional_cap = mirror_capital * max_copy_leverage), nao ao
-    # closedPnl absoluto do trader.
-    if notional_trader > 0:
-        pnl = float(f.get("closedPnl", 0) or 0) * (copy_notional / notional_trader)
-    else:
-        pnl = 0.0
-
-### Asserts de sanidade (devem falhar se o bug persistir)
-
-    assert abs(net) <= mirror_capital * 50, f"SIM NET {net} > 50x capital (irreal)"
-    assert max_dd <= 1.0, f"SIM DD {max_dd*100}% > 100% (impossivel)"
-    max_dd = min(max_dd, 1.0)  # clamp de seguranca
-
-### Testes exigidos
-
-1. 0xd487e26c (equity $394, PnL $864k, 4376 trades): SIM NET <= $50.000 (nao
-   $337k), SIM DD <= 100%.
-2. 0x1a5db9 (equity $14k, PnL $23k, 142 trades): SIM NET ~= $1.336 (inalterado
-   - equity >> capital, ratio < 1.0 ja).
-3. Trader com equity = capital: resultado inalterado.
-4. Trader com PnL absoluto >> equity (caso extremo): SIM NET limitado por
-   notional_cap.
-5. assert sim.max_dd_pct <= 100.0 em todos os casos.
-6. assert abs(sim.net_pnl_usd) <= mirror_capital * 50 em todos os casos.
-
-### Validacao pos-deploy (Hermes)
-
-1. Re-analisar 0xd487e26c: SIM NET <= $50.000, SIM DD <= 100%, score recalculado.
-2. Re-analisar 0x1a5db9: SIM NET ~= $1.336 (inalterado).
-3. Proximo scan v15: nenhum trader com SIM DD > 100%.
-
-### Restricoes
-
-- NAO alterar assinatura de simulate_copy (protegida).
-- NAO tocar hot path 8.4.1.
-- NAO alterar F15/F17/F18/F19 (usam simulate_copy como black box).
-- .venv/bin/python -m pytest tests/ -q verde (467 hoje).
-
-
-## UPDATE-0069 - 2026-07-18 - Status: PENDENTE
-
-**Origem**: validacao em producao do UPDATE-0067 (Hermes) - fix do cap do ratio
-NAO resolveu o bug do simulate_copy.
-
-**Tipo**: logica_discovery (bugfix)
-
-**Resumo**: o fix do UPDATE-0067 (ratio = min(mirror_capital / trader_equity, 1.0))
-esta no codigo (metrics.py:493) mas NAO resolveu o problema. Re-analise de
-0xd487e26c62ed8c28ce3cc70b5791e501c2934982 em producao (2026-07-18 12:56 UTC):
-
-| Campo | Antes (UPDATE-0066) | Depois (UPDATE-0067) | Esperado |
-|---|---|---|---|
-| SIM NET | USD 542.202 | USD 337.894 | <= ~USD 50.000 |
-| SIM DD | 206,13% | 17.963% | <= 100% |
-| SIM EXP | USD 91,00 | USD 54,76 | <= ~USD 1 |
-| Score | 85,61 | 85,61 | recalculado |
-
-Piorou em vez de melhorar. O cap do ratio nao e a correcao certa.
-
-### Root cause REAL
-
-O ratio controla o sizing do notional (exposicao), mas o pnl da simulacao e
-calculado como closedPnl * ratio * scale (metrics.py ~linha 518). O closedPnl
-da HL e absoluto (dolares), nao relativo ao equity.
-
-Trader 0xd487e26c:
-- equity: USD 394
-- PnL 30d: USD 864.403 (2.192x o equity)
-- trades: 4.376
-- closedPnl medio: USD 197 por trade
-
-Com ratio = 1.0 (cap), a simulacao replica closedPnl * 1.0 = USD 197 por trade.
-Soma: ~USD 864k. Mas nossa simulacao usa USD 1.000 de capital - um PnL de USD 864k e
-retorno de 86.400%, impossivel.
-
-O bug: o trader opera com volume/notional MUITO maior que seu equity
-(leverage extremo ou capital externo adicionado/removido). O closedPnl absoluto
-dele nao reflete o que nossa copia com USD 1.000 geraria. O ratio capado em 1.0
-limita o sizing do notional, mas o PnL continua sendo closedPnl * ratio -
-replicando o PnL absoluto do trader quase 1:1.
-
-### Correcao exigida
-
-Arquivo: engine/strategies/copy_trade/metrics.py - funcao simulate_copy()
-
-O PnL da simulacao deve ser calculado proporcionalmente ao notional que nossa
-copia realmente abriria, nao ao closedPnl absoluto do trader escalado por ratio:
-
-    # Em vez de (linha ~518):
-    pnl = float(f.get("closedPnl", 0) or 0) * ratio * scale
-
-    # Calcular o PnL proporcional ao notional da copia:
-    # notional_trader = abs(sz * px) (notional do fill do trader)
-    # notional_copy = min(notional_trader * ratio, notional_cap)  (ja calculado)
-    # pnl_copy = closedPnl * (notional_copy / notional_trader)
-    #
-    # Isso garante que o PnL seja proporcional ao tamanho que DE FATO copiamos
-    # (limitado por notional_cap = mirror_capital * max_copy_leverage), nao ao
-    # closedPnl absoluto do trader.
-    if notional_trader > 0:
-        pnl = float(f.get("closedPnl", 0) or 0) * (copy_notional / notional_trader)
-    else:
-        pnl = 0.0
-
-### Asserts de sanidade (devem falhar se o bug persistir)
-
-    assert abs(net) <= mirror_capital * 50, f"SIM NET {net} > 50x capital (irreal)"
-    assert max_dd <= 1.0, f"SIM DD {max_dd*100}% > 100% (impossivel)"
-    max_dd = min(max_dd, 1.0)  # clamp de seguranca
-
-### Testes exigidos
-
-1. 0xd487e26c (equity USD 394, PnL USD 864k, 4376 trades): SIM NET <= USD 50.000 (nao
-   USD 337k), SIM DD <= 100%.
-2. 0x1a5db9 (equity USD 14k, PnL USD 23k, 142 trades): SIM NET ~= USD 1.336 (inalterado
-   - equity >> capital, ratio < 1.0 ja).
-3. Trader com equity = capital: resultado inalterado.
-4. Trader com PnL absoluto >> equity (caso extremo): SIM NET limitado por
-   notional_cap.
-5. assert sim.max_dd_pct <= 100.0 em todos os casos.
-6. assert abs(sim.net_pnl_usd) <= mirror_capital * 50 em todos os casos.
-
-### Validacao pos-deploy (Hermes)
-
-1. Re-analisar 0xd487e26c: SIM NET <= USD 50.000, SIM DD <= 100%, score recalculado.
-2. Re-analisar 0x1a5db9: SIM NET ~= USD 1.336 (inalterado).
-3. Proximo scan v15: nenhum trader com SIM DD > 100%.
-
-### Restricoes
-
-- NAO alterar assinatura de simulate_copy (protegida).
-- NAO tocar hot path 8.4.1.
-- NAO alterar F15/F17/F18/F19 (usam simulate_copy como black box).
-- .venv/bin/python -m pytest tests/ -q verde (467 hoje).
+---
+
+## UPDATE-0070 · 2026-07-18 · Status: APLICADO em 2026-07-18
+
+**Origem**: re-análise de `0xd487e26c` pelo OPERADOR (UPDATE-0069) — o UPDATE-0067
+(cap do ratio) foi insuficiente. RESPONDE ao UPDATE-0069 e SUPERSEDE o UPDATE-0067.
+
+**Tipo**: logica_discovery (bugfix estrutural em `simulate_copy`)
+
+**Resumo**: `simulate_copy` continuava inflando PnL/DD para traders de equity muito
+menor que o capital de cópia (`0xd487e26c`, equity ~$394, 4376 fills: SIM NET
+~$337k, SIM DD 17.963%, `sim_net` do score saturado em 1.0). Substituí o modelo de
+sizing por **fração da equity simulada corrente** (fractional), com piso de
+liquidação.
+
+**Dois achados sobre o spec do rtg003bot (verificados nesta sessão)**:
+
+1. **A "correção definitiva" do bot é um no-op.** O bot pediu trocar `pnl =
+   closedPnl * ratio * scale` por `pnl = closedPnl * (copy_notional/notional)`. Mas
+   no código anterior valia **identicamente** `ratio*scale ≡ copy_notional/notional`
+   nos dois ramos (sem cap: ambos = `closedPnl*ratio`; com cap: `scale =
+   notional_cap/(notional*ratio)` → `ratio*scale = notional_cap/notional =
+   copy_notional/notional`). Implementar a fórmula do bot não mudaria nada.
+2. **Causa raiz real**: com o ratio capado em 1.0, copiávamos o `closedPnl`
+   **absoluto** de cada fill; para equity minúscula com fills abaixo do
+   `notional_cap`, a soma ≈ PnL total do trader. O denominador era um **snapshot de
+   equity** (não representa capital girado), e **não havia buying-power**: PnL
+   acumulava por milhares de fills sem a conta acabar → DD > 100%.
+
+**Implementação** (`engine/strategies/copy_trade/metrics.py`, `simulate_copy`):
+- Novo loop de sizing fractional sobre a equity corrente:
+  `copy_notional = min(equity · notional/trader_equity, equity · max_copy_leverage)`;
+  `ron = closedPnl/notional`; `pnl = ron · copy_notional`; custos por perna sobre o
+  `copy_notional`; `equity = max(equity + pnl − custos, 0)` (**piso de liquidação**);
+  `net = equity_final − mirror_capital`.
+- Garantias por construção: **DD ∈ [0, 100%]** (o piso impede equity negativa) e
+  **net ≥ −mirror_capital**. Sem `assert`/clamp artificial de DD.
+- **Invariância de capital preservada**: tudo é relativo à equity corrente →
+  `equity_t = mirror_capital · Π(1+…)` → `net ∝ mirror_capital`.
+- **Single-fill / equity ≥ capital**: idêntico ao modelo antigo (`copy_notional =
+  notional · capital/equity`); só há leve drift de composição em janelas multi-fill.
+- Docstring reescrito (sizing fractional, piso, invariância, cap agora sobre a NOSSA
+  equity); removida a nota do UPDATE-0067 (cap do ratio, agora SUPERSEDED).
+- Assinatura **intacta** (protegida) — só mudou o corpo/comportamento.
+
+**F11** (`engine/strategies/copy_trade/funnel.py`): estimador de executabilidade
+alinhado — `median_fill_notional × (mirror_capital/equity)` capado por
+`mirror_capital × max_copy_leverage` (sem o cap do ratio).
+
+**Invariantes**: sem config/migration (`max_copy_leverage=3.0` e
+`f11_mirror_capital_usd=$1.000` já existentes); `traders.sim_*` sobrescrito no
+próximo scan (upsert); nada em `web/`; `sim_net` (`/5000`) e `copy_sim_factor`
+(clamp) inalterados (herdam números honestos); hot path §8.4.1/executor não tocado;
+isolamento §5.1 intacto.
+
+**Validação**: `.venv/bin/python -m pytest tests/ -q` → **468 passed**. Testes de
+sim atualizados/reescritos/adicionados: sizing por equity, piso de liquidação
+(`net == −capital`, `dd == 100`), composição/compounding, invariância linear de
+capital, DD ≤ 100% com dados extremos, single-fill idêntico ao modelo antigo.
+
+Ação do Hermes: ver UPDATE-0070 no HERMES_UPDATES.md (re-analisar `0xd487e26c` →
+DD ≤ 100%, provável liquidação; `0x1a5db9` ~inalterado; scan v15 sem SIM DD > 100%).
