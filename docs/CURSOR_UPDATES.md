@@ -2345,3 +2345,104 @@ novos: chave `positions`, cursor final None, legados `items`/`data`, precedênci
 
 Ação do Hermes: ver UPDATE-0068 no HERMES_UPDATES.md (revalidar UPDATE-0062/0065
 no próximo scan v15 com cota disponível).
+
+## UPDATE-0069 · 2026-07-18 · Status: PENDENTE
+
+**Origem**: validação em produção do UPDATE-0067 (Hermes) — fix do cap do ratio
+NÃO resolveu o bug do simulate_copy.
+
+**Tipo**: logica_discovery (bugfix)
+
+**Resumo**: o fix do UPDATE-0067 (`ratio = min(mirror_capital / trader_equity, 1.0)`)
+está no código (metrics.py:493) mas **NÃO resolveu o problema**. Re-análise de
+`0xd487e26c62ed8c28ce3cc70b5791e501c2934982` em produção (2026-07-18 12:56 UTC):
+
+| Campo | Antes (UPDATE-0066) | Depois (UPDATE-0067) | Esperado |
+|---|---|---|---|
+| SIM NET | $542.202 | **$337.894** | ≤ ~$50.000 |
+| SIM DD | 206,13% | **17.963%** | ≤ 100% |
+| SIM EXP | $91,00 | $54,76 | ≤ ~$1 |
+| Score | 85,61 | 85,61 | recalculado |
+
+**Piorou em vez de melhorar.** O cap do ratio não é a correção certa.
+
+### Root cause REAL
+
+O `ratio` controla o sizing do **notional** (exposição), mas o `pnl` da simulação é
+calculado como `closedPnl * ratio * scale` (metrics.py ~linha 518). O `closedPnl`
+da HL é **absoluto** (dólares), não relativo ao equity.
+
+Trader `0xd487e26c`:
+- equity: $394
+- PnL 30d: $864.403 (2.192x o equity)
+- trades: 4.376
+- `closedPnl` médio: $197 por trade
+
+Com `ratio = 1.0` (cap), a simulação replica `closedPnl * 1.0 = $197` por trade.
+Soma: ~$864k. Mas nossa simulação usa `$1.000` de capital — um PnL de $864k é
+retorno de 86.400%, impossível.
+
+**O bug**: o trader opera com volume/notional MUITO maior que seu equity
+(leverage extremo ou capital externo adicionado/removido). O `closedPnl` absoluto
+dele não reflete o que nossa cópia com $1.000 geraria. O `ratio` capado em 1.0
+limita o sizing do notional, mas o PnL continua sendo `closedPnl * ratio` —
+replicando o PnL absoluto do trader quase 1:1.
+
+### Correção exigida
+
+**Arquivo**: `engine/strategies/copy_trade/metrics.py` — função `simulate_copy()`
+
+O PnL da simulação deve ser calculado proporcionalmente ao **notional** que nossa
+cópia realmente abriria, não ao `closedPnl` absoluto do trader escalado por `ratio`:
+
+```python
+# Em vez de (linha ~518):
+pnl = float(f.get("closedPnl", 0) or 0) * ratio * scale
+
+# Calcular o PnL proporcional ao notional da cópia:
+# notional_trader = abs(sz * px) (notional do fill do trader)
+# notional_copy = min(notional_trader * ratio, notional_cap)  (já calculado)
+# pnl_copy = closedPnl * (notional_copy / notional_trader)
+#
+# Isso garante que o PnL seja proporcional ao tamanho que DE FATO copiamos
+# (limitado por notional_cap = mirror_capital * max_copy_leverage), não ao
+# closedPnl absoluto do trader.
+if notional_trader > 0:
+    pnl = float(f.get("closedPnl", 0) or 0) * (copy_notional / notional_trader)
+else:
+    pnl = 0.0
+```
+
+### Asserts de sanidade (devem falhar se o bug persistir)
+
+```python
+assert abs(net) <= mirror_capital * 50, f"SIM NET {net} > 50x capital (irreal)"
+assert max_dd <= 1.0, f"SIM DD {max_dd*100}% > 100% (impossível)"
+# clamp de segurança (não deve ser necessário se o cálculo estiver certo):
+max_dd = min(max_dd, 1.0)
+```
+
+### Testes exigidos
+
+1. `0xd487e26c` (equity $394, PnL $864k, 4376 trades): SIM NET ≤ $50.000 (não
+   $337k), SIM DD ≤ 100%.
+2. `0x1a5db9` (equity $14k, PnL $23k, 142 trades): SIM NET ≈ $1.336 (inalterado
+   — equity >> capital, ratio < 1.0 já).
+3. Trader com equity = capital: resultado inalterado.
+4. Trader com PnL absoluto >> equity (caso extremo): SIM NET limitado por
+   `notional_cap`.
+5. `assert sim.max_dd_pct <= 100.0` em todos os casos.
+6. `assert abs(sim.net_pnl_usd) <= mirror_capital * 50` em todos os casos.
+
+### Validação pós-deploy (Hermes)
+
+1. Re-analisar `0xd487e26c`: SIM NET ≤ $50.000, SIM DD ≤ 100%, score recalculado.
+2. Re-analisar `0x1a5db9`: SIM NET ≈ $1.336 (inalterado).
+3. Próximo scan v15: nenhum trader com SIM DD > 100%.
+
+### Restrições
+
+- NÃO alterar assinatura de `simulate_copy` (protegida).
+- NÃO tocar hot path §8.4.1.
+- NÃO alterar F15/F17/F18/F19 (usam `simulate_copy` como black box).
+- `.venv/bin/python -m pytest tests/ -q` verde (467 hoje).
