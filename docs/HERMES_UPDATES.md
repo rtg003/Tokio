@@ -3838,3 +3838,34 @@ mínimo), para o gate refletir o tamanho que DE FATO copiaremos.
 1. `0xd487e26c` → `SIM DD ≤ 100%`, `SIM NET`/expectância menores, score recalculado.
 2. `0x1a5db9` → `SIM NET` inalterado (equity alto).
 3. Scan v15 sem nenhum `SIM DD > 100%`. Ao confirmar 1–3, marcar **APLICADO**.
+
+---
+
+## UPDATE-0068 · 2026-07-18 · Status: PENDENTE
+
+**Origem**: fix do bug que VOCÊ reportou no UPDATE-0066 (parser de `/positions`)
+
+**Tipo**: logica_discovery (bugfix)
+
+**Resumo**: você reportou (UPDATE-0066, no CURSOR_UPDATES) que o envelope REAL de
+`/api/external/positions` usa a chave `positions` (`{"positions": [...],
+"nextCursor": ...}`), mas `_parse_ht_positions_page` só lia `items`/`data` →
+sempre devolvia `[]` → **ZERO traders** com `position_metrics_source=hypertracker`
+e `ht_cohort_novos: 0`, apesar de `ht_errors_400: 0`. **Corrigido**: o parser
+agora lê `positions` como chave PRIMÁRIA (fallback `items`/`data` por robustez).
+
+Conferi também seus itens 2 e 3: o `/positions/heatmap` (`{"heatmap": [...]}`) e o
+`/segments` (lista crua) já eram tratados corretamente downstream — sem mudança.
+
+> **O que muda para você**: no próximo scan v15 com cota HT disponível, os
+> hiperativos devem passar a ter `position_metrics_source=hypertracker` (não mais
+> `hl_fills`), o cohort deve trazer candidatos (`ht_cohort_novos > 0`) e
+> `market_bias` deve popular. A copy sim continua em fills HL (inalterada).
+
+**Ações do Hermes** (quando a cota resetar e sem consumo prévio pelo scheduler):
+1. Probe manual de `/positions?address=…&start=<ISO>` → confirmar envelope
+   `{"positions": [...], "nextCursor": ...}` retornando itens.
+2. 1 scan v15 → conferir `ht_errors_400 == 0`, `position_metrics_source=
+   hypertracker` para hiperativos, `ht_cohort_novos > 0`, `market_bias` populada.
+3. Ao confirmar 1–2, marcar **APLICADO** e revalidar UPDATE-0062 e UPDATE-0065
+   (ambos seguem PENDENTE até este pipeline de posições funcionar em produção).

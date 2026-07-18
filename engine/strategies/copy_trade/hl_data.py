@@ -43,12 +43,18 @@ def _ht_start_iso(days: int) -> str:
 def _parse_ht_positions_page(data: Any) -> tuple[list[dict[str, Any]], str | None]:
     """Desembrulha UMA página de `/api/external/positions`.
 
-    Tolerante a formatos: ``{"items": [...], "nextCursor": "..."}`` (real),
-    ``{"data": [...]}`` (legado) ou lista crua. Retorna
+    UPDATE-0068 (bug reportado no UPDATE-0066 do Hermes): o envelope REAL de
+    `/api/external/positions` usa a chave ``positions`` — ``{"positions": [...],
+    "nextCursor": "..."}`` — e não ``items``. O probe em produção confirmou que o
+    parser antigo (só ``items``/``data``) sempre devolvia ``[]`` → ZERO traders
+    com `position_metrics_source=hypertracker`. Agora aceita ``positions`` (real),
+    ``items`` e ``data`` (legados) ou lista crua. Retorna
     ``(itens, próximo_cursor|None)`` — helper puro, testável sem HTTP em
     `tests/test_hl_data.py`."""
     if isinstance(data, dict):
-        items = data.get("items")
+        items = data.get("positions")
+        if items is None:
+            items = data.get("items")
         if items is None:
             items = data.get("data")
         cursor = data.get("nextCursor") or data.get("next_cursor")

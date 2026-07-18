@@ -11,7 +11,11 @@ envelope EXATO do Hermes é casado por endereço e que os formatos legados
 continuam funcionando por robustez."""
 from __future__ import annotations
 
-from engine.strategies.copy_trade.hl_data import HLDataClient, _parse_ht_wallet
+from engine.strategies.copy_trade.hl_data import (
+    HLDataClient,
+    _parse_ht_positions_page,
+    _parse_ht_wallet,
+)
 
 ADDR = "0x3bca" + "00" * 18  # 42 chars, minúsculo
 
@@ -97,6 +101,58 @@ def test_non_mapping_returns_empty() -> None:
     """Tipo inesperado (None/str) ⇒ {}."""
     assert _parse_ht_wallet(None, ADDR) == {}
     assert _parse_ht_wallet("boom", ADDR) == {}
+
+
+# ============================================================================
+# UPDATE-0068 (bug do UPDATE-0066 do Hermes) — envelope REAL de `/positions`
+# usa a chave `positions`, não `items`. O parser antigo devolvia [] sempre.
+# ============================================================================
+def test_positions_page_parses_real_positions_key() -> None:
+    """Envelope REAL `{"positions": [...], "nextCursor": "..."}` ⇒ itens + cursor."""
+    page = {"positions": [{"coin": "BTC"}, {"coin": "ETH"}], "nextCursor": "c1"}
+    items, cursor = _parse_ht_positions_page(page)
+    assert items == [{"coin": "BTC"}, {"coin": "ETH"}]
+    assert cursor == "c1"
+
+
+def test_positions_page_last_page_has_no_cursor() -> None:
+    """`nextCursor: null` ⇒ cursor None (fim da paginação)."""
+    items, cursor = _parse_ht_positions_page(
+        {"positions": [{"coin": "SOL"}], "nextCursor": None}
+    )
+    assert items == [{"coin": "SOL"}]
+    assert cursor is None
+
+
+def test_positions_page_legacy_items_still_supported() -> None:
+    """Formato legado `items` segue funcionando (robustez)."""
+    items, cursor = _parse_ht_positions_page(
+        {"items": [{"coin": "ARB"}], "next_cursor": "c2"}
+    )
+    assert items == [{"coin": "ARB"}]
+    assert cursor == "c2"
+
+
+def test_positions_page_legacy_data_still_supported() -> None:
+    """Formato legado `data` segue funcionando (robustez)."""
+    items, cursor = _parse_ht_positions_page({"data": [{"coin": "OP"}]})
+    assert items == [{"coin": "OP"}]
+    assert cursor is None
+
+
+def test_positions_page_positions_takes_precedence_over_items() -> None:
+    """Se ambos existirem, a chave REAL `positions` vence."""
+    items, _ = _parse_ht_positions_page(
+        {"positions": [{"coin": "REAL"}], "items": [{"coin": "LEGACY"}]}
+    )
+    assert items == [{"coin": "REAL"}]
+
+
+def test_positions_page_empty_and_non_mapping() -> None:
+    """`positions: []` ⇒ []; lista crua ⇒ ela mesma; tipo inesperado ⇒ []."""
+    assert _parse_ht_positions_page({"positions": []}) == ([], None)
+    assert _parse_ht_positions_page([{"coin": "X"}]) == ([{"coin": "X"}], None)
+    assert _parse_ht_positions_page(None) == ([], None)
 
 
 # ============================================================================

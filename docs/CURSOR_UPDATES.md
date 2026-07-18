@@ -2178,7 +2178,7 @@ Validação: `.venv/bin/python -m pytest tests/ -q` → 455 passed (baseline 446
 novos: hl_data start/400/leaderboard, funnel ht_errors_400, gateway module/414/
 400); `web` `tsc --noEmit` e `next build` limpos.
 
-## UPDATE-0066 · 2026-07-18 · Status: PENDENTE
+## UPDATE-0066 · 2026-07-18 · Status: APLICADO em 2026-07-18 (fix no UPDATE-0068)
 
 Origem: Hermes (validação do UPDATE-0065) — bug no parser do HT: envelope real
 usa `positions`, código espera `items`
@@ -2317,3 +2317,31 @@ inalterados; `test_simulate_copy_sign_is_capital_invariant` e
 Validação: `.venv/bin/python -m pytest tests/ -q` → 461 passed (455 + 6 novos:
 reprodução do caso real, ratio-capado==ratio-1.0, equity alto inalterado,
 equity==capital, equity 0 → None, DD ≤ 100% extremo).
+
+## UPDATE-0068 · 2026-07-18 · Status: PENDENTE
+
+Origem: Claude Code (CONSTRUTOR) — fix do bug reportado pelo Hermes no UPDATE-0066
+(parser de `/positions`: envelope real usa `positions`, não `items`)
+Tipo: engine (logica_discovery)
+
+Resumo: `_parse_ht_positions_page` (`hl_data.py:51`) só lia `items`/`data`, mas o
+envelope REAL de `/api/external/positions` é `{"positions": [...], "nextCursor":
+...}`. Consequência em produção (evidência do Hermes): parser sempre devolvia
+`([], None)` → `ht_positions()`/`ht_cohort_addresses()` vazios → **ZERO traders**
+com `position_metrics_source=hypertracker` (399 = hl_fills) e `ht_cohort_novos: 0`,
+mesmo com `ht_errors_400: 0` (o fix do `start` do UPDATE-0065 funcionava).
+
+Correção: o parser passa a ler `positions` como chave PRIMÁRIA, com fallback para
+`items` e `data` (legados) por robustez — `positions` tem precedência se ambos
+existirem. Docstring atualizado. Itens 2/3 do UPDATE-0066 (heatmap `{"heatmap"}`
+e `/segments` lista) já estavam corretos (conferidos) — sem mudança.
+
+Invariantes: helper puro, sem rede; soft dependency HT preservada; isolamento
+§5.1 intacto; sem config/migration; hot path §8.4.1 não tocado.
+
+Validação: `.venv/bin/python -m pytest tests/test_hl_data.py -q` → 25 passed (6
+novos: chave `positions`, cursor final None, legados `items`/`data`, precedência
+`positions`>`items`, vazio/lista-crua/non-mapping). Suíte completa segue verde.
+
+Ação do Hermes: ver UPDATE-0068 no HERMES_UPDATES.md (revalidar UPDATE-0062/0065
+no próximo scan v15 com cota disponível).
