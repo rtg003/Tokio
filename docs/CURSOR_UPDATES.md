@@ -2509,3 +2509,74 @@ capital, DD ≤ 100% com dados extremos, single-fill idêntico ao modelo antigo.
 
 Ação do Hermes: ver UPDATE-0070 no HERMES_UPDATES.md (re-analisar `0xd487e26c` →
 DD ≤ 100%, provável liquidação; `0x1a5db9` ~inalterado; scan v15 sem SIM DD > 100%).
+
+
+## UPDATE-0070 - validacao em producao (Hermes) - REPROVADO
+
+**Origem**: validacao do UPDATE-0070 (sizing fractional + piso de liquidacao).
+
+**Tipo**: logica_discovery (bugfix - reprova)
+
+**Resumo**: o piso de liquidacao corrigiu o SIM DD (agora <= 100% por construcao),
+mas o sizing fracional introduziu dois problemas novos:
+
+### Resultados em producao (2026-07-18 13:50 UTC)
+
+| Endereco | Campo | Antes (0067) | Depois (0070) | Esperado |
+|---|---|---|---|---|
+| 0xd487e26c (equity $394) | SIM NET | $337.894 | **1.3e+191** (overflow) | <= $50k ou liquidacao (~-$1k) |
+| 0xd487e26c | SIM DD | 17.963% | 100% (ok) | <= 100% |
+| 0xd487e26c | SIM EXP | $54 | 2.46e+222 (overflow) | <= ~$1 |
+| 0x1a5db9 (equity $14k) | SIM NET | $1.336 | **$8.600** (6x maior) | ~$1.336 (inalterado) |
+| 0x1a5db9 | SIM DD | 5.7% | **26.48%** | ~5.7% (inalterado) |
+| 0x1a5db9 | SIM EXP | - | $74.22 | ~inalterado |
+
+### Problemas identificados
+
+1. **OVERFLOW NUMERICO no 0xd487e26c**: SIM NET = 1.3e+191, SIM EXP = 2.46e+222.
+   Numeros astronomicos indicam multiplicacao acumulativa sem controle. O piso
+   de liquidacao limitou o DD (100%), mas o PnL cresce sem bound - provavel bug
+   na formula do retorno-sobre-notional (ron = closedPnl/notional) quando
+   notional e muito pequeno (divisao por zero/epsilon) ou quando o sizing
+   fracional multiplica equity * ratio sem resetar.
+
+2. **REGRESSAO no 0x1a5db9**: este trader tem equity $14k (>= capital $1k) e
+   deveria ficar INALTERADO (o modelo antigo era identico para equity >= capital
+   em single-fill). Mas SIM NET foi de $1.336 para $8.600 (6x) e SIM DD de 5.7%
+   para 26.48%. O sizing fracional esta multiplicando em vez de fracionar -
+   provavel bug na formula copy_notional = equity * (notional/trader_equity)
+   onde o ratio nao e mais capado em 1.0.
+
+### Diagnostico
+
+O UPDATE-0070 removeu o cap do ratio do UPDATE-0067 e introduziu sizing
+proporcional a equity corrente. Mas sem o cap, quando trader_equity e muito
+menor que os notionais dos fills, o ratio explode - e o retorno-sobre-notional
+multiplicado pela equity acumula sem bound.
+
+### Correcao exigida
+
+1. **Limitar o crescimento do PnL**: o sizing fracional deve ter um cap no
+   ratio (equity/max_copy_leverage vs notional do trader). Se notional_trader
+   >> equity * max_copy_leverage, o PnL nao pode exceder o que a alavancagem
+   maxima permite.
+
+2. **Overflow**: adicionar asserts de sanidade (como o UPDATE-0069 pedia):
+   - assert abs(sim.net_pnl_usd) <= mirror_capital * 50
+   - assert sim.max_dd_pct <= 100.0
+   - clamp max_dd a 1.0
+
+3. **Nao-regressao**: o 0x1a5db9 (equity >= capital) deve ficar inalterado.
+   Se o novo modelo diverge do antigo neste caso, e bug - nao feature.
+
+### Testes obrigatorios
+
+1. 0xd487e26c (equity $394): SIM NET <= $50.000 (nao 1e+191), SIM DD <= 100%.
+2. 0x1a5db9 (equity $14k): SIM NET ~= $1.336 (inalterado), SIM DD ~= 5.7%.
+3. assert abs(sim.net_pnl_usd) <= mirror_capital * 50 sempre.
+4. assert sim.max_dd_pct <= 100.0 sempre.
+
+### Status
+
+UPDATE-0070 permanece PENDENTE. O UPDATE-0067 (cap do ratio) tambem permanece
+PENDENTE (superseded pelo 0070 que ainda nao funciona).
