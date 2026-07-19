@@ -3,7 +3,7 @@
   --ink: #0b0d0c; --surface: #121514; --surface-2: #181c1a; --line: #242a28;
   --text: #e9edea; --muted: #8d9793; --faint: #5a6461;
   --amber: #f5a83c; --amber-hi: #ffc069; --amber-soft: rgba(245, 168, 60, 0.1);
-  --yellow: #ece05a; --yellow-soft: rgba(236, 224, 90, 0.14);
+  --yellow: #ece05a; --yellow-soft: rgba(236, 224, 90, 0.14); --yellow-vivid: #f7e73a;
   --info: #58a6ff; --info-soft: rgba(88, 166, 255, 0.1);
   --pos: #4cc38a; --pos-soft: rgba(76, 195, 138, 0.1);
   --neg: #e5484d; --neg-soft: rgba(229, 72, 77, 0.1);
@@ -15,7 +15,7 @@ html.light {
   --ink: #f6f5f1; --surface: #ffffff; --surface-2: #efeee8; --line: #e2e1d9;
   --text: #171b19; --muted: #5f6864; --faint: #99a19d;
   --amber: #b9791b; --amber-hi: #9a6412; --amber-soft: rgba(185, 121, 27, 0.1);
-  --yellow: #8a7400; --yellow-soft: rgba(138, 116, 0, 0.12);
+  --yellow: #8a7400; --yellow-soft: rgba(138, 116, 0, 0.12); --yellow-vivid: #8a6d00;
   --info: #0969da; --info-soft: rgba(9, 105, 218, 0.09);
   --pos: #188a56; --pos-soft: rgba(24, 138, 86, 0.1);
   --neg: #cd2b31; --neg-soft: rgba(205, 43, 49, 0.08);
@@ -218,8 +218,14 @@ th.num { text-align: right; }
 .traders-table th.ativos-cell, .traders-table td.ativos-cell {
   max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* UPDATE-0078: valores de Margem em amarelo claro (Posições e Trades). */
-td.margin-cell { background: var(--yellow-soft); }
+/* UPDATE-0079 (item 1): valores de Margem em COR DE FONTE amarela (não mais
+   background), num tom ligeiramente mais vivo. Vale p/ Posições e Trades. */
+td.margin-cell { color: var(--yellow-vivid); font-weight: 500; }
+/* UPDATE-0079 (item 5): coluna STATUS não pode estourar a tabela (o motivo de
+   rejeição em .sub é longo e o `white-space: nowrap` global empurrava a largura).
+   Limitar a largura e deixar o texto quebrar em linha. */
+th.status-cell, td.status-cell { max-width: 180px; white-space: normal; }
+td.status-cell .sub { white-space: normal; overflow-wrap: anywhere; }
 /* Cabeçalho ordenável: clicável + ícone flat de direção. O ícone vazio ocupa o
    mesmo espaço (sem seta) p/ preservar o alinhamento das colunas inativas. */
 .th-sort { cursor: pointer; user-select: none; }
@@ -459,6 +465,10 @@ td.margin-cell { background: var(--yellow-soft); }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 1rem; }
 .modal-head h2 { font: 600 18px var(--sans); margin: 2px 0; }
 .modal-head .sub { font: 400 11px var(--mono); color: var(--muted); }
+/* UPDATE-0079 (item 7): o address (mono, 42 chars) não quebra e estourava a
+   largura do modal no mobile. Forçar quebra + impedir que o head force largura. */
+.modal-head { flex-wrap: wrap; }
+.modal-head .sub.addr { word-break: break-all; overflow-wrap: anywhere; }
 
 /* --- seções verticais --- */
 .modal-section { padding: 0.9rem 0; border-top: 1px solid var(--line); }

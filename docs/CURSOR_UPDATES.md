@@ -3109,3 +3109,56 @@ a HL estabilizar, reprocessar para validar o fix do unrealizedPnl.
 
 **Status**: UPDATE-0078 marcado APLICADO (deploy completo, codigo no ar). Validacao de
 WR/PF fica pendente ate a HL estabilizar e permita reprocessamento.
+
+
+## UPDATE-0079 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: lote de ajustes de UI das tabelas (rtg003) + 2 bugs de dados (rtg003bot):
+`n_trades_30d=0` para traders com posições no HyperTracker e `profit_factor=Inf` exibido como "—".
+Entregue em **UM commit**. O **item 4** (reexecução manual de ordem REJECTED) foi **separado** →
+vai num **UPDATE-0080** à parte.
+
+**Tipo**: metrics_discovery (funnel) + traders_store + server (leitura /api/traders) + web/UI + testes.
+**Hot path §8.4.1 NÃO tocado.** `position_metrics_from_ht`/`profit_factor` em `metrics.py` **NÃO
+alterados** (restrição rtg003bot); o fix do item 8 é só no `_apply_ht_positions` (funnel).
+
+### Item 8 — `n_trades_30d=0` com posições no HT (causa-raiz provada)
+O fix pedido (contar fechadas do HT em 30d) **já existia** (`position_metrics_from_ht` retorna
+`n_trades_30d=len(closed_30d)`; `_ht_ms` normaliza s→ms). O bug real: `_apply_ht_positions`
+**sobrescrevia** o `n_trades_30d`/`n_trades_7d` corretos (dos fills recentes, calculados ANTES do
+apply) com o valor do HT — e para traders hiperativos o HT devolve quase só posições ABERTAS, então
+`len(closed_30d)=0` **zerava** o contador certo. **Fix**: helper `_set_max` usa `max(HT, fills)` —
+o HT acrescenta fechadas que os fills não pegaram, mas nunca reduz/zera. `n_trades` (total) segue
+com `_set`.
+
+### Item 9 — `profit_factor=Inf` exibido como "—" (causa-raiz provada)
+`profit_factor` retorna `float("inf")` quando há ganhos e zero perdas na janela. `inf` **não
+sobrevive** ao JSON como número distinguível (o browser quebra em `Infinity`) → chega ao front como
+`null` e o `fmtNum` mostra "—". **Fix (3 pontos, sem tocar em `metrics.py`)**:
+- `traders_store.upsert_candidate`: coalesce PF não-finito → sentinela `999.0` antes de persistir.
+- `server.py` `/api/traders` e `/api/traders/{address}`: `_sanitize_trader_row` mapeia PF não-finito
+  → `999.0` na leitura (cobre linhas gravadas antes do fix, sem migração).
+- `TradersTable.tsx`: `profit_factor >= 999` renderiza **"∞"**.
+
+### Frontend (itens 1,2,3,5,6,7)
+- **Item 1** `globals.css`: Margem agora é **cor de fonte** amarela (não background), tom mais vivo
+  (`--yellow-vivid`). Vale p/ Posições e Trades (classe `.margin-cell`).
+- **Item 2** `PositionsTable.tsx`: coluna dedicada **"Fechar"** (com o `ClosePositionButton`) logo
+  após Trader; reordenação → Trader · Fechar · Ativo · Lado · Margem · Alav. · Valor · Tamanho ·
+  Entrada · Liq.Price · PnL · Funding · TP/SL.
+- **Item 3** `TradesOrdersTable.tsx`: coluna **Hora** movida para depois de **Lado**.
+- **Item 5** `globals.css` + `TradesOrdersTable.tsx`: coluna **Status** com `max-width: 180px` e
+  quebra de linha (classe `.status-cell`) — o motivo de rejeição (`.sub`) não estoura mais a tabela.
+- **Item 6** `TradersTable.tsx`: **Hold méd. < 1h** agora em **laranja** (`--amber`), não mais
+  vermelho; tooltip/tip atualizados.
+- **Item 7** `globals.css`: o **modal** de cópia estourava no mobile porque o address (mono, 42
+  chars) não quebrava; `word-break: break-all` no `.modal-head .sub.addr` + `flex-wrap` no head.
+
+### Testes
+`pytest tests/ -q` → **505 passed** (501 baseline + 4 novos): `test_apply_ht_positions_does_not_
+zero_fills_n_trades_30d`, `test_apply_ht_positions_prefers_larger_count`,
+`test_upsert_coalesces_infinite_profit_factor`, `test_upsert_keeps_finite_profit_factor`. `tsc` limpo.
+
+### DEFERIDO — UPDATE-0080 (item 4)
+Reexecução manual de ordem **REJECTED** a **preço de mercado atual** (novo endpoint
+`/control/order/reexecute` espelhando `/control/position/close`, sem tocar no hot path).

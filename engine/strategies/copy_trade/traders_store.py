@@ -9,9 +9,25 @@ Toda mudança de status/config é logada em `events` (event_type `trader.*`).
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from engine.core.db import Database, utcnow
+
+# UPDATE-0079 (item 9): profit_factor pode vir `inf` (ganhos sem perdas na
+# janela). `float("inf")` NÃO sobrevive à serialização JSON como número
+# distinguível (o browser quebra em `Infinity`) → chega ao front como null e
+# vira "—". Persistimos uma sentinela numérica que o front renderiza como "∞".
+PF_INF_SENTINEL = 999.0
+
+
+def _finite_pf(pf: float | None) -> float | None:
+    """Coalesce profit_factor não-finito (inf/-inf/nan) para a sentinela."""
+    if pf is None:
+        return None
+    if math.isinf(pf) or math.isnan(pf):
+        return PF_INF_SENTINEL if pf > 0 else 0.0
+    return pf
 
 VALID_STATUSES = {"SUGERIDO", "SALVO", "TESTNET", "MAINNET", "REJEITADO"}
 OPERATING_STATUSES = {"TESTNET", "MAINNET"}
@@ -64,6 +80,7 @@ def upsert_candidate(db: Database, *, address: str, name: str | None = None,
     (um re-scan nunca rebaixa um trader em TESTNET/MAINNET para SUGERIDO).
     `extras`: colunas adicionais da logic_version 2 (migration 0004)."""
     address = address.lower()
+    profit_factor = _finite_pf(profit_factor)  # UPDATE-0079: inf → sentinela
     row = db.query("SELECT address FROM traders WHERE address = ?", (address,))
     metrics = {
         "name": name, "score": score, "cohort": cohort, "twrr_30d": twrr_30d,

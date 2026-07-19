@@ -117,9 +117,9 @@ export default function TradesOrdersTable({
               <tr>
                 <th>Trader</th>
                 <th>Tipo</th>
-                <th>Hora</th>
                 <th>Par</th>
                 <th>Lado</th>
+                <th>Hora</th>
                 <th className="num">Qtd</th>
                 <th className="num">Preço</th>
                 <th className="num">Margem</th>
@@ -127,7 +127,7 @@ export default function TradesOrdersTable({
                 <th className="num">Valor</th>
                 <th className="num">Fee</th>
                 <th className="num">PnL líquido</th>
-                <th>Status</th>
+                <th className="status-cell">Status</th>
                 <th className="num">Latência</th>
                 <th className="num" aria-label="Cancelar"></th>
               </tr>
@@ -142,13 +142,13 @@ export default function TradesOrdersTable({
                   <td>
                     <span className={`chip ${r.kind === "ORDEM" ? "ack" : "filled"}`}>{r.kind}</span>
                   </td>
-                  <td>{fmtDateTime(r.time)}</td>
                   <td>{r.symbol}</td>
                   <td>
                     <span className={`side ${r.side === "buy" ? "long" : "short"}`}>
                       {r.side === "buy" ? "LONG" : "SHORT"}
                     </span>
                   </td>
+                  <td>{fmtDateTime(r.time)}</td>
                   <td className="num">{fmtNum(r.size, 4)}</td>
                   <td className="num">{r.price ? `$${fmtNum(r.price)}` : "MKT"}</td>
                   <td className="num margin-cell">
@@ -160,7 +160,7 @@ export default function TradesOrdersTable({
                   <td className={`num ${r.kind === "TRADE" ? pnlClass(r.pnl) : ""}`}>
                     {r.pnl === null || r.pnl === undefined ? "—" : `$${fmtSigned(r.pnl)}`}
                   </td>
-                  <td>
+                  <td className="status-cell">
                     {r.kind === "ORDEM" ? (
                       <>
                         <span className={`chip ${statusChip[r.status ?? ""] ?? "dry"}`}>

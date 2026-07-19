@@ -1774,6 +1774,16 @@ def build_app(state: GatewayState) -> FastAPI:
             )
         return value
 
+    def _sanitize_trader_row(row: dict[str, Any]) -> dict[str, Any]:
+        """UPDATE-0079 (item 9): profit_factor `inf` (ganhos sem perdas) não
+        sobrevive ao JSON como número — vira null e a UI mostra "—". Mapear
+        defensivamente para a sentinela 999.0 (a UI renderiza "∞"). Cobre linhas
+        gravadas antes do fix no traders_store (sem migração forçada)."""
+        pf = row.get("profit_factor")
+        if isinstance(pf, (int, float)) and (math.isinf(pf) or math.isnan(pf)):
+            row["profit_factor"] = 999.0 if pf > 0 else 0.0
+        return row
+
     @app.get("/api/traders")
     def api_traders(status: str | None = None) -> list[dict[str, Any]]:
         """Lista traders ordenados por score DESC.
@@ -1825,7 +1835,7 @@ def build_app(state: GatewayState) -> FastAPI:
 
             enriched = []
             for r in rows:
-                row = dict(r)
+                row = _sanitize_trader_row(dict(r))
                 row["strategy_id"] = strategy_id_for(row["address"], row.get("name"))
                 row["environment"] = environment_for_status(row["status"])
                 row["n_copy_fills"] = copy_fills.get(row["strategy_id"], 0)
@@ -1846,7 +1856,7 @@ def build_app(state: GatewayState) -> FastAPI:
             )
             if not rows:
                 raise HTTPException(404, f"trader não encontrado: {address}")
-            return dict(rows[0])
+            return _sanitize_trader_row(dict(rows[0]))
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001

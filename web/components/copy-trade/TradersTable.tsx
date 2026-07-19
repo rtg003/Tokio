@@ -81,7 +81,7 @@ const COLUMN_TIPS: Record<string, string> = {
   "Max DD": "Maior drawdown observado. Mede o quanto o trader já afundou no período.",
   Status: "Ação operacional imediata. SALVO observa; TESTNET copia em testnet; MAINNET usa dinheiro real.",
   "Trades 30d": "Número de trades fechados nos últimos 30 dias. Pouca amostra reduz confiança.",
-  "Hold méd.": "Tempo médio de posição. Vermelho = < 1h (perfil HFT: sobrevive mal à latência de cópia de 200ms–2s).",
+  "Hold méd.": "Tempo médio de posição. Laranja = < 1h (perfil HFT: sobrevive mal à latência de cópia de 200ms–2s).",
   "SIM EXP": "Expectância líquida por trade na cópia simulada (net / trade fechado).",
   "SIM DD": "Drawdown máximo da curva de equity da cópia simulada.",
   "TWRR 30d": "Retorno ponderado pelo tempo nos últimos 30 dias.",
@@ -430,7 +430,9 @@ export default function TradersTable({
                       <Lon complete={complete} legacy={legacy}>
                         {t.profit_factor === null || t.profit_factor === undefined
                           ? "—"
-                          : fmtNum(t.profit_factor, 2)}
+                          : t.profit_factor >= 999
+                            ? "∞"
+                            : fmtNum(t.profit_factor, 2)}
                       </Lon>
                     </td>
                     {/* UPDATE-0059 (Parte A): PnL 30d vem do portfolio (série
@@ -462,12 +464,13 @@ export default function TradersTable({
                     <td
                       className="num"
                       // UPDATE-0074: hold mediano < 1h = perfil HFT (sobrevive mal
-                      // à latência de cópia) → vermelho como sinal ao operador.
+                      // à latência de cópia) → destaque como sinal ao operador.
                       // NÃO descarta o trader; só destaca visualmente.
+                      // UPDATE-0079 (item 6): laranja (não mais vermelho).
                       style={
                         typeof t.avg_holding_hours === "number" &&
                         t.avg_holding_hours < 1
-                          ? { color: "#c1121f", fontWeight: 600 }
+                          ? { color: "var(--amber)", fontWeight: 600 }
                           : undefined
                       }
                       title={

@@ -409,9 +409,20 @@ def _apply_ht_positions(c: Candidate, client: DataClient, cfg: dict[str, Any],
         if val is not None:
             setattr(c, attr, val)
 
+    # UPDATE-0079 (item 8): para traders hiperativos o HT devolve quase só
+    # posições ABERTAS, então `len(closed_30d)` pode vir 0 e ZERAR o contador
+    # correto vindo dos fills recentes (funnel calcula ANTES do apply). Nunca
+    # deixar o HT reduzir/zerar: o contador é o MAIOR entre HT e fills.
+    def _set_max(attr: str, key: str) -> None:
+        val = m.get(key)
+        if val is None:
+            return
+        cur = getattr(c, attr, None) or 0
+        setattr(c, attr, max(int(val), int(cur)))
+
     _set("n_trades", "n_trades")
-    _set("n_trades_30d", "n_trades_30d")
-    _set("n_trades_7d", "n_trades_7d")
+    _set_max("n_trades_30d", "n_trades_30d")
+    _set_max("n_trades_7d", "n_trades_7d")
     _set("win_rate", "win_rate")
     _set("win_rate_30d", "win_rate_30d")
     _set("pf", "profit_factor")

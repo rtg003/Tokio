@@ -325,3 +325,19 @@ def test_persist_scan_updates_when_not_downgrade(db) -> None:
     assert r["score"] == 77.0
     assert r["sim_net_pnl_usd"] == 999.0
     assert r["metrics_confidence"] == "complete"
+
+
+def test_upsert_coalesces_infinite_profit_factor(db) -> None:
+    """UPDATE-0079 (item 9): profit_factor `inf` (ganhos sem perdas na janela)
+    não sobrevive ao JSON como número distinguível → chegaria ao front como null
+    ("—"). O upsert grava a sentinela 999.0 (a UI renderiza "∞")."""
+    upsert_candidate(db, address=ADDR, score=80.0, profit_factor=float("inf"))
+    r = list_traders(db)[0]
+    assert r["profit_factor"] == 999.0
+
+
+def test_upsert_keeps_finite_profit_factor(db) -> None:
+    """PF finito é gravado como está (sem tocar no valor real)."""
+    upsert_candidate(db, address=ADDR, score=80.0, profit_factor=4.2)
+    r = list_traders(db)[0]
+    assert r["profit_factor"] == 4.2

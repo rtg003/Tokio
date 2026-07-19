@@ -4343,3 +4343,38 @@ em produção antes do deploy.
 
 **Follow-up (à parte, NÃO neste commit)**: investigar `coverage_days≈0` com milhares de fills
 (0x1f7b/0xf5b0/0xa957) — possível bug no cálculo de cobertura.
+
+## UPDATE-0079 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: seus ajustes de UI das tabelas + os 2 bugs de dados do rtg003bot (`n_trades_30d=0` para
+traders com HyperTracker; `profit_factor=Inf` aparecendo como "—"). Entregue em **UM commit**. O
+**item 4** (reexecução manual de ordem REJECTED) foi **separado** → virá num **UPDATE-0080**.
+
+**Tipo**: metrics_discovery (funnel) + traders_store + server (leitura) + web/UI + testes.
+**Caminho crítico de ordens NÃO tocado.**
+
+**Resumo (o porquê — não "corrija" de volta)**:
+- **`n_trades_30d=0` com posições no HT (item 8)**: para traders hiperativos o HyperTracker devolve
+  quase só posições ABERTAS; o código sobrescrevia o contador correto (vindo dos fills) com o zero
+  do HT. Agora o contador é o **maior entre HT e fills** — o HT nunca zera o que os fills já viram.
+- **`profit_factor=Inf` virando "—" (item 9)**: PF "infinito" (ganhos sem nenhuma perda na janela)
+  não sobrevive à serialização JSON e chegava vazio ao front. Agora persistimos/lemos uma sentinela
+  numérica e a UI mostra **"∞"**.
+- **UI (itens 1,2,3,5,6,7)**: Margem em **fonte amarela** (mais viva) em Posições e Trades; coluna
+  dedicada **"Fechar"** logo após Trader nas Posições (+ reordenação: Margem→Alav.→Valor após Lado);
+  **Hora** movida para depois de **Lado** em Trades; **Status** limitado (não estoura mais com o
+  motivo de rejeição); **Hold méd. < 1h** agora em **laranja** (não vermelho); **modal** de cópia
+  cabe no **mobile** (o address não quebrava a largura).
+
+**Ações do Hermes (pós-deploy)**:
+1. Deploy normal (push = autodeploy pull-based; sem migração).
+2. **Reclassificar/atualizar** os traders pela dashboard e confirmar que `n_trades_30d` deixa de ser
+   0 para quem tem posições no HT; PF sem perdas aparece como **∞** (não "—").
+3. Validar visual: Margem em fonte amarela; coluna **Fechar** após Trader; **Hora** após Lado;
+   **Status** contido no desktop; **hold < 1h** em laranja; **modal** cabendo no mobile.
+
+**Validação (local)**: `pytest tests/ -q` → **505 passed** (501 baseline + 4 novos); `tsc` limpo.
+Nenhum write em produção antes do deploy.
+
+**A caminho (UPDATE-0080, à parte)**: reexecução manual de ordem REJECTED a preço de mercado atual,
+com caixa de confirmação comparando com o preço da ordem original.

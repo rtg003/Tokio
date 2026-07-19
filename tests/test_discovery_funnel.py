@@ -1014,3 +1014,58 @@ def test_v0074_displayed_sim_net_is_stage4_not_f15() -> None:
     assert c.sim_net_pnl_usd is not None
     # o exibido casa com o stage4 (mesma janela+latência), não com o F15.
     assert c.sim_net_pnl_usd == pytest.approx(c.sim_stage4_net_usd)
+
+
+# ============================================================================
+# UPDATE-0079 (item 8) — o HyperTracker NÃO pode ZERAR o n_trades vindo dos fills
+# ============================================================================
+class _FakeHtClient:
+    """DataClient mínimo p/ `_apply_ht_positions`: só expõe `ht_positions`."""
+
+    def __init__(self, positions: list[dict[str, Any]]) -> None:
+        self._positions = positions
+
+    def ht_positions(self, address: str, *, start_days: int = 0):  # noqa: ARG002
+        return self._positions
+
+
+def test_apply_ht_positions_does_not_zero_fills_n_trades_30d() -> None:
+    """Traders hiperativos: o HT devolve quase só posições ABERTAS, então
+    `len(closed_30d)=0`. Sem o `max(HT, fills)` isso ZERAVA o `n_trades_30d`
+    correto (calculado dos fills recentes ANTES do apply). Aqui o contador
+    vindo dos fills (20/7) tem que SOBREVIVER."""
+    from engine.strategies.copy_trade.funnel import _apply_ht_positions
+
+    c = Candidate(address=GOOD)
+    c.n_trades_30d = 20   # já preenchido pelos fills recentes
+    c.n_trades_7d = 7
+    # HT só com posições ABERTAS → nenhuma fechada em 30d/7d.
+    open_pos = [{"coin": "BTC", "status": "open", "leverage": 5,
+                 "openedAt": NOW_MS - 3 * H_MS, "unrealizedPnl": 10.0}]
+    ok = _apply_ht_positions(c, _FakeHtClient(open_pos), CFG, set(), NOW_MS)
+
+    assert ok is True
+    assert c.n_trades_30d == 20   # NÃO zerou
+    assert c.n_trades_7d == 7
+
+
+def test_apply_ht_positions_prefers_larger_count() -> None:
+    """Regressão: quando o HT enxerga MAIS fechadas que os fills, prevalece o
+    maior (o HT acrescenta o que os fills não pegaram)."""
+    from engine.strategies.copy_trade.funnel import _apply_ht_positions
+
+    c = Candidate(address=GOOD)
+    c.n_trades_30d = 2   # fills pegaram poucas
+    c.n_trades_7d = 1
+    closed = [
+        {"coin": "BTC", "status": "closed", "unrealizedPnl": 100.0,
+         "openedAt": NOW_MS - 6 * H_MS, "closedAt": NOW_MS - 4 * H_MS},
+        {"coin": "ETH", "status": "closed", "unrealizedPnl": -20.0,
+         "openedAt": NOW_MS - 30 * H_MS, "closedAt": NOW_MS - 28 * H_MS},
+        {"coin": "SOL", "status": "closed", "unrealizedPnl": 50.0,
+         "openedAt": NOW_MS - 50 * H_MS, "closedAt": NOW_MS - 48 * H_MS},
+    ]
+    ok = _apply_ht_positions(c, _FakeHtClient(closed), CFG, set(), NOW_MS)
+
+    assert ok is True
+    assert c.n_trades_30d == 3   # HT (3) > fills (2) → prevalece o maior
