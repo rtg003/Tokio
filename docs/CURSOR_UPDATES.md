@@ -2901,3 +2901,41 @@ nao-recuperavel; size_capped logado. `pytest tests/ -q` -> **486 passed** (479 +
 ### Ações do Hermes (pós-deploy)
 Ver UPDATE-0075 no `HERMES_UPDATES.md`: confirmar via `events` que CRV emite
 `decision.skipped_no_price` (prova a causa real) e que `reconcile.stuck` traz `reason`.
+
+---
+
+## UPDATE-0076 · 2026-07-19 · Status: APLICADO
+
+**Origem**: report do rtg003bot — os campos do UPDATE-0074 `sim_funded_share` e
+`sim_f15_net_usd` ficavam NULL para wallets tratadas pelo caminho de curadoria individual
+(analyze/save/reclassify), com evidencia de producao (5 wallets de referencia com as colunas
+NULL apos re-analise).
+
+**Tipo**: gateway (serializacao de curadoria) + testes + docs. **Hot path §8.4.1 NAO tocado.**
+Sem mudanca de calculo, gate ou schema (colunas ja existem via migration 0030).
+
+### Diagnostico (desta vez o bot ACERTOU o mecanismo — verificado read-only)
+- `sim_f15_net_usd`/`sim_funded_share` sao calculados em `compute_copy_sims` (funnel.py:693/715)
+  e o **scan em massa** ja os persistia (`persist_scan` -> `upsert_candidate`, funnel.py:1703/1706)
+  — a preocupacao #3 do bot ("verificar persist_scan") era infundada.
+- O gap real: os serializadores de **curadoria individual** `_suggestion_extras` (server.py:860)
+  e `_suggestion_report` (server.py:912) espelham os campos do Candidate MANUALMENTE e nao
+  incluiam esses dois. Logo analyze/save/reclassify (que usam `extras=_suggestion_extras(c)` em
+  server.py:2528/2593 e `_suggestion_report(c)` em :2467) nunca gravavam/expunham as colunas.
+
+### Mudancas (`engine/gateway/server.py`, +2 linhas cada helper)
+- **`_suggestion_extras`**: adicionadas `sim_f15_net_usd` e `sim_funded_share`
+  (`getattr(c, ..., None)`) -> `/save` e `/reclassify` passam a persistir as colunas.
+- **`_suggestion_report` (bloco `metrics`)**: idem -> `/analyze` passa a expor os campos ao front
+  (TradersTable.tsx ja consome `sim_funded_share` p/ o badge "copia parcial").
+- `upsert_candidate` (traders_store.py:74, `**(extras or {})`) grava as chaves sem alteracao;
+  `persist_scan` inalterado (ja correto).
+
+### Testes (`tests/gateway/test_suggestions.py`, +6)
+save persiste os dois campos; analyze os expoe no `metrics`; reclassify persiste (gate humano
+intacto); `_suggestion_extras`/`_suggestion_report` unitarios incluem as chaves; None e
+tolerado (coluna NULL, sem erro). `pytest tests/ -q` -> **492 passed** (486 + 6).
+
+### Ações do Hermes (pós-deploy)
+Ver UPDATE-0076 no `HERMES_UPDATES.md`: re-analisar/salvar uma wallet de referencia e confirmar
+via `SELECT sim_funded_share, sim_f15_net_usd FROM traders` que deixam de ser NULL.

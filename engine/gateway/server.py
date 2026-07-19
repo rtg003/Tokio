@@ -884,6 +884,12 @@ def _suggestion_extras(c: Any) -> dict[str, Any]:
         "coverage_days": c.coverage_days,
         "sim_half_old_net": c.sim_half_old_net,
         "sim_half_new_net": c.sim_half_new_net,
+        # UPDATE-0076: espelha os campos do UPDATE-0074 (calculados em
+        # compute_copy_sims) que o scan em massa já persiste mas o caminho de
+        # curadoria individual (analyze/save/reclassify) esquecia — deixando as
+        # colunas NULL e o gate de confiabilidade invisível na UI.
+        "sim_f15_net_usd": getattr(c, "sim_f15_net_usd", None),
+        "sim_funded_share": getattr(c, "sim_funded_share", None),
         # UPDATE-0057 (Fase 2): confiança/idade/amostra + enriquecimento
         # HyperTracker em colunas próprias. A análise individual É quem computa
         # os ht_* (o scan em massa não), então o força-salvar os persiste.
@@ -970,6 +976,11 @@ def _suggestion_report(c: Any) -> dict[str, Any]:
             "sim_max_dd_pct": c.sim_max_dd_pct,
             "sim_factor": c.sim_factor,
             "coverage_days": c.coverage_days,
+            # UPDATE-0076: expõe o net do F15 (gate/score) e a fração espelhável
+            # com a banca (gate de confiabilidade) — o front usa funded_share p/
+            # o aviso "cópia parcial" quando < min_funded_share.
+            "sim_f15_net_usd": getattr(c, "sim_f15_net_usd", None),
+            "sim_funded_share": getattr(c, "sim_funded_share", None),
         },
     }
 

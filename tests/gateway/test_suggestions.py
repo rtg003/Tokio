@@ -239,3 +239,112 @@ def test_reclassify_no_addresses_targets_only_operational_null(
 def test_reclassify_requires_token(client, fake_analyze) -> None:
     r = client.post("/control/discovery/reclassify", json={"addresses": [GOOD]})
     assert r.status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# UPDATE-0076 — analyze/save/reclassify PERSISTEM e EXPÕEM sim_funded_share e   #
+# sim_f15_net_usd (campos do 0074 que o scan em massa já gravava, mas o caminho #
+# de curadoria individual — _suggestion_extras/_suggestion_report — esquecia).  #
+# --------------------------------------------------------------------------- #
+@pytest.fixture()
+def fake_analyze_funded(monkeypatch):
+    """Como `fake_analyze`, mas força valores DETERMINÍSTICOS dos dois campos do
+    0074 no Candidate retornado — sem depender do valor que o FakeClient produz."""
+    real = funnel.analyze_single_wallet
+
+    def _fake(address, _client, _cfg, _logger=None):
+        addr = (address or "").strip().lower()
+        if not _RE.match(addr):
+            raise ValueError(f"endereço inválido: {addr!r}")
+        c = real(addr, make_client(), CFG)
+        c.sim_f15_net_usd = 1234.5
+        c.sim_funded_share = 0.07   # < min_funded_share ⇒ "cópia parcial"
+        return c
+
+    monkeypatch.setattr(funnel, "analyze_single_wallet", _fake)
+    return _fake
+
+
+def test_save_persists_funded_share_and_f15(client, gateway_state,
+                                            fake_analyze_funded) -> None:
+    r = client.post("/control/suggestions/save",
+                    json={"addresses": [GOOD]}, headers=HDR)
+    assert r.status_code == 200
+    row = gateway_state.db.query(
+        "SELECT sim_funded_share, sim_f15_net_usd FROM traders WHERE address = ?",
+        (GOOD,))[0]
+    assert row["sim_f15_net_usd"] == 1234.5
+    assert row["sim_funded_share"] == 0.07
+
+
+def test_analyze_report_exposes_funded_share_and_f15(client,
+                                                     fake_analyze_funded) -> None:
+    r = client.post("/control/suggestions/analyze",
+                    json={"addresses": [GOOD]}, headers=HDR)
+    assert r.status_code == 200
+    metrics = r.json()["results"][0]["metrics"]
+    assert metrics["sim_f15_net_usd"] == 1234.5
+    assert metrics["sim_funded_share"] == 0.07
+
+
+def test_reclassify_persists_funded_share_and_f15(client, gateway_state,
+                                                  fake_analyze_funded) -> None:
+    """O reclassify usa o mesmo `_suggestion_extras`; backfill de uma linha
+    legada (metrics_confidence NULL) também grava os dois campos do 0074."""
+    from engine.strategies.copy_trade.traders_store import (set_status,
+                                                            upsert_candidate)
+    db = gateway_state.db
+    upsert_candidate(db, address=GOOD, origin="usuário", score=50.0)
+    set_status(db, GOOD, "TESTNET", by="dashboard-humano", human_gate=True)
+
+    r = client.post("/control/discovery/reclassify",
+                    json={"addresses": [GOOD]}, headers=HDR)
+    assert r.status_code == 200
+    assert r.json()["reclassified"] == 1
+    row = db.query(
+        "SELECT sim_funded_share, sim_f15_net_usd, status FROM traders "
+        "WHERE address = ?", (GOOD,))[0]
+    assert row["sim_f15_net_usd"] == 1234.5
+    assert row["sim_funded_share"] == 0.07
+    assert row["status"] == "TESTNET"      # gate humano intacto
+
+
+def test_suggestion_extras_includes_new_fields() -> None:
+    from engine.gateway.server import _suggestion_extras
+    from engine.strategies.copy_trade.funnel import Candidate
+    c = Candidate(address=GOOD, sim_f15_net_usd=88.0, sim_funded_share=0.42)
+    extras = _suggestion_extras(c)
+    assert extras["sim_f15_net_usd"] == 88.0
+    assert extras["sim_funded_share"] == 0.42
+
+
+def test_suggestion_report_metrics_includes_new_fields() -> None:
+    from engine.gateway.server import _suggestion_report
+    from engine.strategies.copy_trade.funnel import Candidate
+    c = Candidate(address=GOOD, sim_f15_net_usd=88.0, sim_funded_share=0.42)
+    metrics = _suggestion_report(c)["metrics"]
+    assert metrics["sim_f15_net_usd"] == 88.0
+    assert metrics["sim_funded_share"] == 0.42
+
+
+def test_save_funded_share_none_is_tolerated(client, gateway_state,
+                                             monkeypatch) -> None:
+    """Candidate com os dois campos None salva sem erro (coluna fica NULL) —
+    cobre a guarda `getattr(..., None)`."""
+    real = funnel.analyze_single_wallet
+
+    def _fake(address, _client, _cfg, _logger=None):
+        c = real((address or "").strip().lower(), make_client(), CFG)
+        c.sim_f15_net_usd = None
+        c.sim_funded_share = None
+        return c
+
+    monkeypatch.setattr(funnel, "analyze_single_wallet", _fake)
+    r = client.post("/control/suggestions/save",
+                    json={"addresses": [GOOD]}, headers=HDR)
+    assert r.status_code == 200
+    row = gateway_state.db.query(
+        "SELECT sim_funded_share, sim_f15_net_usd FROM traders WHERE address = ?",
+        (GOOD,))[0]
+    assert row["sim_f15_net_usd"] is None
+    assert row["sim_funded_share"] is None

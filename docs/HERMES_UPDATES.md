@@ -4224,3 +4224,35 @@ enviadas/dimensionadas.
 
 **Validação (local)**: `pytest tests/ -q` → **486 passed** (479 + 7 testes novos). Nenhum
 write em produção antes do deploy.
+
+---
+
+## UPDATE-0076 · 2026-07-19 · Status: PENDENTE
+
+**Origem**: report do rtg003bot confirmando que os dois campos do UPDATE-0074 —
+`sim_funded_share` (fração do book espelhável com a banca) e `sim_f15_net_usd` (net do F15,
+30d sem latência) — ficavam **NULL** para wallets tratadas pelo caminho de curadoria
+individual (analisar/salvar/reclassificar uma wallet na dashboard), mesmo já sendo calculados.
+
+**Tipo**: gateway (só serialização de curadoria) + testes + docs. **O caminho crítico de
+ordens NÃO foi tocado.** Nenhuma mudança de cálculo, gate ou schema.
+
+**Resumo (o porquê — não "corrija" de volta)**:
+- Os campos são calculados na análise e o **scan em massa** já os persistia. Mas o caminho de
+  **curadoria individual** (`/control/suggestions/analyze`, `/save`, `/discovery/reclassify`)
+  usa dois serializadores próprios que, por esquecimento no 0074, **não incluíam** esses dois
+  campos. Resultado: re-analisar/salvar uma wallet pela dashboard zerava (NULL) as colunas e o
+  aviso de **"cópia parcial"** (quando `sim_funded_share` é baixo) sumia da UI.
+- Correção: os dois campos passam a ser **persistidos** (ao salvar/reclassificar) e **expostos**
+  (na resposta de análise). Colunas já existiam (migration 0030) — **sem migração nesta
+  atualização**.
+
+**Ações do Hermes**:
+1. Deploy normal (push = autodeploy pull-based; sem migração).
+2. **Validar (read-only)**: re-analisar/salvar uma das wallets de referência pela dashboard e
+   conferir `SELECT sim_funded_share, sim_f15_net_usd FROM traders WHERE address=...` — devem
+   deixar de ser NULL. Na UI, wallets com `sim_funded_share < 0.10` mostram o badge
+   "cópia parcial".
+
+**Validação (local)**: `pytest tests/ -q` → **492 passed** (486 + 6 testes novos). Nenhum
+write em produção antes do deploy.
