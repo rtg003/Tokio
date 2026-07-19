@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-07-14T15:01:03.142759+00:00",
+  "cme_gap": null,
+  "funding_anomalies": [
+    {
+      "type": "funding_anomaly",
+      "symbol": "NOT",
+      "funding_hourly": -0.0002165745,
+      "funding_annualized_pct": -189.7,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "ZETA",
+      "funding_hourly": -0.000149398,
+      "funding_annualized_pct": -130.9,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "STABLE",
+      "funding_hourly": -0.0001125714,
+      "funding_annualized_pct": -98.6,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "IO",
+      "funding_hourly": -0.0001050328,
+      "funding_annualized_pct": -92.0,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "CASHCAT",
+      "funding_hourly": 7.60931e-05,
+      "funding_annualized_pct": 66.7,
+      "crowded_side": "long"
+    }
+  ],
+  "low_liquidity_moves": []
+}

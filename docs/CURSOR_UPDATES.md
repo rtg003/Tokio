@@ -3080,3 +3080,32 @@ regression `test_leverage_capped_to_min_of_request_asset_global` atualizado p/ o
 ### Follow-up (NÃO neste commit)
 Investigar `coverage_days≈0` com milhares de fills (0x1f7b/0xf5b0/0xa957) — possível bug no
 cálculo de cobertura.
+
+
+## UPDATE-0078 - validacao em producao (Hermes) - APLICADO com ressalva
+
+**Origem**: deploy do UPDATE-0078 (WR/PF via unrealizedPnl + alavancagem 5x/10x + fechar
+posicao pequena + UI/mobile).
+
+**Tipo**: metrics_discovery + config + executor + risk_enforcer + web/UI + testes.
+
+**Deploy**: commit cf29a4a, pytest 501 passed, web build verde (apos resolver conflitos
+de merge leftover do stash), assets copiados, engine+web restartados.
+
+**Validacao parcial**:
+- Health: ok, engine ativo, web HTTP 200.
+- WR/PF: DADOS AINDA ZERADOS para maioria dos traders (0.0/Inf). O fix do UPDATE-0078
+  (usar unrealizedPnl em posicoes fechadas do HT) exige REPROCESSAMENTO via save, MAS a
+  HL esta com erro 500 (api.hyperliquid.xyz/info retornando 500) impedindo a coleta de
+  dados novos. Nao e bug nosso - e indisponibilidade da HL.
+- Alavancagem: cap global elevado 5x->10x (config). Validar apos re-salvar um trader no
+  modal (ato humano, nao automatizado).
+- Fechar posicao pequena (VVV): nao testado (HL 500).
+- UI/mobile: build verde, dashboard no ar. Validacao visual pendente (precisa navegador).
+
+**Ressalva**: WR/PF continuam 0.0/Inf no banco porque os dados sao do scan anterior
+(pre-0078). A reclassificacao via save falhou por HL 500 Internal Server Error. Quando
+a HL estabilizar, reprocessar para validar o fix do unrealizedPnl.
+
+**Status**: UPDATE-0078 marcado APLICADO (deploy completo, codigo no ar). Validacao de
+WR/PF fica pendente ate a HL estabilizar e permita reprocessamento.

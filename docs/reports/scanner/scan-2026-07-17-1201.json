@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-07-17T15:01:47.481131+00:00",
+  "cme_gap": null,
+  "funding_anomalies": [
+    {
+      "type": "funding_anomaly",
+      "symbol": "MET",
+      "funding_hourly": -0.0002427029,
+      "funding_annualized_pct": -212.6,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "POLYX",
+      "funding_hourly": -0.0001494015,
+      "funding_annualized_pct": -130.9,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "CASHCAT",
+      "funding_hourly": 0.0001467596,
+      "funding_annualized_pct": 128.6,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "XAI",
+      "funding_hourly": -0.0001220267,
+      "funding_annualized_pct": -106.9,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "HYPER",
+      "funding_hourly": -9.75636e-05,
+      "funding_annualized_pct": -85.5,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "STABLE",
+      "funding_hourly": -9.64868e-05,
+      "funding_annualized_pct": -84.5,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "kBONK",
+      "funding_hourly": -8.7873e-05,
+      "funding_annualized_pct": -77.0,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "ZK",
+      "funding_hourly": -7.86651e-05,
+      "funding_annualized_pct": -68.9,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "W",
+      "funding_hourly": -7.7769e-05,
+      "funding_annualized_pct": -68.1,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "TURBO",
+      "funding_hourly": -6.81374e-05,
+      "funding_annualized_pct": -59.7,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "PYTH",
+      "funding_hourly": -6.70859e-05,
+      "funding_annualized_pct": -58.8,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "ANIME",
+      "funding_hourly": -6.37659e-05,
+      "funding_annualized_pct": -55.9,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "OP",
+      "funding_hourly": -6.36267e-05,
+      "funding_annualized_pct": -55.7,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "WCT",
+      "funding_hourly": -5.83569e-05,
+      "funding_annualized_pct": -51.1,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "AERO",
+      "funding_hourly": -5.81592e-05,
+      "funding_annualized_pct": -50.9,
+      "crowded_side": "short"
+    }
+  ],
+  "low_liquidity_moves": []
+}

@@ -1,0 +1,91 @@
+{
+  "generated_at": "2026-07-16T15:01:01.657731+00:00",
+  "cme_gap": null,
+  "funding_anomalies": [
+    {
+      "type": "funding_anomaly",
+      "symbol": "kBONK",
+      "funding_hourly": -0.0006046701,
+      "funding_annualized_pct": -529.7,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "CASHCAT",
+      "funding_hourly": 0.0002560674,
+      "funding_annualized_pct": 224.3,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "VINE",
+      "funding_hourly": 0.0002283044,
+      "funding_annualized_pct": 200.0,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "MINA",
+      "funding_hourly": -0.0002202726,
+      "funding_annualized_pct": -193.0,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "NOT",
+      "funding_hourly": -0.0001410002,
+      "funding_annualized_pct": -123.5,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "TRB",
+      "funding_hourly": -9.76512e-05,
+      "funding_annualized_pct": -85.5,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "IO",
+      "funding_hourly": -9.65817e-05,
+      "funding_annualized_pct": -84.6,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "JUP",
+      "funding_hourly": -9.02286e-05,
+      "funding_annualized_pct": -79.0,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "WCT",
+      "funding_hourly": -8.68243e-05,
+      "funding_annualized_pct": -76.1,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "SUPER",
+      "funding_hourly": -7.78359e-05,
+      "funding_annualized_pct": -68.2,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "TRX",
+      "funding_hourly": -6.97196e-05,
+      "funding_annualized_pct": -61.1,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "W",
+      "funding_hourly": -5.81216e-05,
+      "funding_annualized_pct": -50.9,
+      "crowded_side": "short"
+    }
+  ],
+  "low_liquidity_moves": []
+}

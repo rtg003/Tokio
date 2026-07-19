@@ -1,0 +1,178 @@
+# ============================================================================
+# Discovery de traders (copy trade) — thresholds, pesos e faixas VERSIONADOS.
+# Toda mudança aqui exige: PR com justificativa numérica + bump de
+# logic_version + entrada em docs/discovery_changelog.md + evento logic_updated.
+# (spec: docs/specs/PROMPT_DISCOVERY_TRADERS_v5.md · ADR 0008)
+#
+# REFERÊNCIA CANÔNICA de TODA variável deste arquivo (significado, valor,
+# porquê, evidência, efeito de mudar): docs/discovery_logic_v9.md.
+# tests/test_docs_coverage.py QUEBRA se uma chave nova não estiver lá.
+# ============================================================================
+logic_version: 14
+
+collection:
+  leaderboard_top_n: 5000           # v6: era 500 (leaderboard tem 40k+ rows; 500 pegava só baleias)
+  deep_dive_max: 300              # v11: abre o funil; ajuste fino pelo Hermes
+  external_dive_quota: 60         # v11: vagas extras reservadas a fontes externas, com fallback p/ leaderboard
+  external_interleave_after: 100  # v11: insere externos cedo na fila para não morrerem por orçamento
+  request_budget: 2800            # v11: 300×~7 + quota externa + margem
+  min_request_interval_s: 1.3     # v11: throttle HTTP ajustável pelo Hermes
+  min_equity_usd: 1000            # v11: alinhado ao piso F20; corte barato usa equity aproximada do leaderboard
+  cheap_cut_equity_filter: false  # v14: false => F20 só no hard filter (equity real do deep dive); true => aplica banda F20 no corte barato (equity aproximada do leaderboard, comportamento antigo)
+  cheap_cut_last_activity_days: null  # v14: null => desligado; N => corta candidatos sem fill nos últimos N dias ANTES do deep dive (1 request curto por candidato do corte barato; opt-in por custo de request_budget)
+  # v6: coleta prioriza por PnL 7d (atividade recente), não PnL all-time
+  sort_by: "pnl_7d"               # v6: ordena coleta por PnL 7d (desc) em vez de all-time
+  deep_sort_by: "roi_30d"         # v11: roi_30d | pnl_7d | equity_asc
+  # prioridade do aprofundamento: ROI 30d (desc) — PnL absoluto puro só traz
+  # mega-baleias holders, que reprovam em F1/F2 (validação de 2026-07-03)
+  fills_window_days: 60           # janela baixada de fills (paginada)
+  fills_max_pages: 4              # ~2000 fills/página
+  cache_ttl_hours: 20
+  rekt_sample: 20                 # tamanho da coorte de controle
+  positioning_sample: 15          # wallets por coorte p/ snapshot de posicionamento
+  # v5: varredura ativa além do leaderboard — busca endereços com fills recentes
+  active_scan_enabled: false      # v11: stub alfabético; HyperTracker + fallback assumem expansão real
+  active_scan_window_hours: 48    # janela de varredura ativa (48h = fim de semana + dia útil)
+  active_scan_max_addresses: 200  # limite de endereços novos por varredura
+  active_scan_min_notional_usd: 1000  # ignora fills poeira
+
+# v8: fontes ADICIONAIS de candidatos (opcionais, atrás de flag, sem
+# dependência dura). HL público continua a fonte de verdade: terceiros só
+# alimentam ENDEREÇOS candidatos — todas as métricas/filtros são nossos.
+sources:
+  # v9: ON — laboratório mediu +274 endereços exclusivos (+53% de pool) com
+  # qualidade fora da amostra igual/melhor (mediana +11.79 vs +10.45).
+  # Sem chave no ambiente → OFF silencioso (zero erro).
+  hypertracker:
+    enabled: true
+    api_key_env: HYPERTRACKER_API_KEY
+    max_addresses: 300            # ~3-5 requests (100/página, pnlMonth+pnlWeek)
+  nansen_leaderboard:
+    enabled: false                # ligar exige NANSEN_API_KEY no ambiente
+    api_key_env: NANSEN_API_KEY
+    max_addresses: 100
+    window_days: 30               # janela de datas do leaderboard consultado
+  apify_hl_scraper:               # backup de coleta (scraper gerenciado)
+    enabled: false                # ligar exige APIFY_TOKEN no ambiente
+    api_key_env: APIFY_TOKEN
+    actor: ~                      # id do actor Apify (definido na ativação)
+    max_addresses: 100
+
+entry_rule:
+  # v9: DESATIVADA (0/vazio) — janelas de PnL têm poder preditivo ~0 sobre o
+  # lucro da cópia (lab: ρ +0.075). A entrada agora é decidida pela simulação
+  # (F16-F19). Código preservado; reativar = valores antigos + bump.
+  min_positive_windows: 0
+  required_windows: []
+
+hard_filters:                     # F1–F20 (binários, ordem de custo; null = desabilitado)
+  f1_recent_activity_days: 7      # v10: voltou para 7 (era 21 na v9 — 21 deixava passar traders parados há 3 semanas)
+  f2_min_closed_trades: 10        # v9: era 30 — amostra mínima p/ a SIMULAÇÃO ter significado
+  f2b_min_trades_30d: 3           # v9: era 5 — idem f2 (a simulação decide)
+  f2c_min_trades_7d: 1            # v11: swing traders de 2-4 closes/semana voltam ao funil
+  # F3 desabilitado na v3 (scan b684b8bbe5f5: 34/100 reprovados) — scalper é
+  # penalizado pelo score de copiabilidade, não eliminado.
+  f3_min_avg_holding_hours: null
+  f3_max_trades_per_day: null
+  # F4 desabilitado na v3 — TWRR segue calculado/exibido, não é mais eliminatório.
+  f4_min_twrr_30d_pct: null
+  # v9: F5 vira TETO DE SANIDADE (era 40) — o DD do TRADER teve correlação
+  # POSITIVA com o lucro da cópia no lab (ρ +0.105); quem protege a cópia é o
+  # F19 (DD da CÓPIA). 80% só barra a bomba-relógio (DD 99% = quase-liquidado).
+  f5_max_drawdown_90d_pct: 95.0
+  # v4: faixas de DD para o score (drawdown_quality piecewise, não linear)
+  # DD 0-20% = score cheio; 20-30% = ×0.7; 30-40% = ×0.4; >40% = reprovado
+  f5_dd_quality_bands:
+    - [0, 20, 1.0]
+    - [20, 30, 0.7]
+    - [30, 40, 0.4]
+  f6_max_top3_pnl_concentration: 0.50
+  f7_max_avg_leverage: 15.0
+  # v7 (UPDATE-0007 do Hermes): filtros de posição ABERTA no momento do scan —
+  # o score media histórico e deixava passar apostador de 20x 100% em margem.
+  f7b_max_current_leverage: 10.0       # max da alavancagem das posições abertas
+  f12_min_available_margin_pct: null    # v7: desabilitado pós-scan 407e8caa996f (7/150 reprovados; 0 aprovados)
+  f13_min_liq_distance_pct: 15.0       # distância min à liquidação, medida do MARK price
+  f8_min_liquid_volume_share: 0.70
+  f8_liquid_assets_top_n: 40      # v11: F8 era gargalo calibrável; mantém share mínimo em 80%
+  f9_mm_max_trades_per_day: 200.0
+  f9_mm_max_pnl_over_volume: 0.0001
+  f9_mm_min_tpd_for_pnl_vol: 50.0
+  f9_mm_max_neutral_exposure: 0.02
+  f9_mm_min_tpd_for_neutral: 20.0
+  f10_max_deposit_growth_share: 0.50   # crescimento de equity vindo de aporte
+  f11_min_mirror_notional_usd: 10.0
+  f11_mirror_capital_usd: 1000.0       # capital configurado p/ estimar a cópia
+  # v7: simulação retroativa de cópia (F15) — PnL realizado da janela escalado
+  # pelo ratio mirror_capital/equity, líquido de taxa+slippage por perna
+  f15_sim_window_days: 30
+  f15_min_net_pnl_usd: 0.0             # net simulado <= este valor reprova
+  # ---------------------------------------------------------------------------
+  # v9: F16–F20 — GATES SOBRE A CÓPIA (a inversão de filosofia: não julgamos o
+  # trader, julgamos o resultado simulado de ESPELHÁ-LO). Evidência de cada
+  # valor: docs/discovery_logic_v9.md + research/discovery_lab/RESULTADOS.md.
+  f16_min_coverage_days: 10            # histórico mínimo (1º→último fill); mata wallet de 5 dias
+  f17_min_sim_net_usd: 10.0            # cópia precisa RENDER > $10 na janela (quintil top: +71 fora da amostra)
+  f18_sim_positive_halves: true        # edge nas 2 metades da janela (mata sortudo de uma perna)
+  f19_max_sim_dd_pct: 25.0             # DD máximo da CURVA DA CÓPIA (perdedores tinham 56-75% já visível)
+  f20_min_trader_equity_usd: null      # v11: piso testável; null remove o piso
+  f20_max_trader_equity_usd: null    # v11: teto testável; F11 continua medindo executabilidade real
+
+# v8/v9: SIMULAÇÃO DE CÓPIA — replay dos fills com nosso sizing, taxas taker,
+# custo de latência e TETO DE ALAVANCAGEM. v9: o RANKING FINAL é o net desta
+# simulação (score vira informativo); net <= f17 reprova.
+copy_simulation:
+  window_days: 60                 # replay 30-60d; 60 = janela cheia de fills
+  latency_slippage_pct: 0.03      # custo da latência por perna (bps ≈ 200ms-2s)
+  # v9: teto de alavancagem da CÓPIA — notional espelhado por fill limitado a
+  # capital × 3. Sem isso, fill de $1.47M em conta de $11k virava "cópia" de
+  # $128k sobre $1k (128x, inexecutável — auditoria do top 1, 2026-07-04).
+  # Racional do 3: DD escala ~linear com lev; custo 10x = 1.3% do capital/trade;
+  # teto 1x derrubaria fills abaixo do mínimo de $10/ordem da HL.
+  max_copy_leverage: 3.0
+  factor_floor: 0.5               # fator mínimo (informativo desde a v9)
+  factor_cap: 1.2                 # fator máximo (informativo desde a v9)
+
+score_weights:                    # somam 1.0
+  sim_net: 0.30                   # NOVO — cópia simulada líquida 30d (métrica decisiva)
+  consistency: 0.20               # janelas positivas + estabilidade
+  profit_factor: 0.15             # PF normalizado
+  net_expectancy: 0.15            # expectância/trade líquida
+  drawdown_quality: 0.10
+  roi_log: 0.05                   # reduzido — enviesado por tamanho da banca
+  copyability: 0.05               # reduzido — menos decisivo
+
+score_adjustments:
+  full_consistency_bonus: 5       # 4/4 janelas positivas
+  liq_distance_penalty: -10       # posição aberta perto da liquidação
+  liq_distance_threshold_pct: 20.0  # v7: era 10 (abaixo de 15% o F13 já rejeita; penaliza 15-20%)
+  crowding_penalty: -5            # wallet no top 20 all-time
+  crowding_top_n: 20
+  # v9: 0 = DESATIVADO (era 60) — o score completo tem ρ +0.125 com o lucro da
+  # cópia (mal supera componentes isolados); a régua decisiva é F16-F19.
+  # Score segue calculado e exibido como informação.
+  min_score_for_suggestion: 0.0
+  # (removido em 2026-07-11) pf_absurd_penalty/pf_absurd_threshold: penalizavam PF
+  # > 10, mas isso rebaixava traders excelentes (ex.: 0x1a5d, PF 10.13 e melhor
+  # cópia simulada da tabela). PF já é capado em 10.0 na exibição e o peso de
+  # sim_net (0.30) é a régua decisiva agora.
+
+copyability:
+  hold_sweet_spot_hours: [4, 72]  # 4h – 3 dias
+  freq_sweet_spot_trades_day: [0.3, 20.0]
+
+cost_of_copy:
+  taker_fee_pct: 0.045            # por perna
+  slippage_pct: 0.02              # por perna
+
+cohorts:
+  size_bands:                     # equity USD → rótulo
+    Shrimp: 250
+    Fish: 10000
+    Dolphin: 100000
+    Whale: 5000000
+    Leviathan: .inf
+  pnl_bands:                      # PnL acumulado (janela all-time) → rótulo
+    Rekt: 0                       # < 0
+    Flat: 1000                    # 0 – 1k
+    Printer: .inf                 # > 1k ("Money Printer")

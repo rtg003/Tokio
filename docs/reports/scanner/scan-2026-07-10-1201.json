@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-07-10T15:01:04.976131+00:00",
+  "cme_gap": null,
+  "funding_anomalies": [
+    {
+      "type": "funding_anomaly",
+      "symbol": "PURR",
+      "funding_hourly": 0.0005702607,
+      "funding_annualized_pct": 499.5,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "SNX",
+      "funding_hourly": -0.0002599463,
+      "funding_annualized_pct": -227.7,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "0G",
+      "funding_hourly": -0.0001632396,
+      "funding_annualized_pct": -143.0,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "IOTA",
+      "funding_hourly": -0.0001057555,
+      "funding_annualized_pct": -92.6,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "ANIME",
+      "funding_hourly": -5.88864e-05,
+      "funding_annualized_pct": -51.6,
+      "crowded_side": "short"
+    }
+  ],
+  "low_liquidity_moves": []
+}

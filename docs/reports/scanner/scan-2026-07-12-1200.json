@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-07-12T15:00:31.702236+00:00",
+  "cme_gap": null,
+  "funding_anomalies": [
+    {
+      "type": "funding_anomaly",
+      "symbol": "CASHCAT",
+      "funding_hourly": 0.0005806427,
+      "funding_annualized_pct": 508.6,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "VINE",
+      "funding_hourly": 0.000198082,
+      "funding_annualized_pct": 173.5,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "SNX",
+      "funding_hourly": -0.0001877794,
+      "funding_annualized_pct": -164.5,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "POLYX",
+      "funding_hourly": -0.0001514946,
+      "funding_annualized_pct": -132.7,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "AVNT",
+      "funding_hourly": -0.0001084748,
+      "funding_annualized_pct": -95.0,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "KAS",
+      "funding_hourly": -5.87973e-05,
+      "funding_annualized_pct": -51.5,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "CELO",
+      "funding_hourly": -5.76011e-05,
+      "funding_annualized_pct": -50.5,
+      "crowded_side": "short"
+    }
+  ],
+  "low_liquidity_moves": []
+}

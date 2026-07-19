@@ -4300,7 +4300,7 @@ ordens são enviadas.
 **Validação (local)**: `pytest tests/ -q` → **497 passed** (492 + 5 testes novos). Nenhum
 write em produção antes do deploy.
 
-## UPDATE-0078 · 2026-07-19 · Status: PENDENTE
+## UPDATE-0078 · 2026-07-19 · Status: APLICADO em 2026-07-19
 
 **Origem**: seu lote de 12 itens (reclassificação zerando WR/PF; alavancagem saindo a 3x apesar
 do modal; não conseguir fechar VVV; UI/mobile). Entregue em **UM commit** (sua decisão). Você

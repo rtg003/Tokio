@@ -1,0 +1,49 @@
+{
+  "generated_at": "2026-07-11T15:01:25.372471+00:00",
+  "cme_gap": {
+    "type": "cme_gap",
+    "symbol": "BTC",
+    "cme_close_price": 64006.0,
+    "current_price": 64359.0,
+    "gap_pct": 0.552,
+    "note": "gaps tendem a preencher na reabertura do CME (domingo 22:00 UTC)"
+  },
+  "funding_anomalies": [
+    {
+      "type": "funding_anomaly",
+      "symbol": "ACE",
+      "funding_hourly": 0.0001046123,
+      "funding_annualized_pct": 91.6,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "IOTA",
+      "funding_hourly": -0.000102926,
+      "funding_annualized_pct": -90.2,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "GRAM",
+      "funding_hourly": 0.0001016678,
+      "funding_annualized_pct": 89.1,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "HYPER",
+      "funding_hourly": -7.58289e-05,
+      "funding_annualized_pct": -66.4,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "ALT",
+      "funding_hourly": -6.01461e-05,
+      "funding_annualized_pct": -52.7,
+      "crowded_side": "short"
+    }
+  ],
+  "low_liquidity_moves": []
+}

@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-07-15T15:00:45.918212+00:00",
+  "cme_gap": null,
+  "funding_anomalies": [
+    {
+      "type": "funding_anomaly",
+      "symbol": "0G",
+      "funding_hourly": -0.0003179249,
+      "funding_annualized_pct": -278.5,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "STABLE",
+      "funding_hourly": -0.0002624278,
+      "funding_annualized_pct": -229.9,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "NOT",
+      "funding_hourly": -0.0001999672,
+      "funding_annualized_pct": -175.2,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "POLYX",
+      "funding_hourly": -0.000188526,
+      "funding_annualized_pct": -165.1,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "XMR",
+      "funding_hourly": 0.0001645802,
+      "funding_annualized_pct": 144.2,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "CASHCAT",
+      "funding_hourly": 0.0001223488,
+      "funding_annualized_pct": 107.2,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "CELO",
+      "funding_hourly": -0.0001031607,
+      "funding_annualized_pct": -90.4,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "kBONK",
+      "funding_hourly": -9.60746e-05,
+      "funding_annualized_pct": -84.2,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "TRB",
+      "funding_hourly": -8.31416e-05,
+      "funding_annualized_pct": -72.8,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "XAI",
+      "funding_hourly": -7.85437e-05,
+      "funding_annualized_pct": -68.8,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "STBL",
+      "funding_hourly": 7.73134e-05,
+      "funding_annualized_pct": 67.7,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "RSR",
+      "funding_hourly": -6.77083e-05,
+      "funding_annualized_pct": -59.3,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "BCH",
+      "funding_hourly": -6.59669e-05,
+      "funding_annualized_pct": -57.8,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "VIRTUAL",
+      "funding_hourly": -6.55048e-05,
+      "funding_annualized_pct": -57.4,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "kNEIRO",
+      "funding_hourly": -6.33856e-05,
+      "funding_annualized_pct": -55.5,
+      "crowded_side": "short"
+    }
+  ],
+  "low_liquidity_moves": []
+}

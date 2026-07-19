@@ -1,0 +1,77 @@
+{
+  "generated_at": "2026-07-13T15:00:44.453103+00:00",
+  "cme_gap": null,
+  "funding_anomalies": [
+    {
+      "type": "funding_anomaly",
+      "symbol": "CASHCAT",
+      "funding_hourly": 0.0003413202,
+      "funding_annualized_pct": 299.0,
+      "crowded_side": "long"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "MOVE",
+      "funding_hourly": -0.0001737708,
+      "funding_annualized_pct": -152.2,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "STABLE",
+      "funding_hourly": -0.0001667413,
+      "funding_annualized_pct": -146.1,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "MEME",
+      "funding_hourly": -0.0001623201,
+      "funding_annualized_pct": -142.2,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "ETHFI",
+      "funding_hourly": -0.0001144371,
+      "funding_annualized_pct": -100.2,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "ALGO",
+      "funding_hourly": -8.42118e-05,
+      "funding_annualized_pct": -73.8,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "TURBO",
+      "funding_hourly": -8.33955e-05,
+      "funding_annualized_pct": -73.1,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "IO",
+      "funding_hourly": -8.34742e-05,
+      "funding_annualized_pct": -73.1,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "ALT",
+      "funding_hourly": -7.56953e-05,
+      "funding_annualized_pct": -66.3,
+      "crowded_side": "short"
+    },
+    {
+      "type": "funding_anomaly",
+      "symbol": "LIT",
+      "funding_hourly": -6.23001e-05,
+      "funding_annualized_pct": -54.6,
+      "crowded_side": "short"
+    }
+  ],
+  "low_liquidity_moves": []
+}
