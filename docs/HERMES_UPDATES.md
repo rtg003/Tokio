@@ -4256,3 +4256,46 @@ ordens NÃO foi tocado.** Nenhuma mudança de cálculo, gate ou schema.
 
 **Validação (local)**: `pytest tests/ -q` → **492 passed** (486 + 6 testes novos). Nenhum
 write em produção antes do deploy.
+
+---
+
+## UPDATE-0077 · 2026-07-19 · Status: PENDENTE
+
+**Origem**: sua validação em produção do UPDATE-0075 (trader 0x8d7d, TESTNET). Reportou: (1) o
+backoff funcionou (o ruído parou); (2) o `reason` do `reconcile.stuck` vinha **"unknown"** —
+inútil; (3) os fantasmas ETH/ADA **continuaram presos** e o `reconcile.force_close` **nunca
+disparou**. Em paralelo, o **circuit breaker** ativou — confirmar legitimidade.
+
+**Tipo**: executor copy_trade (só observabilidade/fidelidade de log) + testes + docs. **O
+caminho crítico de ordens NÃO foi tocado.** Nenhuma mudança de cálculo, gate ou de como as
+ordens são enviadas.
+
+**Resumo (o porquê — não "corrija" de volta)**:
+- **`reason=unknown`**: o gateway não devolve o campo `reason` no caminho normal de execução
+  (só `error`/`status`); o executor caía num fallback "unknown" e **jogava fora o erro real da
+  venue**. Agora ele usa o **`error` verdadeiro** (ex.: "reduce only order would increase
+  position") — o `reconcile.stuck` passa a dizer POR QUE travou.
+- **Fantasmas presos + force-close mudo**: os dois sintomas têm **a mesma causa** — quando
+  `/api/positions` está **ilegível** (responde erro/timeout), a leitura da venue vira "indisponível".
+  Nesse estado o resync anti-fantasma E o force-close **pulam em silêncio** (por segurança, para
+  nunca fechar às cegas). Antes isso não deixava rastro. Agora, quando a venue é ilegível, emite
+  **`reconcile.venue_unreadable`** — o problema fica visível. **Mantemos a política de NÃO forçar
+  cego** (sua escolha): sem confirmar o tamanho real na venue, não emitimos fechamento.
+- **Consequência operacional**: o próximo passo real é descobrir **por que `/api/positions`
+  falha** para o escopo 0x8d7d testnet — o novo evento vai apontar isso. Enquanto a venue estiver
+  ilegível, o fantasma não fecha por design (retry seguro, não força cego).
+
+**Ações do Hermes**:
+1. Deploy normal (push = autodeploy pull-based; sem migração).
+2. **Validar via `events`** (read-only) no trader 0x8d7d:
+   - `SELECT payload FROM events WHERE event_type='reconcile.stuck'` → o `reason` agora traz o
+     **erro real** (não "unknown").
+   - `SELECT * FROM events WHERE event_type='reconcile.venue_unreadable'` → se aparecer, confirma
+     que `/api/positions` está falhando para aquele escopo (é ISSO que prende os fantasmas).
+3. **Circuit breaker** (só confirmação, sem código): conferir `circuit_breaker.opened`
+   (`net_pnl` vs `cap`), `circuit_breaker_state` e os fills realizados do dia por escopo
+   (excluindo `forced_close=1`/`synthetic=1`). Se `net_pnl <= -100` (cap default), é **legítimo**
+   — o reset é ato humano no endpoint existente. Reportar o `net_pnl` observado.
+
+**Validação (local)**: `pytest tests/ -q` → **497 passed** (492 + 5 testes novos). Nenhum
+write em produção antes do deploy.

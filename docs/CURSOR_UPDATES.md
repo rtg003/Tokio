@@ -2974,3 +2974,50 @@ UPDATE-0076 marcado como APLICADO - os campos sao persistidos e expostos. A
 ressalva do gate de confianca fica como follow-up para o CONSTRUTOR avaliar se o
 gate deve disparar tambem no analyze individual (funnel.py:636-644 no caminho do
 analyze_single_wallet).
+
+---
+
+## UPDATE-0077 · 2026-07-19 · Status: APLICADO
+
+**Origem**: validação em produção do UPDATE-0075 pelo rtg003bot (trader 0x8d7d, TESTNET):
+(1) backoff OK; (2) `reason` do `reconcile.stuck` vinha "unknown"; (3) fantasmas ETH/ADA presos
+e `reconcile.force_close` nunca disparou. Ordem paralela: confirmar o circuit breaker (só
+análise, sem código).
+
+**Tipo**: executor copy_trade (fidelidade de log + observabilidade) + testes + docs. **Hot path
+§8.4.1 NAO tocado.** Sem mudanca de calculo/gate nem do envio de ordens.
+
+### Diagnostico (provado por fluxo de controle — read-only)
+- **`reason=unknown`**: `send_intent` devolve a resposta do gateway verbatim
+  (`base_runner.py:38-41`). No caminho de execucao com `ok=False` o gateway preenche `error` e
+  `status` mas **NAO** `reason` (`server.py:776-778`; `reason` so existe nos guards pre-execucao
+  e no `no_liquidity` da :761). Logo `result.get("reason")` era None e caia no `or "unknown"`
+  (`executor.py:805-806`) — descartando o `error` REAL da venue.
+- **Fantasma preso + force-close mudo (mesma causa)**: ambos exigem
+  `_venue_position`==None (`executor.py:916-934`), que so ocorre quando `self.gateway.positions()`
+  **levanta** (`base_runner.py:122` faz `raise_for_status()`), i.e. `/api/positions` nao-2xx.
+  Nesse estado: o guard anti-fantasma (`executor.py:693-709`) pula → sem `drift.venue_resync`,
+  fantasma persiste; e `_maybe_force_close` retornava False **na linha 831 ANTES de logar** → o
+  `reconcile.force_close` nunca era emitido. (Se `/api/positions` respondesse `[]`/200,
+  `_venue_position` daria 0.0 e o resync curaria sozinho — logo a venue esta ILEGIVEL, nao flat.)
+
+### Mudancas (`engine/strategies/copy_trade/executor.py`; consumidor, fora do hot path)
+- **Fix A** (~805-808): `_reconcile_last_reason[key] = result.get("reason") or result.get("error")
+  or "unknown"` → `reconcile.stuck`/force-close passam a ver a razao verdadeira.
+- **Fix B** (`_maybe_force_close`, ~830): separa o guard `venue is None` do `abs(venue)<=0`; quando
+  a venue e ILEGIVEL emite **`reconcile.venue_unreadable`** (antes era mudo) e continua **NAO
+  forcando** ("nunca forcar cego"). So e alcancado em attempts>=MAX apos o backoff → herda o
+  cadence do stuck, sem re-introduzir o spam que o 0075 eliminou. `abs(venue)<=0` (flat) segue
+  retornando False sem log.
+
+### Testes (`tests/test_copy_trade.py`, +5)
+`test_v0077_reason_falls_back_to_error`; `..._reason_prefers_explicit_reason`;
+`..._force_close_logs_venue_unreadable_when_positions_none` (venue None → evento + nao envia);
+`..._force_close_skips_flat_venue_without_unreadable_event` (venue 0.0 → sem evento);
+`..._force_close_fires_when_venue_confirms_no_unreadable` (regressao 0075 intacta).
+`pytest tests/ -q` → **497 passed** (492 + 5).
+
+### Ações do Hermes (pós-deploy)
+Ver UPDATE-0077 no `HERMES_UPDATES.md`: confirmar `reason` real no `reconcile.stuck`, procurar
+`reconcile.venue_unreadable` (aponta o `/api/positions` falho que prende os fantasmas) e
+confirmar o circuit breaker legitimo pelo `net_pnl` (sem mudanca de codigo).

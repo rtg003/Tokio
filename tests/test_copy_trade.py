@@ -901,6 +901,123 @@ def test_v0075_size_capped_is_logged(settings, db) -> None:
     assert pl["capped_notional"] == pytest.approx(3000.0)
 
 
+# -- UPDATE-0077: reason fidelity + venue-unreadable observability ------------
+# Contexto: em produção o `reason` chegava "unknown" (o gateway não devolve
+# `reason` em ok=False, só `error`/`status`) e os fantasmas ETH/ADA ficavam
+# presos sem rastro quando `/api/positions` estava ilegível (venue=None faz o
+# resync E o force-close pularem). Fix A = cair no `error` real; Fix B = expor
+# `reconcile.venue_unreadable` quando a venue é ilegível ("nunca forçar cego").
+
+
+def _setup_confirmed_ghost(settings, db):
+    """Trader flat (desired 0) + ledger/venue com FARTCOIN -100 CONFIRMADO pela
+    venue (mesmo tamanho ⇒ o resync NÃO dispara): força o caminho de redução até
+    o cap para exercitar o `reason`/force-close."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {}  # trader flat -> desired 0
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {"FARTCOIN": {"size": -100.0}}}}
+    gw.positions_response = [{"symbol": "FARTCOIN", "size": -100.0}]  # venue confirma
+    return ex, watcher, gw
+
+
+def test_v0077_reason_falls_back_to_error(settings, db) -> None:
+    """Fix A: sem `reason` no ok=False, o executor guarda o `error` REAL da venue
+    (não mais o inútil "unknown")."""
+    ex, watcher, gw = _setup_confirmed_ghost(settings, db)
+
+    def reject(**p: Any) -> dict[str, Any]:
+        gw.intents.append(p)
+        return {"ok": False, "status": "error",
+                "error": "reduce only order would increase position"}
+
+    gw.send_intent = reject
+    ex.reconcile()
+    key = ("ct_whale01", "FARTCOIN")
+    assert ex._reconcile_last_reason[key] == \
+        "reduce only order would increase position"
+
+
+def test_v0077_reason_prefers_explicit_reason(settings, db) -> None:
+    """Fix A: quando o gateway DÁ um `reason` explícito, ele prevalece sobre o
+    `error` (a ordem de fallback é reason → error → unknown)."""
+    ex, watcher, gw = _setup_confirmed_ghost(settings, db)
+
+    def reject(**p: Any) -> dict[str, Any]:
+        gw.intents.append(p)
+        return {"ok": False, "reason": "order_rejected",
+                "error": "algum detalhe secundário da venue"}
+
+    gw.send_intent = reject
+    ex.reconcile()
+    key = ("ct_whale01", "FARTCOIN")
+    assert ex._reconcile_last_reason[key] == "order_rejected"
+
+
+def test_v0077_force_close_logs_venue_unreadable_when_positions_none(
+        settings, db) -> None:
+    """Fix B: venue ILEGÍVEL (`_venue_position`→None quando /api/positions falha)
+    ⇒ NÃO força cego, mas emite `reconcile.venue_unreadable` (antes esse caminho
+    era mudo) e não envia nenhuma ordem."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+
+    def boom(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("positions 500")
+
+    gw.positions = boom  # type: ignore[assignment]
+    key = ("ct_whale01", "FARTCOIN")
+    cfg = ex.traders["ct_whale01"]
+    forced = ex._maybe_force_close(
+        "ct_whale01", cfg, "FARTCOIN", key, "order_rejected", True, None, 0.0)
+    assert forced is False
+    assert gw.intents == []  # nunca forçou cego
+    ev = db.query("SELECT payload FROM events "
+                  "WHERE event_type = 'reconcile.venue_unreadable'")
+    assert ev and json.loads(ev[0]["payload"])["reason"] == "order_rejected"
+
+
+def test_v0077_force_close_skips_flat_venue_without_unreadable_event(
+        settings, db) -> None:
+    """Fix B (contraste): venue LEGÍVEL e flat (0.0) ⇒ retorna False SEM emitir
+    `venue_unreadable` (flat != ilegível) e sem enviar ordem."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    gw.positions_response = []  # símbolo ausente ⇒ _venue_position devolve 0.0
+    key = ("ct_whale01", "FARTCOIN")
+    cfg = ex.traders["ct_whale01"]
+    forced = ex._maybe_force_close(
+        "ct_whale01", cfg, "FARTCOIN", key, "order_rejected", True, None, 0.0)
+    assert forced is False
+    assert gw.intents == []
+    assert db.query("SELECT 1 FROM events "
+                    "WHERE event_type = 'reconcile.venue_unreadable'") == []
+
+
+def test_v0077_force_close_fires_when_venue_confirms_no_unreadable(
+        settings, db) -> None:
+    """Regressão do UPDATE-0075 intacta: venue CONFIRMA a posição + razão
+    recuperável ⇒ força o fechamento e loga `reconcile.force_close`, SEM emitir
+    `venue_unreadable` (a venue estava legível)."""
+    ex, watcher, gw = _setup_confirmed_ghost(settings, db)
+    calls = {"n": 0}
+
+    def send(**p: Any) -> dict[str, Any]:
+        gw.intents.append(p)
+        calls["n"] += 1
+        if calls["n"] <= ex.RECONCILE_MAX_ATTEMPTS:
+            return {"ok": False, "error": "order_rejected"}
+        return {"ok": True, "status": "filled", "filled_size": p["size"]}
+
+    gw.send_intent = send
+    for _ in range(4):
+        ex.reconcile()
+    assert db.query("SELECT 1 FROM events "
+                    "WHERE event_type = 'reconcile.force_close'")
+    assert db.query("SELECT 1 FROM events "
+                    "WHERE event_type = 'reconcile.venue_unreadable'") == []
+    assert ex._my_pos[("ct_whale01", "FARTCOIN")] == 0.0
+
+
 def test_gateway_wait_ready_tolerates_early_failures() -> None:
     from engine.strategies.base_runner import GatewayClient
 

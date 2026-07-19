@@ -802,8 +802,14 @@ class CopyTradeExecutor:
                 else:
                     # rejeição recuperável (order_rejected, cap_room_below_min, …):
                     # guarda a razão p/ o `reconcile.stuck`/force-close a usarem.
-                    self._reconcile_last_reason[key] = \
-                        result.get("reason") or "unknown"
+                    # UPDATE-0077: o caminho de execução do gateway NÃO devolve
+                    # `reason` em ok=False (só `error`/`status`, server.py:776-778);
+                    # o "unknown" de antes escondia a razão real. Cai no `error`
+                    # verdadeiro da venue antes do fallback inútil.
+                    self._reconcile_last_reason[key] = (
+                        result.get("reason")
+                        or result.get("error")
+                        or "unknown")
                 corrections.append({"strategy_id": sid, **info, "result": result})
         # venue cross-check (observability only — never corrects across strategies)
         self._venue_cross_check(ledger)
@@ -828,7 +834,20 @@ class CopyTradeExecutor:
         if reason == "no_liquidity" or reason.startswith("no_price"):
             return False
         venue = self._venue_position(sid, symbol, environment)
-        if venue is None or abs(venue) <= 0:
+        if venue is None:
+            # UPDATE-0077 ("expor erro + retry, nunca forçar cego"): a venue está
+            # ILEGÍVEL (/api/positions não-2xx ⇒ _venue_position=None). Sem o
+            # tamanho real NÃO forçamos — mas antes esse caminho era MUDO, e o
+            # mesmo None fazia o resync (693-709) pular, deixando o fantasma preso
+            # sem rastro. Emite evento distinto p/ o problema ficar visível. Só é
+            # alcançado em attempts>=MAX após o backoff, então herda o cadence do
+            # stuck (não re-introduz o spam que o UPDATE-0075 eliminou).
+            self.logger.warning(
+                "reconcile.venue_unreadable",
+                {"symbol": symbol, "reason": reason, "environment": environment},
+                strategy_id=sid)
+            return False
+        if abs(venue) <= 0:
             return False
         result = self.gateway.send_intent(
             strategy_id=sid,
