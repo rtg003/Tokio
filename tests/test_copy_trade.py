@@ -155,6 +155,32 @@ def test_reload_picks_up_new_table_trader(settings, db) -> None:
     assert "ct_novo" in ex.traders
 
 
+def test_reload_survives_malformed_trader_row(settings, db) -> None:
+    """Uma linha com blocked_assets não-JSON ('ZEC' cru) faz from_row lançar
+    JSONDecodeError, mas o reload isola por-trader: os demais traders continuam
+    sendo inscritos e um trader.load_failed é logado. Regressão do incidente
+    0x8d7d49eb (2026-07-18), em que um único registro ruim derrubava o runner."""
+    ex, watcher, gw = make_executor(settings, db)   # ct_whale01 OK (TESTNET)
+    poison = "0x00000000000000000000000000000000000000cc"
+    good = "0x00000000000000000000000000000000000000dd"
+    # poison com score ALTO ⇒ processado ANTES do 'good' (ordem score DESC), para
+    # provar que o loop segue após a exceção.
+    db.upsert("traders", {"address": poison, "name": "poison", "status": "TESTNET",
+                          "mode": "fixed_usdc", "value": 50.0, "max_leverage": 2.0,
+                          "blocked_assets": "ZEC", "dry_run": 0, "thresholds": "{}",
+                          "score": 99.0}, ("address",))
+    db.upsert("traders", {"address": good, "name": "good", "status": "TESTNET",
+                          "mode": "fixed_usdc", "value": 50.0, "max_leverage": 2.0,
+                          "blocked_assets": "[]", "dry_run": 0, "thresholds": "{}",
+                          "score": 1.0}, ("address",))
+    ex.reload_traders()
+    assert good in watcher.subs and "ct_good" in ex.traders  # trader após o poison entra
+    assert poison not in watcher.subs                        # poison isolado
+    ev = db.query("SELECT payload FROM events WHERE event_type = 'trader.load_failed' "
+                  "ORDER BY id DESC")
+    assert ev and json.loads(ev[0]["payload"])["address"] == poison
+
+
 def test_saved_trader_is_not_mirrored(settings, db) -> None:
     ex, watcher, gw = make_executor(settings, db)
     db.execute("UPDATE traders SET status = 'SALVO' WHERE address = ?", (TARGET,))

@@ -241,17 +241,28 @@ class CopyTradeExecutor:
         ganham subscrição WS; quem saiu desses estados para de ser espelhado
         (o status é checado a cada fill de qualquer forma)."""
         for row in operable_traders(self.db):
-            cfg = TraderConfig.from_row(row)
-            self.traders[cfg.strategy_id] = cfg
-            self._register_strategy(cfg)
-            if cfg.address not in self._subscribed:
-                self._subscribed.add(cfg.address)
-                self.watcher.subscribe(
-                    cfg.address,
-                    lambda fill, sid=cfg.strategy_id: self.on_target_fill(sid, fill),
-                )
-                self.logger.info("ws.subscribed_target", {"address": cfg.address},
-                                 strategy_id=cfg.strategy_id)
+            # Isolamento por-trader: uma linha malformada (ex.: blocked_assets
+            # ='ZEC' não-JSON → JSONDecodeError em from_row) NUNCA pode abortar o
+            # loop e derrubar TODO o copy trade. Incidente 0x8d7d49eb (2026-07-18):
+            # um único registro ruim matava reload_traders no __init__ → run_forever
+            # jamais rodava → nenhum trader era espelhado. Logamos e seguimos.
+            try:
+                cfg = TraderConfig.from_row(row)
+                self.traders[cfg.strategy_id] = cfg
+                self._register_strategy(cfg)
+                if cfg.address not in self._subscribed:
+                    self._subscribed.add(cfg.address)
+                    self.watcher.subscribe(
+                        cfg.address,
+                        lambda fill, sid=cfg.strategy_id: self.on_target_fill(sid, fill),
+                    )
+                    self.logger.info("ws.subscribed_target", {"address": cfg.address},
+                                     strategy_id=cfg.strategy_id)
+            except Exception as exc:  # noqa: BLE001 — resiliência por-trader
+                self.logger.error("trader.load_failed",
+                                  {"address": row.get("address"),
+                                   "error": str(exc)[:200]})
+                continue
         # Defesa em profundidade (UPDATE-0064, Parte 1a): pausa qualquer strategy
         # órfã — operante no BD mas com trader NÃO-copiável — no boot e em cada
         # reload. Fecha a brecha em que uma linha `strategies` ficou active/dry_run

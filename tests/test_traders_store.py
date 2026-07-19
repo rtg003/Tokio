@@ -77,6 +77,24 @@ def test_update_exec_config_logged_and_validated(db) -> None:
     assert db.query("SELECT 1 FROM events WHERE event_type = 'trader.config_changed'")
 
 
+def test_update_exec_config_rejects_non_json_blocked_assets(db) -> None:
+    """blocked_assets como string crua não-JSON ('ZEC') é rejeitada — nunca
+    persistir um valor que quebraria json.loads no boot do runner (incidente
+    0x8d7d49eb, 2026-07-18). Uma string JSON válida ('["ZEC"]') continua aceita."""
+    upsert_candidate(db, address=ADDR)
+    res = update_exec_config(db, ADDR, by="control_api", blocked_assets="ZEC")
+    assert res["ok"] is False and res["reason"] == "json_invalido_blocked_assets"
+    r = db.query("SELECT blocked_assets FROM traders WHERE address = ?",
+                 (ADDR.lower(),))[0]
+    assert r["blocked_assets"] != "ZEC"          # nada corrompido foi gravado
+    # string JSON já-serializada é aceita e round-trips
+    assert update_exec_config(db, ADDR, by="control_api",
+                              blocked_assets='["ZEC"]')["ok"]
+    r = db.query("SELECT blocked_assets FROM traders WHERE address = ?",
+                 (ADDR.lower(),))[0]
+    assert json.loads(r["blocked_assets"]) == ["ZEC"]
+
+
 def test_operable_traders_filters_statuses(db) -> None:
     for i, st in enumerate(["SUGERIDO", "SALVO", "TESTNET", "MAINNET", "REJEITADO"]):
         addr = f"0x{i:040x}"

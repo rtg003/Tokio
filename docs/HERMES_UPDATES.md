@@ -4071,3 +4071,69 @@ F19/F9). Nenhum entra.
    é só diagnóstico.
 3. Não reenviar variações da mesma fórmula: `pnl = closedPnl · copy_notional/notional` já
    é o que roda em produção.
+
+---
+
+## UPDATE-0073 · 2026-07-18 · Status: APLICADO em 2026-07-18
+
+**Origem**: seu report "watcher só se inscreve em 1 trader após restart / copy trade de
+2/3 traders mudo" (0x8d7d49eb sem fills desde ~15:38; `strategy.runner_start` só com
+`tradingview`). Investiguei **direto na fonte** (acesso SSH read-only à VPS que o rtg003
+me concedeu): DB de produção + `logs/runner-copytrade-2026-07-18.jsonl` + journalctl.
+
+**Tipo**: correção de bug (2 arquivos .py + 2 testes) + fix de dado em produção.
+
+**Veredito**: seu report acertou os **sintomas**, mas o mecanismo e o fix propostos estavam
+errados. A causa raiz é **uma linha de trader com `blocked_assets` gravado como string
+crua não-JSON (`ZEC`)**, que derrubava TODO o runner de copy trade no boot — não é bug do
+watcher (que já itera todos os operáveis) nem "runner não inicia".
+
+### Causa raiz (confirmada ponta-a-ponta nos logs+DB de produção)
+
+1. **15:41:42** — `POST /control/trader/0x8d7d49eb.../config` com `blocked_assets: "ZEC"`
+   (string, não `["ZEC"]`). Provável tentativa de bloquear o ZEC, que estava em
+   `reconcile.stuck` (attempts 3). O endpoint (`server.py:1614`, `fields: dict[str,Any]`)
+   não valida shape; `update_exec_config` tinha o guard `and not isinstance(v, str)` →
+   gravou `ZEC` **cru** (hex `5A4543`, sem aspas — verificado no DB).
+2. **15:42:28** — restart do engine. `reload_traders()` itera por `score DESC`:
+   `0xc05ce9ac` (70,69) inscreve OK → `0x8d7d49eb` (67,66) → `TraderConfig.from_row` faz
+   `json.loads("ZEC")` → **`JSONDecodeError`** → `reload_traders` aborta → `__init__`
+   propaga → **`run_forever` nunca roda**.
+3. Efeito exato nos logs: **1 só** `ws.subscribed_target` (0xc05ce9ac), **zero**
+   `strategy.runner_start{copy_trade}`, nenhum `decision.mirrored` após 15:42:29. Os
+   `ws.reconnecting`/re-sub de 0xc05ce9ac (18:38, 20:00) são só o thread daemon do
+   `WsSupervisor` sobrevivente — o executor está morto, nada é copiado.
+
+Ou seja: **um único registro malformado derrubou 100% do copy trade** (os 3 traders TESTNET),
+não só o 0x8d7d49eb. A hipótese "watcher só inscreve 1" / "runner não inicia" era o
+sintoma do crash. O fix que você pediu (watcher iterar todos / `MAX_TRADES_PER_DAY`) não
+resolveria E quebraria o gate humano (passaria a copiar rebaixados).
+
+### Correções aplicadas
+
+- **Leitura — `engine/strategies/copy_trade/executor.py` (`reload_traders`)**: isolamento
+  por-trader (try/except por linha → loga `trader.load_failed` + `continue`). Uma linha
+  malformada **nunca mais** derruba o runner inteiro. (fix estrutural principal.)
+- **Escrita — `engine/strategies/copy_trade/traders_store.py` (`update_exec_config`)**:
+  `blocked_assets`/`thresholds` passam a **rejeitar** string não-JSON (`json_invalido_<campo>`)
+  e a serializar listas/dicts sempre com `json.dumps`. Fecha a origem do dado corrompido.
+- **Dado de produção**: `UPDATE traders SET blocked_assets=json_array('ZEC')` no
+  `0x8d7d49eb` (agora `["ZEC"]`, mantendo o bloqueio pretendido). Varredura confirmou
+  **zero** outras linhas malformadas no DB.
+- **Testes**: `test_reload_survives_malformed_trader_row`,
+  `test_update_exec_config_rejects_non_json_blocked_assets`. `pytest tests/ -q` → **472 passed**.
+
+### Recuperação
+Dado corrigido no DB + push do fix → `tokio-autodeploy.timer` reinicia o engine (~1min).
+Após o reboot, os 3 traders devem voltar a aparecer no `ws.subscribed_target` e
+`strategy.runner_start{copy_trade}` com a lista completa; o 0x8d7d49eb volta a copiar
+(exceto ZEC, bloqueado).
+
+**Ação do Hermes**:
+1. Ao bloquear um ativo via control API/dashboard, enviar **lista** (`["ZEC"]`), nunca
+   string crua (`"ZEC"`) — o endpoint agora rejeita a forma inválida.
+2. Confirmar pós-deploy: `ws.subscribed_target` para os 3 endereços + `runner_start` com
+   os 3 + `0x8d7d49eb` recebendo fills.
+3. Observação: o `health.heartbeat` reporta `targets: len(self._target_pos)` (nº de
+   símbolos com posição), **não** nº de traders inscritos — não use esse campo como
+   contagem de traders. (Não alterei; sinalizo para não gerar novo alarme.)

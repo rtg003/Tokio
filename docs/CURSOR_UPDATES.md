@@ -2755,3 +2755,52 @@ fill, cap do ratio — todos desnecessarios (overflow ja eliminado pela soma lim
 
 **Recomendacao ao operador**: marcar UPDATE-0071 como validado. Regra: ao ver SIM NET alto
 no analyze, checar `reject_reasons` antes de reportar bug.
+
+---
+
+## UPDATE-0073 · 2026-07-18 · Status: APLICADO
+
+**Origem**: report do bot "watcher so inscreve 1 trader apos restart / copy trade de 2/3
+traders mudo". Investigado DIRETO NA FONTE via acesso SSH read-only a VPS (concedido pelo
+rtg003): DB de producao + logs/runner-copytrade + journalctl.
+
+**Tipo**: correcao de bug (executor.py + traders_store.py + 2 testes) + fix de dado prod.
+
+**Veredito**: sintomas do bot corretos, mecanismo/fix errados. Causa raiz = 1 linha de
+trader com `blocked_assets` gravado como string crua nao-JSON (`ZEC`) que derrubava TODO
+o runner no boot. NAO e bug do watcher (ja itera todos os operaveis) nem "runner nao inicia".
+
+### Causa raiz (confirmada nos logs+DB de prod)
+
+1. 15:41:42 — control API gravou `blocked_assets: "ZEC"` (string, nao lista). Guard
+   `and not isinstance(v, str)` em update_exec_config (traders_store.py:240) mandou o
+   valor cru pro `else v` → gravou `ZEC` (hex 5A4543, sem aspas).
+2. 15:42:28 — restart. reload_traders itera por score DESC: 0xc05ce9ac (70.69) inscreve
+   OK → 0x8d7d49eb (67.66) → from_row faz json.loads("ZEC") → JSONDecodeError →
+   reload_traders aborta → __init__ propaga → run_forever NUNCA roda.
+3. Logs: 1 so ws.subscribed_target (0xc05ce9ac), zero strategy.runner_start{copy_trade},
+   nenhum decision.mirrored apos 15:42. Os ws.reconnecting de 0xc05ce9ac sao so o thread
+   daemon do WsSupervisor sobrevivente — executor morto.
+
+Um unico registro malformado derrubou 100% do copy trade (3 traders TESTNET). Fix do bot
+(watcher iterar todos / MAX_TRADES_PER_DAY) nao resolveria e quebraria o gate humano.
+
+### Correcoes
+
+- executor.py `reload_traders`: try/except por-trader → loga `trader.load_failed` +
+  continue. Uma linha ruim nunca mais derruba o runner. (fix estrutural principal)
+- traders_store.py `update_exec_config`: rejeita string nao-JSON em blocked_assets/
+  thresholds (`json_invalido_<campo>`); serializa listas/dicts sempre com json.dumps.
+- Dado prod: UPDATE traders SET blocked_assets=json_array('ZEC') no 0x8d7d49eb. Varredura:
+  0 outras linhas malformadas.
+- Testes: test_reload_survives_malformed_trader_row +
+  test_update_exec_config_rejects_non_json_blocked_assets. pytest -> 472 passed.
+
+### Nota metodo
+Acesso SSH read-only a VPS permitiu confirmar a causa nos dados reais antes de codar —
+refutou a tese do watcher e revelou o poison-write. Recuperacao: dado corrigido + push ->
+autodeploy reinicia o engine (~1min).
+
+### Observabilidade (nao alterado, sinalizado)
+health.heartbeat reporta `targets: len(self._target_pos)` (simbolos, nao traders) — nao e
+contagem confiavel de traders inscritos.

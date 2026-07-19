@@ -237,8 +237,21 @@ def update_exec_config(db: Database, address: str, *, by: str,
         return {"ok": False, "reason": "trader_desconhecido"}
     norm: dict[str, Any] = {}
     for k, v in fields.items():
-        norm[k] = json.dumps(v, ensure_ascii=False) if k in ("blocked_assets", "thresholds") \
-            and not isinstance(v, str) else v
+        if k in ("blocked_assets", "thresholds"):
+            # Colunas JSON: garantir que o valor gravado seja SEMPRE JSON válido.
+            # Uma string já-serializada é aceita só se parsear; uma string crua
+            # não-JSON (ex.: "ZEC") é rejeitada — persistir isso quebra json.loads
+            # no boot do runner e derruba TODO o copy trade (incidente 0x8d7d49eb).
+            if isinstance(v, str):
+                try:
+                    json.loads(v)
+                except (json.JSONDecodeError, ValueError):
+                    return {"ok": False, "reason": f"json_invalido_{k}"}
+                norm[k] = v
+            else:
+                norm[k] = json.dumps(v, ensure_ascii=False)
+        else:
+            norm[k] = v
     sets = ", ".join(f"{k} = ?" for k in norm)
     db.execute(f"UPDATE traders SET {sets}, updated_at = ? WHERE address = ?",
                [*norm.values(), utcnow(), address])
