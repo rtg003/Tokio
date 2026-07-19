@@ -4137,3 +4137,48 @@ Após o reboot, os 3 traders devem voltar a aparecer no `ws.subscribed_target` e
 3. Observação: o `health.heartbeat` reporta `targets: len(self._target_pos)` (nº de
    símbolos com posição), **não** nº de traders inscritos — não use esse campo como
    contagem de traders. (Não alterei; sinalizo para não gerar novo alarme.)
+
+---
+
+## UPDATE-0074 · 2026-07-18 · Status: PENDENTE
+
+**Origem**: pedido do rtg003 — o SIM NET de traders **hiperativos** (0xd487, 0x8d7d,
+0x2179) precisava ficar **REAL**, sem descartar perfis lucrativos e sem prejudicar os
+saudáveis. Investigação read-only (dados REAIS da VPS) fechou a questão do sizing.
+
+**Tipo**: logica_discovery + config + UI (metrics.py, funnel.py, discovery_config.yaml,
+TradersTable.tsx, migração 0030, testes, docs).
+
+**Resumo (o porquê — não "corrija" de volta)**:
+- **Causa da não-realidade**: sob a restrição de capital concorrente (Fix A,
+  `model_concurrency`), um trader hiperativo tem ~1090 posições simultâneas mas a banca
+  ($1000×3) só financia **~0.1%** do book. Um SIM NET tirado de 0.1% do book é **ruído** —
+  oscilava −$1000 ↔ $149k ↔ $496k conforme a fatia de fills e a janela. O $496k que o
+  0xd487 exibia era fantasia aritmética, não medição.
+- **Sizing NÃO é o culpado** (provado): composição estoura (0xd487 → 6e114 overflow);
+  base-fixo (UPDATE-0071) está correto. Fica ENCERRADA a dúvida "investigar base-fixo".
+- **Correção 1 — gate de confiabilidade por `funded_share`**: quando a fração do book
+  espelhável cai abaixo de `copy_simulation.min_funded_share` (**0.10**), a confiança do
+  trader vira **AMOSTRA RECENTE (âmbar)** e a UI mostra **"cópia parcial (X% do book)"** em
+  vez do número irreal. O trader **CONTINUA disponível** (não é descartado) — só sai do
+  topo por um valor fantasia. Reusa toda a plumbing de `metrics_confidence` (0056/0059).
+- **Correção 2 — unificação da janela**: o SIM NET **exibido/ordenado** passa a ser o
+  **stage4 (60d COM latência)** — o mesmo que gateia F17/F18. Antes exibia o F15 (30d, sem
+  latência) → mismatch que sozinho gerava divergência. O F15 segue vivo só como gate barato.
+- Fix B (hold < 1h pintado de vermelho) permanece — sinaliza HFT verdadeiro (0x8d7d).
+- **Validação read-only (fills reais)**: 0xd487 funded **0.19% → sampled** (cópia parcial);
+  0x8d7d 96% / 0x2179 59% / 0xc05 25% / 0x1a5 46% → **complete** (exibem o stage4). Só o
+  perfil fantasia foi rebaixado; os saudáveis intactos. `pytest tests/ -q` → **479 passed**.
+
+**Ações do Hermes**:
+1. Pós-deploy, aplicar a migração 0030 (aditiva; roda sozinha no boot via `db.migrate`).
+   Confirmar as colunas `sim_funded_share` e `sim_f15_net_usd` em `traders`.
+2. Re-analisar as wallets hiperativas (Reanalisar na dashboard ou re-scan) p/ popular
+   `sim_funded_share`. Esperado: 0xd487 cai p/ AMOSTRA RECENTE (âmbar) com "cópia parcial",
+   SEM exibir o SIM NET fantasia; os demais seguem com número (agora stage4 60d).
+3. Se quiser afrouxar/apertar o corte, ajustar `copy_simulation.min_funded_share` no
+   config (0.10 = 10% do book); `null` desliga o gate.
+
+**Validação**: na dashboard de Copy Trade, 0xd487 deve exibir badge âmbar + tooltip "cópia
+parcial (~X% do book)"; traders saudáveis exibem SIM NET (60d c/ latência) com badge de
+dados completos; a ordenação por SIM NET joga os `sampled` (SIM NET nulo) p/ o fim.

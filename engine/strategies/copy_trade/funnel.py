@@ -89,8 +89,16 @@ class Candidate:
     max_current_leverage: float | None = None    # max lev das posições ABERTAS
     available_margin_pct: float | None = None    # margem livre / accountValue
     median_fill_notional: float | None = None    # mediana |sz×px| dos fills
-    sim_net_pnl_usd: float | None = None         # F15: net da cópia simulada
+    # UPDATE-0074: `sim_net_pnl_usd` passa a ser o valor EXIBIDO/persistido/ordenado
+    # = stage4 (60d, com latência); o F15 (30d, sem latência) segue vivo só como gate
+    # barato em `sim_f15_net_usd`. Unifica "o que se vê" com "o que gateia/rankeia".
+    sim_net_pnl_usd: float | None = None         # EXIBIDO: net stage4 (60d c/ latência)
+    sim_f15_net_usd: float | None = None         # F15 (30d, sem latência) — só gate barato
     sim_copy_notional_usd: float | None = None   # mediana do notional espelhado
+    # UPDATE-0074: fração do notional DESEJADO que coube no orçamento concorrente do
+    # espelho (métrica do Fix A). Baixo (< min_funded_share) ⇒ SIM NET longitudinal é
+    # amostra minúscula do book ⇒ confiança rebaixada (cópia parcial).
+    sim_funded_share: float | None = None
     # v8 (Estágio 4): replay com latência — critério FINAL de ranking
     sim_stage4_net_usd: float | None = None      # net do replay c/ latência
     sim_expectancy_usd: float | None = None      # net / trade fechado
@@ -616,6 +624,26 @@ def classify_metrics_confidence(c: Candidate, cfg: dict[str, Any]) -> None:
         fills_conf = "sampled"
     else:
         fills_conf = "complete"
+    # UPDATE-0074: gate de CONFIABILIDADE por `funded_share` (Fix A). Mesmo com
+    # amostra que cobre a janela ("complete"), se o espelho ($capital) só consegue
+    # financiar uma fração minúscula do book concorrente do trader (ex.: 0xd487 =
+    # ~0.1% ⇒ ~1090 posições simultâneas vs. 1 slot), o SIM NET longitudinal é uma
+    # amostra irrelevante do que se copiaria de fato → rebaixa p/ "sampled" (cópia
+    # PARCIAL). NÃO reprova (a plumbing 0056 nula sim_* e torna filtros
+    # longitudinais indeterminados) — o trader SEGUE disponível, só sem número
+    # fantasia. funded_share alto (25–96% dos saudáveis) não morde.
+    stage4_cfg = cfg.get("copy_simulation") or {}
+    min_funded = stage4_cfg.get("min_funded_share")
+    if (min_funded is not None and fills_conf == "complete"
+            and c.sim_funded_share is not None
+            and c.sim_funded_share < float(min_funded)):
+        fills_conf = "sampled"
+        capital = float((cfg.get("hard_filters") or {}).get(
+            "f11_mirror_capital_usd", 0.0))
+        c.metrics_warnings.append(
+            f"cópia parcial: só ~{c.sim_funded_share * 100:.1f}% do book é "
+            f"espelhável com US$ {capital:.0f} — SIM NET longitudinal não-confiável "
+            f"(trader hiperativo com muitas posições concorrentes)")
     c.fills_metrics_confidence = fills_conf
     # UPDATE-0062 (v15): posições consolidadas do HT são a evidência das MÉTRICAS
     # DE POSIÇÃO — não dependem do teto de fills. Se o HT cobre a janela, a
@@ -644,6 +672,9 @@ def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
     stage4 = cfg.get("copy_simulation") or {}
     max_lev = stage4.get("max_copy_leverage")
     capital = float(hf["f11_mirror_capital_usd"])
+    # UPDATE-0074: restrição de capital concorrente do espelho (propriedade da
+    # conta de cópia → aplicada uniformemente a TODAS as simulações desta wallet).
+    concurrency = bool(stage4.get("model_concurrency", False))
 
     times = [float(f.get("time", 0)) for f in fills]
     c.coverage_days = (max(times) - min(times)) / DAY_MS if len(times) >= 2 else 0.0
@@ -655,10 +686,11 @@ def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
             fills, c.equity, capital,
             taker_fee_pct=float(cost["taker_fee_pct"]),
             slippage_pct=float(cost["slippage_pct"]),
-            max_copy_leverage=max_lev,
+            max_copy_leverage=max_lev, model_concurrency=concurrency,
             window_days=float(hf["f15_sim_window_days"]), now_ms=now_ms)
         if sim is not None:
-            c.sim_net_pnl_usd = sim.net_pnl_usd
+            # UPDATE-0074: F15 vira gate barato interno (não é mais o valor exibido).
+            c.sim_f15_net_usd = sim.net_pnl_usd
             c.sim_copy_notional_usd = sim.median_copy_notional_usd
 
     if stage4:
@@ -669,11 +701,18 @@ def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
             taker_fee_pct=float(cost["taker_fee_pct"]),
             slippage_pct=float(cost["slippage_pct"]),
             latency_slippage_pct=lat, max_copy_leverage=max_lev,
+            model_concurrency=concurrency,
             window_days=window, now_ms=now_ms)
         if sim4 is not None:
             c.sim_stage4_net_usd = sim4.net_pnl_usd
+            # UPDATE-0074: o valor EXIBIDO/persistido/ordenado é o stage4 (60d c/
+            # latência) — o mesmo que alimenta F17/F18/copy_sim_negativa. Remove o
+            # mismatch de janela (antes exibia F15 30d sem latência).
+            c.sim_net_pnl_usd = sim4.net_pnl_usd
             c.sim_expectancy_usd = sim4.expectancy_usd
             c.sim_max_dd_pct = sim4.max_dd_pct
+            # UPDATE-0074: fração do book espelhável (Fix A) → gate de confiabilidade.
+            c.sim_funded_share = sim4.funded_notional_share
         # F18 — metades: o limite SUPERIOR é garantido filtrando os fills
         # (simulate_copy só corta o inferior)
         half = window / 2
@@ -685,6 +724,7 @@ def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
                 taker_fee_pct=float(cost["taker_fee_pct"]),
                 slippage_pct=float(cost["slippage_pct"]),
                 latency_slippage_pct=lat, max_copy_leverage=max_lev,
+                model_concurrency=concurrency,
                 window_days=half, now_ms=half_end)
             setattr(c, attr, h.net_pnl_usd if h is not None else None)
 
@@ -702,6 +742,7 @@ def compute_copy_sims(c: Candidate, fills: list[dict[str, Any]],
             taker_fee_pct=float(cost["taker_fee_pct"]),
             slippage_pct=float(cost["slippage_pct"]),
             latency_slippage_pct=lat_s, max_copy_leverage=max_lev,
+            model_concurrency=concurrency,
             window_days=sample_window, now_ms=now_ms)
         if sample_sim is not None:
             c.sample_sim_net_usd = sample_sim.net_pnl_usd
@@ -856,13 +897,15 @@ def hard_filters_all(c: Candidate, cfg: dict[str, Any],
             reasons.append(f"F11: cópia estimada US$ {copy_notional:.2f} < "
                            f"{f['f11_min_mirror_notional_usd']} com capital configurado")
 
-    # v7 — F15: simulação retroativa — cópia que não paga taxa+slippage não serve
+    # v7 — F15: simulação retroativa — cópia que não paga taxa+slippage não serve.
+    # UPDATE-0074: gate barato lê `sim_f15_net_usd` (30d, sem latência); o valor
+    # EXIBIDO `sim_net_pnl_usd` passou a ser o stage4 (60d c/ latência).
     f15_window = _float_or_none(f.get("f15_sim_window_days"))
-    if f15_window is not None and c.sim_net_pnl_usd is not None and \
-            c.sim_net_pnl_usd <= float(f.get("f15_min_net_pnl_usd", 0.0)):
+    if f15_window is not None and c.sim_f15_net_usd is not None and \
+            c.sim_f15_net_usd <= float(f.get("f15_min_net_pnl_usd", 0.0)):
         reasons.append(f"F15: cópia simulada {f['f15_sim_window_days']}d com "
                        f"US$ {f['f11_mirror_capital_usd']:.0f} → PnL líquido "
-                       f"US$ {c.sim_net_pnl_usd:.2f}")
+                       f"US$ {c.sim_f15_net_usd:.2f}")
 
     # v9 — F17: a cópia simulada (com latência e teto de alavancagem) precisa
     # RENDER, não só não perder. Quintis do lab: top +$71 em B vs +$0.3 no 2º.
@@ -950,7 +993,9 @@ def score_candidate(c: Candidate, cfg: dict[str, Any]) -> float:
             freq_spot=tuple(cop["freq_sweet_spot_trades_day"])),
         net_expectancy=M.net_expectancy_score(c.avg_trade_pnl_pct, cost_pct),
         # sim_net: cópia simulada líquida 30d normalizada — US$ 5k = score máximo.
-        sim_net=max(0.0, min(1.0, (c.sim_net_pnl_usd or 0.0) / 5000.0)),
+        # UPDATE-0074: lê `sim_f15_net_usd` (30d) p/ preservar o ranking prévio; o
+        # `sim_net_pnl_usd` passou a carregar o stage4 (60d) só p/ exibição.
+        sim_net=max(0.0, min(1.0, (c.sim_f15_net_usd or 0.0) / 5000.0)),
     )
     if positive == 4:
         comps.adjustments.append(("consistencia_4/4", float(adj["full_consistency_bonus"])))
@@ -980,7 +1025,7 @@ def score_candidate(c: Candidate, cfg: dict[str, Any]) -> float:
         if c.available_margin_pct is not None else "margem: n/d",
         f"lev atual: {c.max_current_leverage:.1f}x"
         if c.max_current_leverage is not None else "lev atual: sem posição",
-        f"cópia simulada 30d: US$ {c.sim_net_pnl_usd:+.2f} líquido"
+        f"cópia simulada 60d c/ latência: US$ {c.sim_net_pnl_usd:+.2f} líquido"
         if c.sim_net_pnl_usd is not None else "cópia simulada: n/d",
         *(f"ajuste {name}: {val:+.0f}" for name, val in comps.adjustments),
     ]
@@ -1652,6 +1697,13 @@ def persist_scan(db: Database, result: ScanResult, cfg: dict[str, Any],
             "max_current_leverage": c.max_current_leverage,
             "available_margin_pct": c.available_margin_pct,
             "sim_net_pnl_usd": c.sim_net_pnl_usd,
+            # UPDATE-0074: `sim_net_pnl_usd` agora carrega o stage4 (60d c/ latência);
+            # o F15 (30d, sem latência) é persistido à parte p/ o reclassify recompor
+            # o score `sim_net` sem reler o pipeline (evita inconsistência pós-0074).
+            "sim_f15_net_usd": c.sim_f15_net_usd,
+            # UPDATE-0074: fração do book espelhável (Fix A) — a UI mostra "cópia
+            # parcial (X% do book)" e o gate de confiabilidade rebaixa quando baixa.
+            "sim_funded_share": c.sim_funded_share,
             "sim_expectancy_usd": c.sim_expectancy_usd,
             "sim_max_dd_pct": c.sim_max_dd_pct,
             "sim_factor": c.sim_factor,
@@ -1789,7 +1841,12 @@ def _components_from_row(row: dict[str, Any], cfg: dict[str, Any],
     adj = cfg["score_adjustments"]
 
     def _sim_net_norm() -> float:
-        v = row.get("sim_net_pnl_usd")
+        # UPDATE-0074: o score sim_net normaliza o F15 (30d) — preserva o ranking
+        # prévio. Lê `sim_f15_net_usd`; linhas LEGADAS (pré-0074) guardam o F15 no
+        # próprio `sim_net_pnl_usd` (que agora carrega o stage4) → fallback.
+        v = row.get("sim_f15_net_usd")
+        if v is None:
+            v = row.get("sim_net_pnl_usd")
         return max(0.0, min(1.0, (float(v) if v is not None else 0.0) / 5000.0))
 
     stored = deserialize_components(row.get("score_components"))

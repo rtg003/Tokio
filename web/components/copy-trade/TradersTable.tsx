@@ -71,7 +71,7 @@ function ReclassifyButton({ address }: { address: string }) {
 
 const COLUMN_TIPS: Record<string, string> = {
   "#": "Posição atual na lista filtrada (ordenada por cópia simulada líquida).",
-  "SIM NET": "PnL líquido simulado copiando com taxas, slippage e teto 3x. Métrica decisiva do ranking.",
+  "SIM NET": "PnL líquido simulado copiando 60d COM latência, taxas, slippage e teto 3x (janela unificada com o gate/ranking). Métrica decisiva do ranking. Traders hiperativos onde só uma fração ínfima do book é espelhável com a banca caem para AMOSTRA RECENTE (âmbar) e exibem 'cópia parcial' em vez de um número irreal.",
   Trader: "Nome e endereço da carteira analisada. Verde = copiando; amarelo = salvo.",
   Score: "Nota composta 0-100 do funil (informativa). A ordenação usa a cópia simulada líquida.",
   Coorte: "Grupo operacional do trader conforme perfil de holding, risco e comportamento.",
@@ -81,7 +81,7 @@ const COLUMN_TIPS: Record<string, string> = {
   "Max DD": "Maior drawdown observado. Mede o quanto o trader já afundou no período.",
   Status: "Ação operacional imediata. SALVO observa; TESTNET copia em testnet; MAINNET usa dinheiro real.",
   "Trades 30d": "Número de trades fechados nos últimos 30 dias. Pouca amostra reduz confiança.",
-  "Hold méd.": "Tempo médio de posição. Ajuda a filtrar scalpers que não sobrevivem à latência.",
+  "Hold méd.": "Tempo médio de posição. Vermelho = < 1h (perfil HFT: sobrevive mal à latência de cópia de 200ms–2s).",
   "SIM EXP": "Expectância líquida por trade na cópia simulada (net / trade fechado).",
   "SIM DD": "Drawdown máximo da curva de equity da cópia simulada.",
   "TWRR 30d": "Retorno ponderado pelo tempo nos últimos 30 dias.",
@@ -375,9 +375,14 @@ export default function TradersTable({
                         t.sample_sim_window_days ? (
                         <span
                           style={{ opacity: 0.7, fontStyle: "italic" }}
-                          title={`Simulação AMOSTRAL sobre o span coberto (${fmtNum(t.sample_sim_window_days, 1)}d) — as sim_* longitudinais ficam nulas quando a confiança não é COMPLETA (amostra, não medição).${t.sample_sim_net_per_day != null ? ` Projeção ~$${fmtSigned(t.sample_sim_net_per_day * 30, 0)}/30d.` : ""}`}
+                          title={`Simulação AMOSTRAL sobre o span coberto (${fmtNum(t.sample_sim_window_days, 1)}d) — as sim_* longitudinais ficam nulas quando a confiança não é COMPLETA (amostra, não medição).${t.sample_sim_net_per_day != null ? ` Projeção ~$${fmtSigned(t.sample_sim_net_per_day * 30, 0)}/30d.` : ""}${t.sim_funded_share != null ? ` Cópia parcial: só ~${fmtNum(t.sim_funded_share * 100, 1)}% do book é espelhável com a banca (trader hiperativo, muitas posições concorrentes) — SIM NET longitudinal não-confiável.` : ""}`}
                         >
                           ~${fmtSigned(t.sample_sim_net_usd, 2)} ({fmtNum(t.sample_sim_window_days, 1)}d)
+                          {t.sim_funded_share != null ? (
+                            <span style={{ opacity: 0.85, marginLeft: 4 }}>
+                              · cópia parcial ({fmtNum(t.sim_funded_share * 100, 1)}% do book)
+                            </span>
+                          ) : null}
                         </span>
                       ) : (
                         "—"
@@ -445,7 +450,24 @@ export default function TradersTable({
                     <td className="num">
                       <Lon complete={complete} legacy={legacy}>{t.n_trades_30d ?? "—"}</Lon>
                     </td>
-                    <td className="num">
+                    <td
+                      className="num"
+                      // UPDATE-0074: hold mediano < 1h = perfil HFT (sobrevive mal
+                      // à latência de cópia) → vermelho como sinal ao operador.
+                      // NÃO descarta o trader; só destaca visualmente.
+                      style={
+                        typeof t.avg_holding_hours === "number" &&
+                        t.avg_holding_hours < 1
+                          ? { color: "#c1121f", fontWeight: 600 }
+                          : undefined
+                      }
+                      title={
+                        typeof t.avg_holding_hours === "number" &&
+                        t.avg_holding_hours < 1
+                          ? "Hold mediano < 1h: perfil HFT — a latência de cópia (200ms–2s) corrói o edge; copiável só com execução ultrarrápida."
+                          : undefined
+                      }
+                    >
                       {t.avg_holding_hours === null || t.avg_holding_hours === undefined
                         ? "—"
                         : `${fmtNum(t.avg_holding_hours, 1)}h`}

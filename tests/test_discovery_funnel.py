@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from engine.strategies.copy_trade.funnel import (
+    classify_metrics_confidence,
     entry_rule_ok,
     load_config,
     parse_leaderboard_row,
@@ -374,8 +375,9 @@ def test_v7_baseline_passes_all_filters() -> None:
     ({"liq_distance_pct": 7.5}, "F13"),
     # dossiê #6: equity $50k, fills de ~$100 → cópia de $2.00 com $1k
     ({"equity": 50_000.0, "median_fill_notional": 100.0}, "F11"),
-    # cópia simulada não paga o custo
-    ({"sim_net_pnl_usd": -3.2}, "F15"),
+    # cópia simulada não paga o custo — UPDATE-0074: F15 (gate barato 30d) passa a
+    # ler `sim_f15_net_usd` (o `sim_net_pnl_usd` agora carrega o stage4 exibido).
+    ({"sim_f15_net_usd": -3.2}, "F15"),
 ])
 def test_v7_copyability_filters_reject(overrides: dict, expected_prefix: str) -> None:
     from engine.strategies.copy_trade.funnel import hard_filters
@@ -946,3 +948,69 @@ def test_v15_cohort_sourcing_injects_and_counts(db, monkeypatch) -> None:
 
     assert result.funnel_stats["ht_cohort_novos"] == 2
     assert result.funnel_stats["ht_cohort_aprofundados"] == 2
+
+
+# ----------------------------------------------------------------------------
+# UPDATE-0074: gate de confiabilidade por funded_share + unificação da janela
+# ----------------------------------------------------------------------------
+def _complete_fills_candidate(**overrides: Any) -> Candidate:
+    """Candidate com amostra de fills que qualifica como `complete`
+    (span ≥ 25d, ≥ 30 closes) — base p/ isolar o gate de funded_share."""
+    base: dict[str, Any] = dict(
+        address="0xfund",
+        fills_sample_count=200,
+        fills_closed_count=40,
+        fills_complete=True,
+        fills_sample_days=40.0,
+        position_metrics_source="hl_fills",
+    )
+    base.update(overrides)
+    return Candidate(**base)
+
+
+def test_v0074_low_funded_share_demotes_to_sampled() -> None:
+    """funded_share abaixo de `min_funded_share` (0xd487 ~0.1%) rebaixa a
+    confiança de `complete` p/ `sampled` e anexa o aviso "cópia parcial" — SEM
+    reprovar o trader (mantém disponível, tira o número fantasia do topo)."""
+    c = _complete_fills_candidate(sim_funded_share=0.001)
+    classify_metrics_confidence(c, CFG)
+
+    assert c.fills_metrics_confidence == "sampled"
+    assert c.metrics_confidence == "sampled"
+    assert any("cópia parcial" in w for w in c.metrics_warnings)
+
+
+def test_v0074_high_funded_share_stays_complete() -> None:
+    """funded_share saudável (25–96% dos operacionais) NÃO morde: segue
+    `complete`, sem aviso de cópia parcial."""
+    c = _complete_fills_candidate(sim_funded_share=0.50)
+    classify_metrics_confidence(c, CFG)
+
+    assert c.fills_metrics_confidence == "complete"
+    assert not any("cópia parcial" in w for w in c.metrics_warnings)
+
+
+def test_v0074_null_funded_share_does_not_gate() -> None:
+    """Sem funded_share (Fix A desligado / linha legada) o gate não dispara —
+    a confiança segue vindo só do span/closes dos fills."""
+    c = _complete_fills_candidate(sim_funded_share=None)
+    classify_metrics_confidence(c, CFG)
+
+    assert c.fills_metrics_confidence == "complete"
+    assert not any("cópia parcial" in w for w in c.metrics_warnings)
+
+
+def test_v0074_displayed_sim_net_is_stage4_not_f15() -> None:
+    """Unificação de janela (UPDATE-0074): o valor EXIBIDO/persistido
+    (`sim_net_pnl_usd`) é o stage4 (60d c/ latência), distinto do F15
+    (30d, sem latência) que segue em `sim_f15_net_usd`."""
+    from engine.strategies.copy_trade.funnel import compute_copy_sims
+    fills = swing_fills(pnl_each=800)
+    c = Candidate(address=GOOD)
+    c.equity = float(healthy_clearinghouse()["marginSummary"]["accountValue"])
+    compute_copy_sims(c, fills, CFG, NOW_MS)
+
+    assert c.sim_f15_net_usd is not None
+    assert c.sim_net_pnl_usd is not None
+    # o exibido casa com o stage4 (mesma janela+latência), não com o F15.
+    assert c.sim_net_pnl_usd == pytest.approx(c.sim_stage4_net_usd)

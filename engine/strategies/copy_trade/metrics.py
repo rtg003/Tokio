@@ -437,13 +437,19 @@ class CopySimulation:
     expectancy_usd: float = 0.0     # net / nº de trades fechados na janela
     max_dd_pct: float = 0.0         # max DD da curva de equity da cópia
     n_closed: int = 0               # trades fechados (closedPnl != 0)
+    # concorrência de capital (model_concurrency=True): fração do notional
+    # DESEJADO que coube no orçamento do espelho (mirror_capital × max_lev).
+    # 1.0 = nunca estourou o orçamento (comportamento clássico); < 1.0 = trader
+    # abre mais posições simultâneas do que $capital consegue espelhar.
+    funded_notional_share: float = 1.0
 
 
 def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
                   mirror_capital: float, *, taker_fee_pct: float = 0.045,
                   slippage_pct: float = 0.02, latency_slippage_pct: float = 0.0,
                   window_days: float = 30.0, max_copy_leverage: float | None = None,
-                  now_ms: float | None = None) -> CopySimulation | None:
+                  now_ms: float | None = None,
+                  model_concurrency: bool = False) -> CopySimulation | None:
     """Espelhamento retroativo: "se tivéssemos copiado este trader com
     `mirror_capital` na janela, qual seria o PnL LÍQUIDO de taxas+slippage?"
 
@@ -490,6 +496,19 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     como slippage EXTRA por perna (bps fixo, config). A curva de equity da cópia
     produz `max_dd_pct` e `expectancy_usd`.
 
+    `model_concurrency` (UPDATE-0074, opcional; default False = comportamento clássico
+    intacto) — modela a RESTRIÇÃO DE CAPITAL CONCORRENTE do espelho. O modelo base
+    dimensiona CADA fill contra o `mirror_capital` cheio de forma independente, como se
+    fosse possível financiar infinitas posições simultâneas — o que inflaciona o SIM NET
+    de traders hiperativos de equity minúscula (ex.: $394 → SIM $826k, economicamente
+    impossível). Com `model_concurrency=True`, o orçamento do espelho é
+    `mirror_capital × max_copy_leverage` (notional total aberto ≤ esse teto): um fill que
+    ABRE/aumenta posição só é financiado até o orçamento restante (funding fracional) e
+    fills de FECHAMENTO liberam o notional. O PnL e os custos de cada fill escalam pela
+    fração efetivamente financiada. Traders com poucas posições concorrentes (holds longos,
+    baixa frequência) ficam ~inalterados; hiperativos colapsam para o que o capital
+    REALMENTE espelha, mas NÃO são descartados (o número passa a ser honesto).
+
     Aproximações documentadas: equity ATUAL do trader como denominador do
     `fill_leverage` (equity da janela não é conhecido ponto a ponto); só PnL
     REALIZADO (rejeitar lucro não-realizado é intencional — dossiê #1 do Hermes);
@@ -515,6 +534,17 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
     equity = mirror_capital
     peak = equity
     max_dd = 0.0
+    # concorrência de capital (opcional): orçamento total = capital × teto de lev.
+    # Só entra se model_concurrency=True E houver teto (sem teto = sem orçamento
+    # finito → comportamento clássico). Rastreia por coin o notional DESEJADO
+    # (coin_full) e o EFETIVAMENTE financiado (coin_funded); `deployed` = soma global
+    # financiada aberta.
+    budget = (mirror_capital * max_lev) if (model_concurrency and max_lev) else None
+    coin_full: dict[str, float] = {}
+    coin_funded: dict[str, float] = {}
+    deployed = 0.0
+    total_full = 0.0
+    total_funded = 0.0
     for f in window:
         notional = abs(float(f.get("sz", 0) or 0) * float(f.get("px", 0) or 0))
         if notional <= 0 or equity <= 0:      # sem notional / conta liquidada
@@ -529,12 +559,62 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
         copy_notional = mirror_capital * fill_leverage
         if max_lev is not None:
             copy_notional = min(copy_notional, mirror_capital * max_lev)
-        notionals.append(copy_notional)
-        leg_cost = copy_notional * base_rate
-        leg_lat = copy_notional * lat_rate
+        # UPDATE-0074: fração efetiva do fill dado o orçamento concorrente do espelho.
+        # eff=1.0 quando desligado ou quando cabe no orçamento → idêntico ao clássico.
+        eff = 1.0
+        if budget is not None:
+            coin = str(f.get("coin"))
+            sz_abs = abs(float(f.get("sz", 0) or 0))
+            side = {"B": 1.0, "A": -1.0, "buy": 1.0, "sell": -1.0}.get(
+                str(f.get("side")), 0.0)
+            pre = float(f.get("startPosition", 0) or 0)
+            post = pre + side * sz_abs
+            if abs(post) < 1e-12:
+                post = 0.0
+            flip = pre != 0.0 and post != 0.0 and (pre > 0) != (post > 0)
+            cf = coin_full.get(coin, 0.0)
+            cfu = coin_funded.get(coin, 0.0)
+            if flip:
+                # fecha a perna antiga (realiza a fração financiada dela) e abre a nova.
+                # cf==0 com pre!=0 = posição PRÉ-EXISTENTE à janela → assume financiada
+                # (é real; o modelo clássico a conta — cf. position_episodes known_start).
+                eff = (cfu / cf) if cf > 0 else 1.0
+                deployed -= cfu
+                avail = max(budget - deployed, 0.0)
+                funded_add = min(copy_notional, avail)
+                coin_full[coin] = copy_notional
+                coin_funded[coin] = funded_add
+                deployed += funded_add
+                total_full += copy_notional
+                total_funded += funded_add
+            elif abs(post) >= abs(pre):
+                # abrindo ou aumentando exposição: financia até o orçamento restante
+                avail = max(budget - deployed, 0.0)
+                funded_add = min(copy_notional, avail)
+                coin_full[coin] = cf + copy_notional
+                coin_funded[coin] = cfu + funded_add
+                deployed += funded_add
+                total_full += copy_notional
+                total_funded += funded_add
+                eff = (funded_add / copy_notional) if copy_notional > 0 else 0.0
+            else:
+                # reduzindo/fechando: realiza a fração financiada e libera o notional.
+                # cf==0 com pre!=0 = posição PRÉ-EXISTENTE à janela → assume financiada.
+                eff = (cfu / cf) if cf > 0 else 1.0
+                red = min(1.0, (abs(pre) - abs(post)) / abs(pre)) if pre != 0 else 1.0
+                deployed -= cfu * red
+                coin_full[coin] = cf * (1.0 - red)
+                coin_funded[coin] = cfu * (1.0 - red)
+                if post == 0.0:
+                    coin_full[coin] = 0.0
+                    coin_funded[coin] = 0.0
+        eff_notional = copy_notional * eff
+        notionals.append(eff_notional)
+        leg_cost = eff_notional * base_rate
+        leg_lat = eff_notional * lat_rate
         cost += leg_cost + leg_lat
         lat_cost += leg_lat
-        pnl = ron * copy_notional
+        pnl = ron * eff_notional
         gross += pnl
         if pnl != 0.0:
             n_closed += 1
@@ -543,6 +623,7 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
         if peak > 0:
             max_dd = max(max_dd, (peak - equity) / peak)
     net = equity - mirror_capital     # honesto: ≥ −mirror_capital pelo piso
+    funded_share = (total_funded / total_full) if total_full > 0 else 1.0
     return CopySimulation(
         gross_pnl_usd=round(gross, 4),
         cost_usd=round(cost, 4),
@@ -553,6 +634,7 @@ def simulate_copy(fills: list[dict[str, Any]], trader_equity: float,
         expectancy_usd=round(net / n_closed, 4) if n_closed else 0.0,
         max_dd_pct=round(max_dd * 100, 2),
         n_closed=n_closed,
+        funded_notional_share=round(funded_share, 4),
     )
 
 

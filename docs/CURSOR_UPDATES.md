@@ -2804,3 +2804,52 @@ autodeploy reinicia o engine (~1min).
 ### Observabilidade (nao alterado, sinalizado)
 health.heartbeat reporta `targets: len(self._target_pos)` (simbolos, nao traders) — nao e
 contagem confiavel de traders inscritos.
+
+---
+
+## UPDATE-0074 · 2026-07-18 · Status: APLICADO
+
+**Origem**: rtg003 pediu SIM NET REAL p/ hiperativos (0xd487/0x8d7d/0x2179) sem descartar
+lucrativos e sem prejudicar saudaveis. Investigacao read-only sobre fills REAIS da VPS.
+
+**Tipo**: logica_discovery + config + UI + migracao + testes + docs.
+
+### Causa raiz (por que o SIM NET era irreal)
+Sob concorrencia de capital (Fix A, `model_concurrency=true`), o mirror ($1000x3=$3000) so
+financia ~0.1% do book de um hiperativo (~1090 posicoes simultaneas = 610 tpd x 43h/24 vs
+~1 slot). SIM NET tirado de 0.1% do book = ruido: 0xd487 oscilava -$1000 <-> $149k <-> $496k
+conforme a fatia de fills e a janela. Agravante: exibia-se o F15 (30d, SEM latencia) mas o
+gate/rank usava o stage4 (60d, COM latencia) — mismatch de janela por si so divergente.
+
+Sizing NAO e o culpado (provado read-only): composicao estoura (0xd487 -> 6.0e114 overflow;
+0x1a5 SOBE $3.1k->$3.9k); base-fixo (UPDATE-0071) correto. Residuo do 0xd487 e captura de
+edge/rotacao (edge por-fill 8.3%), nao sizing — fenomeno HFT. Encerra "investigar base-fixo".
+
+### Mudancas
+- **metrics.py** (ja de sessao anterior): `simulate_copy(..., model_concurrency=False)`
+  kw-only + `CopySimulation.funded_notional_share` (fracao do notional desejado que coube no
+  orcamento concorrente). Assinatura preservada (default = comportamento antigo).
+- **funnel.py**:
+  - `Candidate`: novos `sim_f15_net_usd` (F15 30d) e `sim_funded_share`; `sim_net_pnl_usd`
+    redefinido = **stage4 (60d c/ latencia)** = valor EXIBIDO/persistido/ordenado.
+  - `compute_copy_sims`: F15 -> `sim_f15_net_usd`; stage4 -> `sim_net_pnl_usd` +
+    `sim_funded_share = sim4.funded_notional_share`.
+  - `classify_metrics_confidence`: **gate de confiabilidade** — `funded_share <
+    min_funded_share` (e fills_conf=="complete") -> rebaixa p/ `sampled` + warning
+    "copia parcial: so ~X% do book...". Reusa a plumbing 0056/0059 (nula sim_* longitudinais,
+    filtros viram indeterminados — NAO reprova). NAO descarta o trader.
+  - F15 gate e score `sim_net` passam a ler `sim_f15_net_usd` (preserva ranking previo).
+  - display "60d c/ latencia"; persiste `sim_f15_net_usd` + `sim_funded_share`; reclassify
+    (`_sim_net_norm`) le `sim_f15_net_usd` com fallback p/ linhas legadas.
+- **config/discovery_config.yaml**: `copy_simulation.min_funded_share: 0.10`.
+- **db/migrations/0030_copy_funded_share.sql** (aditiva): ADD COLUMN `sim_funded_share REAL`
+  + `sim_f15_net_usd REAL`.
+- **TradersTable.tsx**: tooltip SIM NET "30d"->"60d c/ latencia"; celula sample mostra
+  "· copia parcial (X% do book)" via `sim_funded_share`. Fix B (hold<1h vermelho) mantido.
+- **Testes**: `test_v0074_*` (gate funded<limiar->sampled+warning; funded alto->complete;
+  null nao gateia; sim_net exibido == stage4) + ajuste do parametrize F15 p/ `sim_f15_net_usd`.
+
+### Validacao (read-only, fills reais)
+funded%: 0xd487 **0.19% -> sampled** (copia parcial, sim_net nulo, ambar); 0x8d7d 96% /
+0x2179 59% / 0xc05 25% / 0x1a5 46% -> **complete** (exibem stage4 60d). `pytest tests/ -q`
+-> **479 passed**. Nenhum write em producao antes do deploy; migracao roda no boot.

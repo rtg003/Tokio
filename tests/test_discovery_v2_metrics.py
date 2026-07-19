@@ -244,6 +244,71 @@ def test_simulate_copy_caps_notional_by_max_copy_leverage() -> None:
     assert capped.net_pnl_usd == pytest.approx(28.05)
 
 
+# --- UPDATE-0074: restrição de capital concorrente do espelho -----------------
+def oc_fill(t_ms: float, coin: str, sz: float, px: float, side: str,
+            start_pos: float, closed_pnl: float = 0.0) -> dict:
+    """Fill com posição reconstruível (startPosition/side) p/ testar concorrência."""
+    return {"coin": coin, "time": t_ms, "sz": sz, "px": px, "side": side,
+            "startPosition": start_pos, "closedPnl": closed_pnl}
+
+
+def test_concurrency_default_off_is_backward_compatible() -> None:
+    # Perfil sequencial (1 posição por vez) NÃO estoura o orçamento → ligar a
+    # concorrência não muda nada, e por padrão (flag off) o comportamento é o clássico.
+    fills = []
+    for i in range(5):
+        t = NOW - (10 - 2 * i) * 86_400_000.0
+        fills.append(oc_fill(t, "BTC", 1, 10_000, "B", 0.0))              # abre
+        fills.append(oc_fill(t + H, "BTC", 1, 10_000, "A", 1.0, 50.0))    # fecha +50
+    classic = simulate_copy(fills, 10_000, 1_000, max_copy_leverage=3.0, now_ms=NOW)
+    conc = simulate_copy(fills, 10_000, 1_000, max_copy_leverage=3.0,
+                         model_concurrency=True, now_ms=NOW)
+    assert classic is not None and conc is not None
+    # capital 1k × 10k/10k = notional 1k por posição < orçamento 3k → nunca corta
+    assert conc.net_pnl_usd == pytest.approx(classic.net_pnl_usd)
+    assert conc.funded_notional_share == pytest.approx(1.0)
+    assert classic.funded_notional_share == pytest.approx(1.0)  # off = 1.0
+
+
+def test_concurrency_collapses_hyperactive_over_budget() -> None:
+    # 10 posições ABERTAS simultâneas (coins distintos), cada uma exigindo $1k de
+    # notional espelhado; orçamento = capital $1k × 3 = $3k → só 3 cabem. As 7 não
+    # financiadas NÃO rendem no fechamento. Sem concorrência, todas rendem (inflado).
+    fills = []
+    coins = [f"C{i}" for i in range(10)]
+    for i, c in enumerate(coins):                     # abre todas antes de fechar
+        fills.append(oc_fill(NOW - 20 * 86_400_000.0 + i * H, c, 1, 10_000, "B", 0.0))
+    for i, c in enumerate(coins):                     # fecha todas com +100
+        fills.append(oc_fill(NOW - 5 * 86_400_000.0 + i * H, c, 1, 10_000, "A", 1.0, 100.0))
+    classic = simulate_copy(fills, 10_000, 1_000, max_copy_leverage=3.0, now_ms=NOW)
+    conc = simulate_copy(fills, 10_000, 1_000, max_copy_leverage=3.0,
+                         model_concurrency=True, now_ms=NOW)
+    assert classic is not None and conc is not None
+    # clássico: 10 closes × (100/10k) × 1k = $100 bruto (finge $1k financiando 10 pos).
+    assert classic.gross_pnl_usd == pytest.approx(100.0)
+    # concorrência: só 3 de 10 posições financiadas → ~$30 bruto; net honesto << inflado.
+    assert conc.gross_pnl_usd == pytest.approx(30.0)
+    assert conc.net_pnl_usd < classic.net_pnl_usd
+    assert conc.funded_notional_share == pytest.approx(0.3)
+
+
+def test_concurrency_leaves_low_frequency_trader_intact() -> None:
+    # Perfil "manter como opção" (tipo 0x2179): 1 coin, holds longos, sem sobreposição.
+    # A restrição de capital NÃO morde → SIM NET idêntico com e sem concorrência.
+    fills = [
+        oc_fill(NOW - 40 * 86_400_000.0, "ETH", 2, 5_000, "B", 0.0),
+        oc_fill(NOW - 30 * 86_400_000.0, "ETH", 2, 5_000, "A", 2.0, 300.0),
+        oc_fill(NOW - 20 * 86_400_000.0, "ETH", 2, 5_000, "B", 0.0),
+        oc_fill(NOW - 10 * 86_400_000.0, "ETH", 2, 5_000, "A", 2.0, 300.0),
+    ]
+    classic = simulate_copy(fills, 50_000, 1_000, max_copy_leverage=3.0, now_ms=NOW)
+    conc = simulate_copy(fills, 50_000, 1_000, max_copy_leverage=3.0,
+                         model_concurrency=True, now_ms=NOW)
+    assert classic is not None and conc is not None
+    assert conc.net_pnl_usd == pytest.approx(classic.net_pnl_usd)
+    assert conc.funded_notional_share == pytest.approx(1.0)
+
+
 # --- Estágio 4 (v8): latência, expectância, DD da cópia e fator de ranking --------
 def test_simulate_copy_latency_cost_reduces_net() -> None:
     fills = [sim_fill(NOW - 2 * 86_400_000.0, 1, 10_000, closed_pnl=100)]

@@ -154,6 +154,23 @@ copy_simulation:
   # Racional do 3: DD escala ~linear com lev; custo 10x = 1.3% do capital/trade;
   # teto 1x derrubaria fills abaixo do mínimo de $10/ordem da HL.
   max_copy_leverage: 3.0
+  # UPDATE-0074: restrição de CAPITAL CONCORRENTE. O sizing base dimensiona cada
+  # fill contra o capital cheio como se fosse possível ter infinitas posições
+  # simultâneas — inflaciona o SIM NET de hiperativos de equity minúscula (ex.:
+  # 0xd487, equity $394 → SIM $826k, impossível com $1k). Com true, o notional
+  # total ABERTO é limitado a capital × max_copy_leverage; fills que não cabem no
+  # orçamento não são financiados (PnL/custo escalam pela fração financiada).
+  # Traders de holds longos/baixa frequência ficam ~intactos; hiperativos
+  # colapsam para o SIM NET HONESTO (não são descartados — só o número fica real).
+  model_concurrency: true
+  # UPDATE-0074: fração MÍNIMA do book que o espelho precisa financiar p/ o SIM NET
+  # longitudinal ser CONFIÁVEL. Se `funded_share` (saída do model_concurrency) fica
+  # abaixo disto, a métrica é amostra minúscula do que se copiaria de fato → a
+  # confiança cai p/ "sampled" (as sim_* longitudinais são nuladas, a UI mostra a
+  # simulação AMOSTRAL + badge âmbar + aviso "cópia parcial"). NÃO reprova — o
+  # trader segue disponível, só sem número fantasia. 0.10 = 10%: 0xd487 (~0.1%) cai;
+  # saudáveis (25–96%) passam. Null/ausente = gate desligado.
+  min_funded_share: 0.10
   factor_floor: 0.5               # fator mínimo (informativo desde a v9)
   factor_cap: 1.2                 # fator máximo (informativo desde a v9)
 
