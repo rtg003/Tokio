@@ -4182,3 +4182,45 @@ TradersTable.tsx, migração 0030, testes, docs).
 **Validação**: na dashboard de Copy Trade, 0xd487 deve exibir badge âmbar + tooltip "cópia
 parcial (~X% do book)"; traders saudáveis exibem SIM NET (60d c/ latência) com badge de
 dados completos; a ordenação por SIM NET joga os `sampled` (SIM NET nulo) p/ o fim.
+
+
+## UPDATE-0075 · 2026-07-19 · Status: PENDENTE
+
+**Origem**: report do rtg003 sobre o incidente em produção de 2026-07-19 01:50 UTC no executor
+de copy trade (trader 0x8d7d, TESTNET). Três sintomas reais: (1) uma posição nova (CRV) que o
+trader abriu NUNCA foi copiada e não aparecia em NENHUM evento; (2) posições fantasmas (ETH,
+ADA) que sobraram na nossa venue ficavam presas sem fechar; (3) o log `reconcile.stuck` se
+repetia a cada ~50s, poluindo o loop.
+
+**Tipo**: executor copy_trade (só observabilidade + lógica de reconcile) + testes + docs.
+**O caminho crítico de ordens NÃO foi alterado** — nenhum risco de mudar como as ordens são
+enviadas/dimensionadas.
+
+**Resumo (o porquê — não "corrija" de volta)**:
+- **Por que a CRV não era copiada**: a nossa venue (testnet) provavelmente **não tem preço/não
+  lista CRV**; o executor pulava o símbolo em SILÊNCIO (sem log), então "não copiou" ficava
+  invisível. Agora isso emite **`decision.skipped_no_price`** (uma vez) e o símbolo é cacheado —
+  fica visível e para de reprocessar. **Não é** um bug de leitura da posição do trader (essa já
+  é um snapshot correto do clearinghouse).
+- **Fantasmas**: após 3 tentativas o executor desistia sem zerar. Agora, quando a venue REAL
+  confirma a posição e a falha é recuperável, ele **força um fechamento a mercado** (log
+  `reconcile.force_close`). Se a razão NÃO for recuperável (ex.: sem preço), NÃO força cego.
+- **Log saturando**: adicionado **backoff** — depois de travar, o `reconcile.stuck` é logado
+  UMA vez (não a cada ciclo) e agora **inclui o `reason`** (o motivo da falha).
+- Também: quando o teto de alavancagem corta o tamanho de uma ordem, isso agora é logado
+  (`decision.size_capped`).
+
+**Ações do Hermes**:
+1. Deploy normal (push = autodeploy pull-based; sem migração nesta atualização).
+2. **Validar via `events`** (read-only) no trader 0x8d7d:
+   - `SELECT * FROM events WHERE event_type='decision.skipped_no_price'` → deve listar a CRV
+     (confirma a causa real: ativo sem preço na nossa venue).
+   - `SELECT payload FROM events WHERE event_type='reconcile.stuck'` → o payload agora traz
+     o campo `reason` (ex.: `order_rejected`, `no_price_*`, `cap_room_below_min`).
+   - Se aparecer `reconcile.force_close`, confirmar que a posição fantasma correspondente
+     zerou na venue.
+3. Reportar de volta os `reason` observados — eles dizem POR QUE os fantasmas travavam, e
+   guiam o próximo passo (se algum reason recorrente pedir tratamento dedicado).
+
+**Validação (local)**: `pytest tests/ -q` → **486 passed** (479 + 7 testes novos). Nenhum
+write em produção antes do deploy.

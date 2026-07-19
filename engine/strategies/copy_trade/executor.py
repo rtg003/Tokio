@@ -173,6 +173,14 @@ class CopyTradeExecutor:
         # garante UM log por símbolo até o cache expirar.
         self._illiquid: dict[str, float] = {}
         self._illiquid_logged: set[str] = set()
+        # (strategy_id, symbol) -> última razão de falha do gateway no reconcile
+        # (result.reason). Incluída no `reconcile.stuck` p/ diagnosticar POR QUE o
+        # símbolo não converge (ex.: no_price, no_liquidity, cap_room_below_min).
+        self._reconcile_last_reason: dict[tuple[str, str], str] = {}
+        # (strategy_id, symbol) -> ciclos de reconcile a PULAR após atingir o cap
+        # de tentativas. Sem backoff, um símbolo travado re-logava/reenviava a
+        # cada ciclo (~60s), poluindo o loop. Reset quando o símbolo realinha.
+        self._reconcile_backoff: dict[tuple[str, str], int] = {}
         self.reload_traders()
 
     # cooldown after a reconcile intent — MUST exceed the reconcile interval
@@ -185,6 +193,12 @@ class CopyTradeExecutor:
     # correcting and log `reconcile.stuck` — a persistently-rejected order must not
     # loop forever.
     RECONCILE_MAX_ATTEMPTS = 3
+
+    # ciclos de reconcile a PULAR após um símbolo atingir RECONCILE_MAX_ATTEMPTS,
+    # antes de re-avaliar (force-close reason-aware ou re-log). Sem isto, um
+    # símbolo travado re-logava/reenviava a cada ciclo (~50s) e saturava o loop
+    # (4 símbolos re-logados no incidente 2026-07-19). Reset quando realinha.
+    RECONCILE_STUCK_BACKOFF_CYCLES = 5
 
     # partial fills consecutivos no MESMO (strategy, symbol) antes de tratar o
     # símbolo como ilíquido: um book raso (ex.: HYPE testnet) preenche pouco a
@@ -217,6 +231,15 @@ class CopyTradeExecutor:
             self._illiquid_logged.add(symbol)
             self.logger.info("decision.skipped_no_liquidity", {"symbol": symbol},
                              strategy_id=strategy_id, latency_ms=latency_ms)
+
+    def _clear_reconcile(self, key: tuple[str, str]) -> None:
+        """Zera TODO o estado de reconcile de um (strategy, symbol) que realinhou:
+        tentativas, última razão de falha e backoff. Chamado sempre que o símbolo
+        converge (delta abaixo do step/min-notional/tolerância, progresso de fill
+        ou ausência de preço) para que um travamento antigo não deixe resíduo."""
+        self._reconcile_attempts.pop(key, None)
+        self._reconcile_last_reason.pop(key, None)
+        self._reconcile_backoff.pop(key, None)
 
     def _record_partial_streak(self, key: tuple[str, str], symbol: str,
                                strategy_id: str, *, filled: float,
@@ -566,6 +589,16 @@ class CopyTradeExecutor:
         # ordem, então não adiciona gate no caminho de ordem (INVARIANTE).
         notional_max = my_eq * cfg.max_leverage
         if notional_max > 0 and notional > notional_max:
+            # Observabilidade (Fix #5): registra QUANDO o teto de alavancagem corta
+            # o size. Só ADICIONA log — não muda a fórmula (INVARIANTE de sizing) e
+            # dispara apenas no corte (raro). Fora do hot path §8.4.1 do gateway.
+            self.logger.info(
+                "decision.size_capped",
+                {"symbol": symbol,
+                 "requested_notional": round(notional, 4),
+                 "capped_notional": round(notional_max, 4),
+                 "max_leverage": cfg.max_leverage},
+                strategy_id=cfg.strategy_id)
             notional = notional_max
         return (notional / px) * sign
 
@@ -612,12 +645,27 @@ class CopyTradeExecutor:
                 # ilíquido recente: não reenvia a cada ciclo de reconcile (fonte
                 # da poluição de `rejected` — log 1x já feito ao cachear).
                 if self._is_illiquid(symbol):
-                    self._reconcile_attempts.pop((sid, symbol), None)
+                    self._clear_reconcile((sid, symbol))
                     continue
                 key = (sid, symbol)
                 target_now = float(target_pos.get(symbol, 0.0))
                 px = self._mid_price(symbol, environment)
                 if px <= 0:
+                    # Sem preço na NOSSA venue (ex.: ativo não listado na testnet).
+                    # O alvo pode ter a posição (CRV +2921 no incidente 2026-07-19)
+                    # mas não conseguimos espelhá-la. Antes era um skip SILENCIOSO
+                    # (o símbolo sumia de TODOS os eventos, tornando o "não copiou"
+                    # invisível); agora loga 1x e cacheia como ilíquido p/ não
+                    # reprocessar todo ciclo. Reusa a plumbing de ilíquido
+                    # (`_illiquid`/`_illiquid_logged`/TTL) SEM o log de no_liquidity.
+                    if symbol not in self._illiquid_logged:
+                        self._illiquid_logged.add(symbol)
+                        self.logger.info(
+                            "decision.skipped_no_price",
+                            {"symbol": symbol, "target_now": target_now},
+                            strategy_id=sid)
+                    self._illiquid[symbol] = time.monotonic()
+                    self._clear_reconcile(key)
                     continue
                 desired = self._desired_mirror(cfg, symbol, target_now, px, environment)
                 sz_decimals = self._sz_decimals_for(symbol, environment)
@@ -661,32 +709,51 @@ class CopyTradeExecutor:
                             reason="drift.venue_resync", environment=environment)
                 # step / min-notional guards (same as on_target_fill)
                 if sz_decimals is not None and abs(delta) < 10 ** (-sz_decimals):
-                    self._reconcile_attempts.pop(key, None)
+                    self._clear_reconcile(key)
                     continue
                 if abs(delta) * px < self._min_notional_for(cfg):
-                    self._reconcile_attempts.pop(key, None)
+                    self._clear_reconcile(key)
                     continue
                 # drift tolerance: don't chase sub-5% differences (cents).
                 base = max(abs(desired), abs(actual))
                 if base > 0 and abs(delta) <= DRIFT_TOLERANCE * base:
-                    self._reconcile_attempts.pop(key, None)
+                    self._clear_reconcile(key)
                     continue
                 # anti-double-send: skip if we already corrected this key and the
                 # fill hasn't had time to reflect in the ledger yet.
                 last = self._reconcile_cooldown.get(key)
                 if last is not None and now - last < self.RECONCILE_COOLDOWN_S:
                     continue
+                reduce_only = abs(desired) < abs(actual) or desired == 0.0
                 # runaway guard: a symbol that keeps drifting after N corrections
-                # (e.g. persistently rejected) is stuck — stop and alert.
+                # (e.g. persistently rejected) is stuck.
                 attempts = self._reconcile_attempts.get(key, 0)
                 if attempts >= self.RECONCILE_MAX_ATTEMPTS:
-                    self.logger.warning(
-                        "reconcile.stuck",
-                        {"symbol": symbol, "desired": desired, "actual": actual,
-                         "delta": delta, "attempts": attempts},
-                        strategy_id=sid)
+                    # backoff (Fix #3): após o cap, pula N ciclos antes de
+                    # re-avaliar — sem isto o símbolo re-logava/reenviava a cada
+                    # ciclo (~50s) e saturava o loop (incidente 2026-07-19).
+                    backoff = self._reconcile_backoff.get(key, 0)
+                    if backoff > 0:
+                        self._reconcile_backoff[key] = backoff - 1
+                        continue
+                    reason = self._reconcile_last_reason.get(key)
+                    # force-close REASON-AWARE (Fix #2): fecha o fantasma preso só
+                    # quando é seguro (redução/fecho + venue confirma + razão
+                    # recuperável). Detalhes em `_maybe_force_close`.
+                    forced = self._maybe_force_close(
+                        sid, cfg, symbol, key, reason, reduce_only,
+                        environment, now)
+                    if not forced:
+                        # `reason` (Fix #4): diagnostica POR QUE não converge
+                        # (order_rejected, cap_room_below_min, no_price, ...).
+                        self.logger.warning(
+                            "reconcile.stuck",
+                            {"symbol": symbol, "desired": desired, "actual": actual,
+                             "delta": delta, "attempts": attempts, "reason": reason},
+                            strategy_id=sid)
+                        self._reconcile_backoff[key] = \
+                            self.RECONCILE_STUCK_BACKOFF_CYCLES
                     continue
-                reduce_only = abs(desired) < abs(actual) or desired == 0.0
                 info = {"symbol": symbol, "target_now": target_now,
                         "desired": desired, "actual": actual, "delta": delta}
                 self.logger.warning("drift.correcting", info, strategy_id=sid)
@@ -727,15 +794,73 @@ class CopyTradeExecutor:
                     # primário anti-runaway; o cap só acumula em rejeição
                     # (ok=False, sem cooldown) ou fill zero (sem progresso).
                     if filled is None or float(filled) > 0.0:
-                        self._reconcile_attempts.pop(key, None)
+                        self._clear_reconcile(key)
                 elif result.get("reason") == "no_liquidity":
                     # cacheia p/ parar de reenviar nos próximos ciclos (log 1x).
                     self._mark_illiquid(symbol, sid)
-                    self._reconcile_attempts.pop(key, None)
+                    self._clear_reconcile(key)
+                else:
+                    # rejeição recuperável (order_rejected, cap_room_below_min, …):
+                    # guarda a razão p/ o `reconcile.stuck`/force-close a usarem.
+                    self._reconcile_last_reason[key] = \
+                        result.get("reason") or "unknown"
                 corrections.append({"strategy_id": sid, **info, "result": result})
         # venue cross-check (observability only — never corrects across strategies)
         self._venue_cross_check(ledger)
         return corrections
+
+    def _maybe_force_close(self, sid: str, cfg: TraderConfig, symbol: str,
+                           key: tuple[str, str], reason: str | None,
+                           reduce_only: bool, environment: str | None,
+                           now: float) -> bool:
+        """Fecha um fantasma preso no cap de reconcile — SÓ quando é seguro (Fix #2).
+
+        Um `reduce_only` que falha repetidamente pode ser (a) fantasma REAL na
+        venue que precisa ser zerado à força, ou (b) posição inexistente
+        ("empty response"/sem preço) onde forçar falharia igual. Distinguimos:
+          - só age em redução/fecho (`reduce_only`);
+          - só quando a venue REAL confirma a posição (`_venue_position` != 0);
+          - só quando a razão da falha é RECUPERÁVEL (não `no_liquidity`/`no_price`).
+        Emite um `reduce_only` de mercado do tamanho EXATO da venue, loga
+        `reconcile.force_close` e retorna True se forçou (limpando o estado)."""
+        if not reduce_only or reason is None:
+            return False
+        if reason == "no_liquidity" or reason.startswith("no_price"):
+            return False
+        venue = self._venue_position(sid, symbol, environment)
+        if venue is None or abs(venue) <= 0:
+            return False
+        result = self.gateway.send_intent(
+            strategy_id=sid,
+            symbol=symbol,
+            side="buy" if venue < 0 else "sell",
+            size=abs(venue),
+            order_type="market",
+            reduce_only=True,
+            leverage=cfg.max_leverage,
+            dry_run=self._is_dry_run(cfg),
+            environment=environment,
+        )
+        ok = bool(result.get("ok"))
+        self.logger.warning(
+            "reconcile.force_close",
+            {"symbol": symbol, "venue": venue, "reason": reason, "ok": ok,
+             "result_reason": result.get("reason")},
+            strategy_id=sid)
+        if not ok:
+            # a força também falhou: atualiza a razão e deixa cair no stuck/backoff.
+            self._reconcile_last_reason[key] = result.get("reason") or reason
+            return False
+        filled = result.get("filled_size")
+        if filled is None:
+            self._my_pos[key] = 0.0
+        else:
+            f = float(filled)
+            signed = f if venue < 0 else -f
+            self._my_pos[key] = venue + signed
+        self._reconcile_cooldown[key] = now
+        self._clear_reconcile(key)
+        return True
 
     def _mid_price(self, symbol: str, environment: str | None) -> float:
         """Best-effort mid price for reconcile sizing (via gateway market-meta)."""

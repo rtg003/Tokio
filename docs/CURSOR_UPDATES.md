@@ -2853,3 +2853,51 @@ edge/rotacao (edge por-fill 8.3%), nao sizing — fenomeno HFT. Encerra "investi
 funded%: 0xd487 **0.19% -> sampled** (copia parcial, sim_net nulo, ambar); 0x8d7d 96% /
 0x2179 59% / 0xc05 25% / 0x1a5 46% -> **complete** (exibem stage4 60d). `pytest tests/ -q`
 -> **479 passed**. Nenhum write em producao antes do deploy; migracao roda no boot.
+
+
+## UPDATE-0075 · 2026-07-19 · Status: APLICADO
+
+**Origem**: report do rtg003 ("Fix DEFINITIVO…") — incidente em producao 2026-07-19 01:50 UTC
+(trader 0x8d7d, TESTNET): (1) CRV nova (+2921) NUNCA copiada e ausente de TODOS os eventos;
+(2) fantasmas (ETH/ADA) presos em `attempts:3` sem fechar; (3) `reconcile.stuck` re-logado a
+cada ~50s poluindo o loop.
+
+**Tipo**: executor copy_trade (observabilidade + reconcile) + testes + docs. **Hot path
+§8.4.1 (/intent, handle_intent) NAO tocado** — o gateway ja retorna `reason`; o executor so
+o CAPTURA.
+
+### Diagnostico (report certo no sintoma, errado no mecanismo — licao UPDATE-0073)
+- **CRV (P1)**: o report culpou `target_positions` ("nao inclui CRV; adicionar cache 30-60s").
+  FALSO: `target_positions` (executor.py:115) JA e snapshot fresco do clearinghouse
+  (`watcher.target_positions`, wired na 921). Cache NAO conserta e ATRASA posicoes novas — **nao
+  implementado**. Causa real: skip SILENCIOSO `if px<=0: continue` no reconcile — CRV
+  provavelmente nem esta listada na nossa venue testnet (`market_meta` sem mid).
+- **Fantasmas (P2)**: apos `RECONCILE_MAX_ATTEMPTS` fazia `continue` sem fechar. Certo. Mas
+  force-close CEGO e arriscado: se a falha for no_price/empty, forcar tambem falha. -> **reason-aware**.
+- **stuck satura (P3)**: re-logava/reenviava a cada ciclo (sem backoff). Certo. Porem "bloqueia
+  CRV" e FALSO — stuck faz `continue` p/ o proximo simbolo; CRV cai sozinha (px<=0).
+
+### Mudancas (`engine/strategies/copy_trade/executor.py`)
+- **Fix #4** — `reconcile.stuck` agora carrega `reason` (ultimo `result.get("reason")` do
+  gateway, guardado em `_reconcile_last_reason`). Diagnostica POR QUE nao converge.
+- **Fix #1 (CRV)** — `px<=0` deixa de ser skip silencioso: loga `decision.skipped_no_price`
+  (1x) e cacheia o simbolo como iliquido (reusa `_illiquid`/`_is_illiquid`/TTL) — sem o log
+  de no_liquidity. NAO implementado o cache de `target_positions` do report.
+- **Fix #3** — `RECONCILE_STUCK_BACKOFF_CYCLES = 5`: apos o cap, pula N ciclos (`_reconcile_backoff`)
+  antes de re-avaliar; stuck logado 1x em vez de todo ciclo.
+- **Fix #2** — `_maybe_force_close`: forca `reduce_only` de mercado do tamanho EXATO da venue
+  APENAS quando (a) e reducao/fecho, (b) `_venue_position` confirma a posicao e (c) a razao e
+  recuperavel (nao `no_liquidity`/`no_price`). Loga `reconcile.force_close`.
+- **Fix #5** — `decision.size_capped` logado em `_desired_mirror` quando o teto
+  `my_eq*max_leverage` corta o size (so ADICIONA log; formula de sizing inalterada — INVARIANTE).
+- Helper `_clear_reconcile(key)` centraliza a limpeza de attempts+reason+backoff em todo ponto
+  de realinhamento.
+
+### Testes
+`test_v0075_*` (7): reason no stuck; no_price loga+cacheia+nao-stuck; no_price logado 1x em N
+ciclos; backoff nao re-loga; force_close zera fantasma confirmado; NAO forca em razao
+nao-recuperavel; size_capped logado. `pytest tests/ -q` -> **486 passed** (479 + 7).
+
+### Ações do Hermes (pós-deploy)
+Ver UPDATE-0075 no `HERMES_UPDATES.md`: confirmar via `events` que CRV emite
+`decision.skipped_no_price` (prova a causa real) e que `reconcile.stuck` traz `reason`.

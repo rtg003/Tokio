@@ -742,6 +742,165 @@ def test_reconcile_stuck_after_three_attempts(settings, db) -> None:
     assert len(gw.intents) == ex.RECONCILE_MAX_ATTEMPTS  # 3 sends, then stuck
 
 
+# -- UPDATE-0075: observabilidade + fantasmas + backoff no reconcile ----------
+# Incidente 2026-07-19 (trader 0x8d7d): (1) CRV nova nunca copiada e ausente de
+# TODOS os eventos (skip silencioso por px<=0 — ativo sem preço na nossa venue);
+# (2) fantasmas presos no cap sem fechar; (3) `reconcile.stuck` re-logado a cada
+# ciclo saturando o loop. Fixes: reason no stuck, log/cache de no_price, backoff,
+# force-close reason-aware, e log de size_capped no teto de alavancagem.
+
+def test_v0075_reconcile_stuck_includes_reason(settings, db) -> None:
+    """Fix #4: `reconcile.stuck` agora carrega o `reason` do gateway (diagnostica
+    POR QUE não converge) em vez de só as tentativas."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}  # abrir (reduce_only=False)
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+
+    def rejecting(**p: Any) -> dict[str, Any]:
+        gw.intents.append(p)
+        return {"ok": False, "reason": "order_rejected"}
+
+    gw.send_intent = rejecting
+    for _ in range(4):
+        ex.reconcile()
+    row = db.query("SELECT payload FROM events WHERE event_type = 'reconcile.stuck'")
+    assert row
+    assert json.loads(row[0]["payload"])["reason"] == "order_rejected"
+
+
+def test_v0075_no_price_skips_logs_and_not_stuck(settings, db) -> None:
+    """Fix #1 (CRV): alvo tem a posição mas a NOSSA venue não tem preço (ativo
+    não listado). Antes = skip SILENCIOSO (invisível). Agora loga
+    `decision.skipped_no_price`, NÃO envia ordem, NÃO vira stuck e cacheia."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {"CRV": 2921.0}
+    gw.mids = {}  # sem preço p/ CRV -> px <= 0
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+    ex.reconcile()
+    assert gw.intents == []
+    ev = db.query(
+        "SELECT payload FROM events WHERE event_type = 'decision.skipped_no_price'")
+    assert ev and json.loads(ev[0]["payload"])["symbol"] == "CRV"
+    assert db.query(
+        "SELECT 1 FROM events WHERE event_type = 'reconcile.stuck'") == []
+    assert ex._is_illiquid("CRV")
+
+
+def test_v0075_no_price_logged_once_across_cycles(settings, db) -> None:
+    """Fix #1: apesar de N ciclos, `decision.skipped_no_price` é logado UMA vez
+    (cache ilíquido) e nunca reenvia ordem — não polui o loop."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {"CRV": 2921.0}
+    gw.mids = {}
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+    for _ in range(5):
+        ex.reconcile()
+    logs = db.query(
+        "SELECT 1 FROM events WHERE event_type = 'decision.skipped_no_price'")
+    assert len(logs) == 1
+    assert gw.intents == []
+
+
+def test_v0075_stuck_backoff_stops_relogging(settings, db) -> None:
+    """Fix #3: após o cap, o símbolo travado entra em backoff — `reconcile.stuck`
+    é logado UMA vez (não a cada ciclo) e não há reenvio durante o backoff."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {"FARTCOIN": -416.0}
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {}}}
+
+    def rejecting(**p: Any) -> dict[str, Any]:
+        gw.intents.append(p)
+        return {"ok": False, "reason": "order_rejected"}
+
+    gw.send_intent = rejecting
+    for _ in range(8):
+        ex.reconcile()
+    # 3 sends até o cap; durante o backoff (5 ciclos) nada é reenviado nem re-logado
+    assert len(gw.intents) == ex.RECONCILE_MAX_ATTEMPTS
+    assert len(db.query(
+        "SELECT 1 FROM events WHERE event_type = 'reconcile.stuck'")) == 1
+
+
+def test_v0075_force_close_zeroes_confirmed_ghost(settings, db) -> None:
+    """Fix #2: fantasma que a venue CONFIRMA e cuja falha é recuperável é fechado
+    à força (reduce_only de mercado) após o cap; loga `reconcile.force_close` e
+    zera a posição."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {}  # trader flat -> desired 0
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {"FARTCOIN": {"size": -100.0}}}}
+    gw.positions_response = [{"symbol": "FARTCOIN", "size": -100.0}]  # venue confirma
+
+    calls = {"n": 0}
+
+    def send(**p: Any) -> dict[str, Any]:
+        gw.intents.append(p)
+        calls["n"] += 1
+        if calls["n"] <= ex.RECONCILE_MAX_ATTEMPTS:  # 3 rejeições até o cap
+            return {"ok": False, "reason": "order_rejected"}
+        return {"ok": True, "status": "filled", "filled_size": p["size"]}
+
+    gw.send_intent = send
+    for _ in range(4):
+        ex.reconcile()
+    fc = db.query(
+        "SELECT payload FROM events WHERE event_type = 'reconcile.force_close'")
+    assert fc
+    pl = json.loads(fc[0]["payload"])
+    assert pl["ok"] is True and pl["reason"] == "order_rejected"
+    assert ex._my_pos[("ct_whale01", "FARTCOIN")] == 0.0
+    assert len(gw.intents) == ex.RECONCILE_MAX_ATTEMPTS + 1  # 3 rejeitados + 1 forçado
+
+
+def test_v0075_no_force_close_on_non_recoverable_reason(settings, db) -> None:
+    """Fix #2 (segurança): se a razão NÃO é recuperável (no_price/empty), NÃO
+    força fechamento cego (forçar contra um fantasma inexistente falharia igual);
+    apenas loga `reconcile.stuck`."""
+    ex, watcher, gw = make_executor(settings, db, value=100.0)
+    ex.RECONCILE_COOLDOWN_S = 0.0
+    watcher.positions[TARGET] = {}  # desired 0
+    gw.mids = {"FARTCOIN": 1.0}
+    gw.ledger_response = {"ct_whale01": {"positions": {"FARTCOIN": {"size": -100.0}}}}
+    gw.positions_response = [{"symbol": "FARTCOIN", "size": -100.0}]  # venue confirma
+
+    def reject_no_price(**p: Any) -> dict[str, Any]:
+        gw.intents.append(p)
+        return {"ok": False, "reason": "no_price_FARTCOIN"}
+
+    gw.send_intent = reject_no_price
+    for _ in range(4):
+        ex.reconcile()
+    assert db.query(
+        "SELECT 1 FROM events WHERE event_type = 'reconcile.force_close'") == []
+    stuck = db.query(
+        "SELECT payload FROM events WHERE event_type = 'reconcile.stuck'")
+    assert stuck and json.loads(stuck[0]["payload"])["reason"] == "no_price_FARTCOIN"
+    assert len(gw.intents) == ex.RECONCILE_MAX_ATTEMPTS  # nenhum send forçado
+
+
+def test_v0075_size_capped_is_logged(settings, db) -> None:
+    """Fix #5: quando o teto de alavancagem (my_eq * max_leverage) corta o size, o
+    corte agora é observável via `decision.size_capped` (só ADICIONA log — não
+    muda a fórmula de sizing)."""
+    ex, watcher, gw = make_executor(settings, db, mode="percent", value=1.0,
+                                    max_leverage=3.0)
+    # baleia (100k eq) abre 10 BTC @50k -> proporcional 5000 USD > teto 3000.
+    watcher.emit(TARGET, fill("BTC", "B", 10.0, 50_000.0, start_pos=0.0))
+    ev = db.query(
+        "SELECT payload FROM events WHERE event_type = 'decision.size_capped'")
+    assert ev
+    pl = json.loads(ev[0]["payload"])
+    assert pl["symbol"] == "BTC"
+    assert pl["capped_notional"] == pytest.approx(3000.0)
+
+
 def test_gateway_wait_ready_tolerates_early_failures() -> None:
     from engine.strategies.base_runner import GatewayClient
 
