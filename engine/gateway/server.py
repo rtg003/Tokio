@@ -869,62 +869,13 @@ def _control_auth(x_control_token: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="invalid control token")
 
 
-def _suggestion_extras(c: Any) -> dict[str, Any]:
-    """Mapeamento de `extras` de um Candidate p/ `upsert_candidate`, espelhando
-    `funnel.persist_scan` (l.1075-1099). Curadoria manual NUNCA grava
-    reject_reason (força-salvar mantém a wallet como SUGERIDO limpo)."""
-    import json
-
-    from engine.strategies.copy_trade.funnel import serialize_components
-    return {
-        "n_trades_30d": c.n_trades_30d,
-        "n_trades_7d": c.n_trades_7d,
-        "win_rate_30d": c.win_rate_30d,
-        "avg_holding_hours": c.median_hold_hours,
-        "avg_leverage": c.avg_leverage,
-        "equity": c.equity,
-        "top_assets": json.dumps(c.top_assets, ensure_ascii=False),
-        "last_activity": c.last_activity,
-        "windows_positive": c.windows_positive,
-        "history_truncated": 1 if c.history_truncated else 0,
-        "max_current_leverage": c.max_current_leverage,
-        "available_margin_pct": c.available_margin_pct,
-        "sim_net_pnl_usd": c.sim_net_pnl_usd,
-        "sim_expectancy_usd": c.sim_expectancy_usd,
-        "sim_max_dd_pct": c.sim_max_dd_pct,
-        "sim_factor": c.sim_factor,
-        "coverage_days": c.coverage_days,
-        "sim_half_old_net": c.sim_half_old_net,
-        "sim_half_new_net": c.sim_half_new_net,
-        # UPDATE-0076: espelha os campos do UPDATE-0074 (calculados em
-        # compute_copy_sims) que o scan em massa já persiste mas o caminho de
-        # curadoria individual (analyze/save/reclassify) esquecia — deixando as
-        # colunas NULL e o gate de confiabilidade invisível na UI.
-        "sim_f15_net_usd": getattr(c, "sim_f15_net_usd", None),
-        "sim_funded_share": getattr(c, "sim_funded_share", None),
-        # UPDATE-0057 (Fase 2): confiança/idade/amostra + enriquecimento
-        # HyperTracker em colunas próprias. A análise individual É quem computa
-        # os ht_* (o scan em massa não), então o força-salvar os persiste.
-        "metrics_confidence": getattr(c, "metrics_confidence", "complete"),
-        "wallet_age_days": getattr(c, "wallet_age_days", None),
-        "fills_sample_days": getattr(c, "fills_sample_days", None),
-        "fills_sample_count": getattr(c, "fills_sample_count", 0),
-        "ht_earliest_activity_ms": getattr(c, "ht_earliest_activity_ms", None),
-        "ht_total_equity": getattr(c, "ht_total_equity", None),
-        "ht_perp_pnl": getattr(c, "ht_perp_pnl", None),
-        "ht_exposure_ratio": getattr(c, "ht_exposure_ratio", None),
-        # UPDATE-0059: simulação AMOSTRAL (família paralela; a guarda anti-
-        # sobrescrita não se aplica — sempre gravada quando presente).
-        "sample_sim_net_usd": getattr(c, "sample_sim_net_usd", None),
-        "sample_sim_expectancy_usd": getattr(c, "sample_sim_expectancy_usd", None),
-        "sample_sim_max_dd_pct": getattr(c, "sample_sim_max_dd_pct", None),
-        "sample_sim_window_days": getattr(c, "sample_sim_window_days", None),
-        "sample_sim_net_per_day": getattr(c, "sample_sim_net_per_day", None),
-        # UPDATE-0062 (v15): fonte das métricas de posição (hypertracker | hl_fills).
-        "position_metrics_source": getattr(c, "position_metrics_source", "hl_fills"),
-        "score_components": serialize_components(c.components)
-        if c.components is not None else None,
-    }
+# UPDATE-0081: o mapeamento de `extras` migrou p/ `funnel.suggestion_extras`
+# (reusado pelo endpoint humano E pelo job de reclassificação de 2h do
+# discovery_scheduler, que não pode importar o módulo do gateway). Alias fino
+# preserva as referências existentes neste módulo.
+from engine.strategies.copy_trade.funnel import (  # noqa: E402
+    suggestion_extras as _suggestion_extras,
+)
 
 
 def _suggestion_report(c: Any) -> dict[str, Any]:
@@ -2638,9 +2589,7 @@ def build_app(state: GatewayState) -> FastAPI:
         (upsert_candidate nunca os toca). Não reprova ninguém. Ato humano
         autenticado (X-Control-Token). Se `addresses` vier vazio, alcança todas as
         NULL em status operacional (TESTNET/MAINNET/SALVO/SUGERIDO)."""
-        from engine.strategies.copy_trade.funnel import analyze_single_wallet
-        from engine.strategies.copy_trade.traders_store import (
-            upsert_candidate, would_downgrade_metrics)
+        from engine.strategies.copy_trade.funnel import reclassify_wallets
 
         if req.addresses:
             targets = [a.strip().lower() for a in req.addresses if a and a.strip()]
@@ -2652,41 +2601,11 @@ def build_app(state: GatewayState) -> FastAPI:
             targets = [r["address"] for r in rows]
 
         client, cfg = _suggestions_client()
-        lv = int(cfg["logic_version"])
-        results: list[dict[str, Any]] = []
-        for addr in targets:
-            try:
-                c = analyze_single_wallet(addr, client, cfg, state.logger)
-            except ValueError:
-                results.append({"address": (addr or "").strip().lower(),
-                                "reclassified": False, "reason": "endereco_invalido"})
-                continue
-            # Guarda anti-sobrescrita: uma linha COMPLETA nunca é rebaixada
-            # (NULL nunca bloqueia — é justamente o caso legado que queremos tratar).
-            existing = state.db.query(
-                "SELECT metrics_confidence, origin FROM traders WHERE address = ?",
-                (c.address,))
-            existing_conf = existing[0]["metrics_confidence"] if existing else None
-            new_conf = getattr(c, "metrics_confidence", "complete")
-            if would_downgrade_metrics(existing_conf, new_conf):
-                results.append({"address": c.address, "reclassified": False,
-                                "metrics_confidence": existing_conf,
-                                "reason": "metricas_completas_preservadas"})
-                continue
-            # Preserva o origin atual (curadoria "usuário" não vira "discovery");
-            # upsert_candidate NUNCA toca status/copy_pinned (promoção humana).
-            keep_origin = (existing[0]["origin"] if existing
-                           and existing[0]["origin"] else "discovery")
-            upsert_candidate(
-                state.db, address=c.address, name=c.name, score=c.score,
-                cohort=c.cohort or None, twrr_30d=c.twrr_30d_pct,
-                pnl_30d=c.windows_pnl.get("30d"), windows=c.windows_pnl,
-                profit_factor=c.pf, win_rate=c.win_rate,
-                max_drawdown=c.max_dd_90d_pct, liq_distance=c.liq_distance_pct,
-                origin=keep_origin, logic_version=lv, extras=_suggestion_extras(c))
-            results.append({"address": c.address, "reclassified": True,
-                            "metrics_confidence": new_conf})
-        reclassified = sum(1 for r in results if r.get("reclassified"))
+        # UPDATE-0081: laço extraído p/ funnel.reclassify_wallets (compartilhado
+        # com o job de 2h). Preserva status/copy_pinned e a guarda anti-downgrade.
+        out = reclassify_wallets(state.db, targets, client, cfg, state.logger)
+        reclassified = out["reclassified"]
+        results = out["results"]
         state.logger.info("discovery.reclassify",
                           {"alvos": len(targets), "reclassificados": reclassified,
                            "by": "dashboard_humano"})

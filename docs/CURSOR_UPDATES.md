@@ -3198,3 +3198,51 @@ original → **nova ordem** (novo `cloid`); a original permanece `rejected` (nã
 ### Testes
 `pytest tests/gateway/test_order_reexecute.py` → 4 novos (preview sem enviar; execute a mercado com
 novo cloid e original intacta; guarda de `filled`; ordem inexistente). `tsc`/build limpos.
+
+---
+
+## UPDATE-0081 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: rtg003. Duas funcionalidades independentes, entregues em **UM commit**.
+1. **Reclassificação automática a cada 2h** — traders com status
+   **SALVO/TESTNET/MAINNET/SUGERIDO** (todos exceto REJEITADO) devem ser reprocessados
+   automaticamente de 2 em 2 horas, garantindo que **todas as colunas** da tabela fiquem preenchidas.
+   Decisões do operador: **reusar o cache de 20h** da HLDataClient (barato p/ rodar 12×/dia sob o teto
+   HyperTracker de 90 req/dia) e **preservar o status** (nunca mexer em `status`/`copy_pinned` — gate
+   humano).
+2. **Coluna Status da tabela Trades e Ordens sem quebra de linha** — travar a altura da linha:
+   o chip de status fica numa única linha (trunca com reticências) e o motivo de recusa vai para um
+   **hint (tooltip `title`)**, revertendo a quebra em 2ª linha introduzida na UPDATE-0079 (item 5).
+
+**Tipo**: engine (refactor + novo helper compartilhado + timer no daemon) + web (CSS + tabela) +
+testes. **Hot path §8.4.1 NÃO tocado**.
+
+### Backend — Feature 1
+- `engine/strategies/copy_trade/funnel.py`: `_suggestion_extras` migrou do gateway para
+  **`funnel.suggestion_extras`** (pública) e o laço do endpoint virou **`funnel.reclassify_wallets(
+  db, addresses, client, cfg, logger)`** — reprocessa cada wallet via `analyze_single_wallet` +
+  `upsert_candidate(extras=suggestion_extras(c))`, PRESERVA status/copy_pinned, mantém a guarda
+  `would_downgrade_metrics` e é best-effort por wallet (uma falha não derruba o lote). Retorna
+  `{results, reclassified, total}`.
+- `engine/gateway/server.py`: o endpoint `/control/discovery/reclassify` agora chama
+  `reclassify_wallets` (sem duplicação; contrato inalterado). Alias fino
+  `_suggestion_extras = funnel.suggestion_extras` preserva referências/testes.
+- `engine/strategies/copy_trade/discovery_scheduler.py`: novo **`run_reclassify(db, logger, reason)`**
+  — seleciona `status IN ('TESTNET','MAINNET','SALVO','SUGERIDO')`, constrói a HLDataClient pelo mesmo
+  caminho de `run_scan` (reusa cache 20h), chama `reclassify_wallets`, loga
+  `discovery.reclassify_timer` e nunca lança (try/except → `discovery.reclassify_timer_failed`).
+  `run_forever` ganhou o timer `RECLASSIFY_INTERVAL_S` (2h; env `DISCOVERY_RECLASSIFY_INTERVAL_S`),
+  primeiro disparo 2h após o boot, respeitando o kill-switch. Injetável via `reclassify_fn` p/ teste.
+
+### Frontend — Feature 2
+- `web/app/globals.css`: `th.status-cell, td.status-cell` volta a
+  `overflow:hidden; text-overflow:ellipsis; white-space:nowrap;` (padrão `.ativos-cell`) e
+  `td.status-cell .sub { display:none; }`.
+- `web/components/copy-trade/TradesOrdersTable.tsx`: o motivo de recusa vai para o `title` da célula
+  (`"{STATUS}: {motivo}"`); renderiza só o chip (removido o `<span class="sub">`).
+
+### Testes
+`pytest tests/test_reclassify_wallets.py` → 6 novos (preenche colunas preservando status; guarda de
+downgrade; uma falha não quebra o lote; `run_reclassify` só alvos não-rejeitados; nunca derruba o
+daemon; alvo vazio é no-op OK). Suíte existente de `reclassify`/suggestions verde após o refactor.
+`tsc`/build limpos.

@@ -4405,3 +4405,41 @@ reexecução reusa `handle_intent` in-process (mesmo padrão do botão de fechar
 
 **Validação (local)**: `pytest tests/gateway/test_order_reexecute.py` → 4 novos verdes; `tsc`/build
 limpos. Nenhum write em produção antes do deploy.
+
+---
+
+## UPDATE-0081 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: rtg003. Duas melhorias independentes, entregues em **UM commit**.
+
+**Tipo**: engine (novo job periódico no `tokio-engine`) + web (ajuste de UI). **Caminho crítico de
+ordens NÃO tocado.**
+
+**Resumo (o porquê — não "corrija" de volta)**:
+
+1. **Reclassificação automática a cada 2h.** Além do scan diário (05:00 SP) e do botão manual, o
+   engine agora reprocessa **sozinho, de 2 em 2 horas**, todos os traders **exceto os REJEITADOS**
+   (ou seja: SALVO, TESTNET, MAINNET, SUGERIDO), atualizando **todas as colunas** da tabela
+   (score, métricas, simulações, confiança, etc.). Decisões do operador embutidas:
+   - **Status é preservado** — o job **nunca** promove/rebaixa nem mexe no "pin" (isso continua sendo
+     ato humano na dashboard). Só atualiza números/colunas.
+   - **Reusa o cache de ~20h** dos dados — rodar 12×/dia **não estoura** o teto de requisições do
+     HyperTracker (90/dia). Dados frescos entram conforme o cache expira.
+   - **Nunca derruba o processo**: falha vira log `discovery.reclassify_timer_failed` e tenta de novo
+     no próximo ciclo; o kill-switch pausa o job junto com os scans.
+2. **Coluna Status da tabela "Trades e Ordens" não muda mais a altura da linha.** O motivo de recusa,
+   que antes quebrava numa 2ª linha, agora aparece **ao passar o mouse** (tooltip); o chip fica numa
+   única linha (trunca com "…" se for longo).
+
+**Ações do Hermes (pós-deploy)**:
+1. Deploy normal (push = autodeploy pull-based; **sem migração de schema**).
+2. Após ~2h de uptime do `tokio-engine`, conferir no log o evento `discovery.reclassify_timer`
+   (`{n_targets, reclassified, requests_used, ...}`). Repete a cada 2h. Confirmar que **nenhum status
+   mudou** por conta do job.
+3. Na tabela "Trades e Ordens", conferir que ordens `rejected`/`error` mostram o status numa linha só
+   e que o motivo completo aparece no tooltip (hover) — sem alterar a altura da linha.
+4. (Opcional) o intervalo é ajustável via env `DISCOVERY_RECLASSIFY_INTERVAL_S` (padrão 7200s).
+
+**Validação (local)**: `pytest tests/test_reclassify_wallets.py` → 6 novos verdes; suíte de
+reclassify/suggestions verde após o refactor; `tsc`/build limpos. Nenhum write em produção antes do
+deploy.

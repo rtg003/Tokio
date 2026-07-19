@@ -28,6 +28,13 @@ from engine.core.logger import EventLogger
 SCAN_TZ = ZoneInfo("America/Sao_Paulo")
 SCAN_HOUR = int(os.environ.get("DISCOVERY_SCAN_HOUR_SP", "5"))   # 05:00 SP
 SCAN_TOP = int(os.environ.get("DISCOVERY_SCAN_TOP", "10"))
+# UPDATE-0081: reclassificação automática de 2 em 2 horas — refresca TODAS as
+# colunas dos traders NÃO-rejeitados (SALVO/TESTNET/MAINNET/SUGERIDO). Reusa o
+# cache da HLDataClient (cache_ttl_hours ~20h) → barato o suficiente p/ rodar
+# 12×/dia sob o teto de requisições do HyperTracker.
+RECLASSIFY_INTERVAL_S = float(os.environ.get("DISCOVERY_RECLASSIFY_INTERVAL_S",
+                                             str(2 * 3600)))
+RECLASSIFY_STATUSES = ("TESTNET", "MAINNET", "SALVO", "SUGERIDO")
 
 
 def next_scan_at(now: datetime) -> datetime:
@@ -146,14 +153,71 @@ def run_scan(db: Database, logger: EventLogger, *, reason: str) -> bool:
         return False
 
 
+def run_reclassify(db: Database, logger: EventLogger, *, reason: str) -> bool:
+    """UPDATE-0081: reprocessa TODAS as colunas dos traders NÃO-rejeitados pelo
+    pipeline individual completo (funnel.reclassify_wallets), reusando o cache da
+    HLDataClient. PRESERVA status/copy_pinned (gate humano) e mantém a guarda
+    anti-downgrade. True = executou (mesmo com 0 alvos). Nunca lança."""
+    from engine.strategies.copy_trade import funnel
+    from engine.strategies.copy_trade.hl_data import HLDataClient
+
+    t0 = time.monotonic()
+    try:
+        placeholders = ",".join("?" for _ in RECLASSIFY_STATUSES)
+        rows = db.query(
+            f"SELECT address FROM traders WHERE status IN ({placeholders}) "
+            "ORDER BY address", tuple(RECLASSIFY_STATUSES))
+        targets = [r["address"] for r in rows]
+        if not targets:
+            logger.info("discovery.reclassify_timer",
+                        {"reason": reason, "n_targets": 0, "reclassified": 0,
+                         "duration_s": round(time.monotonic() - t0, 1)})
+            return True
+        cfg = funnel.load_config()
+        col = cfg["collection"]
+        ht_budget = ((cfg.get("sources") or {}).get("hypertracker") or {}).get("budget") or {}
+        client = HLDataClient(db, request_budget=int(col["request_budget"]),
+                              min_interval_s=float(col.get("min_request_interval_s", 1.3)),
+                              cache_ttl_hours=float(col["cache_ttl_hours"]),
+                              ht_daily_cap=int(ht_budget.get("daily_request_cap", 90)),
+                              ht_per_scan_cap=int(ht_budget.get("per_scan_cap", 80)))
+        out = funnel.reclassify_wallets(db, targets, client, cfg, logger)
+        reclassified = out["reclassified"]
+        results = out["results"]
+        errors = sum(1 for r in results if r.get("reason") in
+                     ("erro_na_analise", "endereco_invalido"))
+        skipped = sum(1 for r in results
+                      if not r.get("reclassified")) - errors
+        logger.info("discovery.reclassify_timer", {
+            "reason": reason,
+            "n_targets": len(targets),
+            "reclassified": reclassified,
+            "skipped": skipped,
+            "errors": errors,
+            "requests_used": getattr(client, "requests_used", None),
+            "logic_version": cfg["logic_version"],
+            "duration_s": round(time.monotonic() - t0, 1),
+        })
+        return True
+    except Exception as exc:  # noqa: BLE001 — o scheduler nunca morre por um job
+        logger.error("discovery.reclassify_timer_failed",
+                     {"reason": reason, "error": str(exc)[:300],
+                      "duration_s": round(time.monotonic() - t0, 1)})
+        return False
+
+
 class DiscoveryScheduler:
     def __init__(self, db: Database, logger: EventLogger,
                  scan_fn: Callable[..., bool] | None = None,
-                 now_fn: Callable[[], datetime] | None = None) -> None:
+                 now_fn: Callable[[], datetime] | None = None,
+                 reclassify_fn: Callable[..., bool] | None = None) -> None:
         self.db = db
         self.logger = logger
         self.scan_fn = scan_fn or (lambda reason: run_scan(self.db, self.logger,
                                                            reason=reason))
+        # UPDATE-0081: injetável p/ teste; por padrão chama o job real de 2h.
+        self.reclassify_fn = reclassify_fn or (
+            lambda reason: run_reclassify(self.db, self.logger, reason=reason))
         self.now_fn = now_fn or (lambda: datetime.now(SCAN_TZ))
         self._stop = False
 
@@ -187,11 +251,16 @@ class DiscoveryScheduler:
         # em vez de esperar até as 05:00 do dia seguinte
         next_bootstrap_retry = time.monotonic() + bootstrap_retry_s
         target = next_scan_at(self.now_fn())
+        # UPDATE-0081: primeiro disparo 2h após o boot (não compete com o
+        # bootstrap/scan inicial); reagenda a cada RECLASSIFY_INTERVAL_S.
+        next_reclassify = time.monotonic() + RECLASSIFY_INTERVAL_S
         while not self._stop:
             if settings.kill_file.exists():
-                # kill switch: sem novas varreduras até o incidente ser resolvido
+                # kill switch: sem novas varreduras nem reclassify até o
+                # incidente ser resolvido
                 time.sleep(poll_interval_s)
                 target = next_scan_at(self.now_fn())
+                next_reclassify = time.monotonic() + RECLASSIFY_INTERVAL_S
                 continue
             if traders_table_empty(self.db) and time.monotonic() >= next_bootstrap_retry:
                 self.bootstrap_if_empty()
@@ -199,6 +268,9 @@ class DiscoveryScheduler:
             if self.now_fn() >= target:
                 self.scan_fn(reason="agendado_diario")
                 target = next_scan_at(self.now_fn())
+            if time.monotonic() >= next_reclassify:
+                self.reclassify_fn(reason="timer_2h")
+                next_reclassify = time.monotonic() + RECLASSIFY_INTERVAL_S
             time.sleep(poll_interval_s)
 
     def stop(self) -> None:

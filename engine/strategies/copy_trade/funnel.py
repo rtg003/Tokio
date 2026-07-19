@@ -1983,6 +1983,119 @@ def reclassify_all(db: Database, cfg: dict[str, Any],
     return summary
 
 
+def suggestion_extras(c: Any) -> dict[str, Any]:
+    """Mapeamento de `extras` de um Candidate p/ `upsert_candidate`, espelhando
+    `persist_scan` (l.1075-1099). Curadoria manual/reclassify NUNCA grava
+    reject_reason (a wallet permanece no seu status atual, limpa).
+
+    Extraído do gateway (UPDATE-0081) p/ ser reusado tanto pelo endpoint humano
+    `/control/discovery/reclassify` quanto pelo job de reclassificação de 2h do
+    `discovery_scheduler` — este último não pode importar o módulo do gateway.
+    """
+    return {
+        "n_trades_30d": c.n_trades_30d,
+        "n_trades_7d": c.n_trades_7d,
+        "win_rate_30d": c.win_rate_30d,
+        "avg_holding_hours": c.median_hold_hours,
+        "avg_leverage": c.avg_leverage,
+        "equity": c.equity,
+        "top_assets": json.dumps(c.top_assets, ensure_ascii=False),
+        "last_activity": c.last_activity,
+        "windows_positive": c.windows_positive,
+        "history_truncated": 1 if c.history_truncated else 0,
+        "max_current_leverage": c.max_current_leverage,
+        "available_margin_pct": c.available_margin_pct,
+        "sim_net_pnl_usd": c.sim_net_pnl_usd,
+        "sim_expectancy_usd": c.sim_expectancy_usd,
+        "sim_max_dd_pct": c.sim_max_dd_pct,
+        "sim_factor": c.sim_factor,
+        "coverage_days": c.coverage_days,
+        "sim_half_old_net": c.sim_half_old_net,
+        "sim_half_new_net": c.sim_half_new_net,
+        "sim_f15_net_usd": getattr(c, "sim_f15_net_usd", None),
+        "sim_funded_share": getattr(c, "sim_funded_share", None),
+        "metrics_confidence": getattr(c, "metrics_confidence", "complete"),
+        "wallet_age_days": getattr(c, "wallet_age_days", None),
+        "fills_sample_days": getattr(c, "fills_sample_days", None),
+        "fills_sample_count": getattr(c, "fills_sample_count", 0),
+        "ht_earliest_activity_ms": getattr(c, "ht_earliest_activity_ms", None),
+        "ht_total_equity": getattr(c, "ht_total_equity", None),
+        "ht_perp_pnl": getattr(c, "ht_perp_pnl", None),
+        "ht_exposure_ratio": getattr(c, "ht_exposure_ratio", None),
+        "sample_sim_net_usd": getattr(c, "sample_sim_net_usd", None),
+        "sample_sim_expectancy_usd": getattr(c, "sample_sim_expectancy_usd", None),
+        "sample_sim_max_dd_pct": getattr(c, "sample_sim_max_dd_pct", None),
+        "sample_sim_window_days": getattr(c, "sample_sim_window_days", None),
+        "sample_sim_net_per_day": getattr(c, "sample_sim_net_per_day", None),
+        "position_metrics_source": getattr(c, "position_metrics_source", "hl_fills"),
+        "score_components": serialize_components(c.components)
+        if c.components is not None else None,
+    }
+
+
+def reclassify_wallets(db: Database, addresses: list[str], client: DataClient,
+                       cfg: dict[str, Any],
+                       logger: Any | None = None) -> dict[str, Any]:
+    """Reprocessa CADA wallet pelo pipeline individual COMPLETO e regrava todas
+    as colunas (score/métricas/sim_*/ht_*/confiança) via `upsert_candidate`.
+
+    - PRESERVA status/copy_pinned (upsert_candidate NUNCA os toca) — gate humano.
+    - Guarda anti-sobrescrita: linha COMPLETA nunca é rebaixada (would_downgrade).
+    - Preserva o `origin` atual (curadoria "usuário" não vira "discovery").
+    - Best-effort por wallet: erro numa não derruba as demais (nem o daemon).
+
+    Extraído do endpoint `/control/discovery/reclassify` (UPDATE-0081) p/ ser
+    compartilhado com o job de reclassificação automática de 2h. Reusa o cache da
+    HLDataClient (cache_ttl_hours) — barato o suficiente p/ rodar 12×/dia sob o
+    teto de requisições do HyperTracker.
+
+    Retorna {"results", "reclassified", "total"}.
+    """
+    lv = int(cfg["logic_version"])
+    results: list[dict[str, Any]] = []
+    for addr in addresses:
+        norm = (addr or "").strip().lower()
+        try:
+            c = analyze_single_wallet(addr, client, cfg, logger)
+        except ValueError:
+            results.append({"address": norm, "reclassified": False,
+                            "reason": "endereco_invalido"})
+            continue
+        except Exception as exc:  # noqa: BLE001 — uma wallet não derruba o lote
+            if logger:
+                logger.error("discovery.reclassify_wallet_failed",
+                             {"address": norm, "error": str(exc)[:300]})
+            results.append({"address": norm, "reclassified": False,
+                            "reason": "erro_na_analise"})
+            continue
+        # Guarda anti-sobrescrita: uma linha COMPLETA nunca é rebaixada
+        # (NULL nunca bloqueia — é o caso legado que queremos tratar).
+        existing = db.query(
+            "SELECT metrics_confidence, origin FROM traders WHERE address = ?",
+            (c.address,))
+        existing_conf = existing[0]["metrics_confidence"] if existing else None
+        new_conf = getattr(c, "metrics_confidence", "complete")
+        if would_downgrade_metrics(existing_conf, new_conf):
+            results.append({"address": c.address, "reclassified": False,
+                            "metrics_confidence": existing_conf,
+                            "reason": "metricas_completas_preservadas"})
+            continue
+        keep_origin = (existing[0]["origin"] if existing
+                       and existing[0]["origin"] else "discovery")
+        upsert_candidate(
+            db, address=c.address, name=c.name, score=c.score,
+            cohort=c.cohort or None, twrr_30d=c.twrr_30d_pct,
+            pnl_30d=c.windows_pnl.get("30d"), windows=c.windows_pnl,
+            profit_factor=c.pf, win_rate=c.win_rate,
+            max_drawdown=c.max_dd_90d_pct, liq_distance=c.liq_distance_pct,
+            origin=keep_origin, logic_version=lv, extras=suggestion_extras(c))
+        results.append({"address": c.address, "reclassified": True,
+                        "metrics_confidence": new_conf})
+    reclassified = sum(1 for r in results if r.get("reclassified"))
+    return {"results": results, "reclassified": reclassified,
+            "total": len(addresses)}
+
+
 def _near_miss_rows(result: ScanResult, limit: int = 15) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for c in result.rejected:

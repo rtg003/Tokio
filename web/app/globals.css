@@ -226,11 +226,14 @@ th.num { text-align: right; }
 /* UPDATE-0079 (item 1): valores de Margem em COR DE FONTE amarela (não mais
    background), num tom ligeiramente mais vivo. Vale p/ Posições e Trades. */
 td.margin-cell { color: var(--yellow-vivid); font-weight: 500; }
-/* UPDATE-0079 (item 5): coluna STATUS não pode estourar a tabela (o motivo de
-   rejeição em .sub é longo e o `white-space: nowrap` global empurrava a largura).
-   Limitar a largura e deixar o texto quebrar em linha. */
-th.status-cell, td.status-cell { max-width: 180px; white-space: normal; }
-td.status-cell .sub { white-space: normal; overflow-wrap: anywhere; }
+/* UPDATE-0081: a coluna STATUS não pode ALTERAR a altura da linha. O motivo de
+   rejeição (antes em .sub, 2ª linha) agora vive no tooltip (title) da célula, e
+   o chip fica numa ÚNICA linha, truncando com reticências (padrão .ativos-cell).
+   Reverte a quebra de linha introduzida na UPDATE-0079 (item 5). */
+th.status-cell, td.status-cell {
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+td.status-cell .sub { display: none; }
 /* Cabeçalho ordenável: clicável + ícone flat de direção. O ícone vazio ocupa o
    mesmo espaço (sem seta) p/ preservar o alinhamento das colunas inativas. */
 .th-sort { cursor: pointer; user-select: none; }

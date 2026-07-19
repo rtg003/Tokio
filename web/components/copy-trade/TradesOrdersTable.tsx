@@ -161,14 +161,21 @@ export default function TradesOrdersTable({
                   <td className={`num ${r.kind === "TRADE" ? pnlClass(r.pnl) : ""}`}>
                     {r.pnl === null || r.pnl === undefined ? "—" : `$${fmtSigned(r.pnl)}`}
                   </td>
-                  <td className="status-cell">
+                  {/* UPDATE-0081: status numa única linha (altura da linha fixa);
+                      o motivo de recusa (antes em .sub, 2ª linha) vai para o
+                      tooltip nativo `title` da célula. */}
+                  <td
+                    className="status-cell"
+                    title={
+                      r.kind === "ORDEM" && r.reject
+                        ? `${(r.status ?? "").toUpperCase()}: ${r.reject}`
+                        : undefined
+                    }
+                  >
                     {r.kind === "ORDEM" ? (
-                      <>
-                        <span className={`chip ${statusChip[r.status ?? ""] ?? "dry"}`}>
-                          {(r.status ?? "").toUpperCase()}
-                        </span>
-                        {r.reject && <span className="sub">{r.reject}</span>}
-                      </>
+                      <span className={`chip ${statusChip[r.status ?? ""] ?? "dry"}`}>
+                        {(r.status ?? "").toUpperCase()}
+                      </span>
                     ) : (
                       "—"
                     )}
