@@ -79,7 +79,7 @@ export default function PositionsTable({
                   <td className="num">
                     {p.position_value != null ? `$${fmtNum(p.position_value)}` : "—"}
                   </td>
-                  <td className="num">
+                  <td className="num margin-cell">
                     {p.margin_used != null ? `$${fmtNum(p.margin_used, 2)}` : "—"}
                   </td>
                   <td className={`num ${pnlClass(p.unrealized_pnl)}`}>

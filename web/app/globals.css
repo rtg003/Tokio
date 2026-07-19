@@ -211,6 +211,15 @@ td .sub { display: block; font-size: 10.5px; color: var(--faint); margin-top: 2p
 .pos-close-btn:disabled { opacity: 0.35; cursor: default; }
 .num { text-align: right; }
 th.num { text-align: right; }
+/* UPDATE-0078: coluna WR centralizada (cabeçalho + valores). */
+.num-center, th.num-center { text-align: center; }
+/* UPDATE-0078: coluna Ativos mais estreita — trunca com reticências e mostra o
+   conteúdo completo no title (hover). */
+.traders-table th.ativos-cell, .traders-table td.ativos-cell {
+  max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* UPDATE-0078: valores de Margem em amarelo claro (Posições e Trades). */
+td.margin-cell { background: var(--yellow-soft); }
 /* Cabeçalho ordenável: clicável + ícone flat de direção. O ícone vazio ocupa o
    mesmo espaço (sem seta) p/ preservar o alinhamento das colunas inativas. */
 .th-sort { cursor: pointer; user-select: none; }
@@ -544,6 +553,16 @@ th.num { text-align: right; }
   .modal { min-width: 0; width: 100%; }
   h1 { font-size: 19px; }
   .kpi .val { font-size: 20px; }
+  /* UPDATE-0078: no mobile as tabelas (Traders/Trades/Posições) estouravam a
+     largura da página e as linhas apareciam "em diagonal" com o scroll quebrado.
+     Clipar o .card e limitar o .tablewrap à viewport faz o overflow-x:auto de
+     fato ROLAR na horizontal dentro do card, em vez de empurrar a página. */
+  .card { overflow: hidden; }
+  .tablewrap {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 @media (max-width: 520px) {
   .modal { padding: 1rem; }

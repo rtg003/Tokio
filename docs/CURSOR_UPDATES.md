@@ -3021,3 +3021,62 @@ análise, sem código).
 Ver UPDATE-0077 no `HERMES_UPDATES.md`: confirmar `reason` real no `reconcile.stuck`, procurar
 `reconcile.venue_unreadable` (aponta o `/api/positions` falho que prende os fantasmas) e
 confirmar o circuit breaker legitimo pelo `net_pnl` (sem mudanca de codigo).
+
+## UPDATE-0078 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: lote de 12 itens do rtg003 (reclassificação zerando WR/PF, alavancagem, fechar
+posição pequena, UI/mobile). Entregue em **UM commit** (decisão do operador). Itens 4 (cap de
+risco 5→10) e a estratégia do item 2 aprovados pelo operador.
+
+**Tipo**: metrics_discovery + config (cap de risco) + executor + risk_enforcer + web/UI + testes.
+**Hot path §8.4.1 NÃO tocado** (só o guard do enforcer, fora de `handle_intent`).
+
+### Item 2 — WR/PF zerados para TODOS na reclassificação (causa-raiz provada na VPS)
+As posições **FECHADAS** do HyperTracker (`/api/external/positions`) **não expõem PnL realizado**
+— só `unrealizedPnl` (o último snapshot antes do fechamento, que É o resultado do trade). O
+`_pnl` de `position_metrics_from_ht` (`metrics.py`) só procurava `realizedPnl/closedPnl/pnl/netPnl`
+→ toda fechada virava `0.0` → `win_rate=0.0` p/ todos e `profit_factor` errático (só as ABERTAS
+alimentavam o termo `unrealized`). **Fix**: adicionar `unrealizedPnl`/`unrealized_pnl` como
+fallback FINAL do `_pnl`. Fechado × aberto são disjuntos → sem double-count com o termo
+`unrealized` do pf. Verificado na wallet 0x1a5db9: 470 fechadas, 330 com `unrealizedPnl>0` →
+`win_rate≈70,2%`, `pf≈9,8` (realista, não 0.0/Inf).
+
+### Item 3 — reclassify preenche as mesmas colunas do full scan
+**Sem mudança de código.** A paridade de colunas já estava completa (`_suggestion_extras` é
+superset de `persist_scan` desde o UPDATE-0076; o caminho individual ainda adiciona `ht_*`). As
+sim_* nulas p/ 0x1f7b/0xf5b0/0xa957 são o **gate honesto de cobertura de fills**
+(`fills_metrics_confidence=sampled`, `coverage_days≈0`) — o full scan produziria o MESMO; forçar
+fabricaria veredito (viola UPDATE-0056). O WR/PF visível é corrigido pelo item 2.
+
+### Item 4 — alavancagem (padrão 5x, MÁX 10x) — cap de risco aprovado pelo operador
+- `config.py`: `max_leverage_global 5.0 → 10.0` (o clamp em `server.py` cortava tudo >5x).
+- `executor.py`: `TraderConfig.max_leverage` default `3.0 → 5.0` (campo + `from_row`).
+- `CopyConfigModal.tsx`: `suggestLeverage` fallback `3 → 5`; clamp `[1,10]` mantido.
+- **Nota**: configs JÁ salvas com `max_leverage=3` continuam a 3x (`from_row` lê o salvo). Para
+  valer 5x/10x nas cópias existentes, o operador **reabre o modal e salva** (ato humano; sem
+  migração forçada de cap salvo).
+
+### Item 12 — fechar posição pequena (VVV → `below_min_notional_10.0`)
+`risk_enforcer.py`: o piso de notional agora só reprova ordens que **ADICIONAM** risco
+(`if not reduce_only and notional_usd < min`). Fechamento (`reduce_only`) reduz exposição e nunca
+pode ficar preso pelo mínimo. Hot path não tocado (é o guard do enforcer).
+
+### Frontend (itens 5–11)
+- **5**: MAX DD e SIM DD pintados de vermelho (`--neg`) quando `< -20%` (`TradersTable.tsx`).
+- **6**: coluna **Ativos** truncada com reticências (`.ativos-cell`, `globals.css`).
+- **7**: header "Win rate" → **"WR"** e valores centralizados (`.num-center`).
+- **8**: **Margem** em amarelo claro (`.margin-cell`) em Posições e Trades.
+- **9**: mobile TRADES/TRADERS — scroll horizontal contido no `.tablewrap` (media query <880px).
+- **10**: `layout.tsx` ganhou `export const viewport` (`width: device-width`) — corrige zoom/estouro.
+- **11**: SIM NET — texto extra ("(Xd)", "cópia parcial") movido p/ o `title`/tooltip; célula só
+  com o valor (evita estouro de largura).
+
+### Testes
+`pytest tests/ -q` → **501 passed** (497 baseline + 4 novos): `test_position_metrics_from_ht_uses_
+unrealized_pnl_for_closed`, `test_position_metrics_from_ht_realized_pnl_prevails_over_unrealized`,
+`test_reduce_only_bypasses_min_notional`, `test_trader_config_default_leverage_is_5`. O
+regression `test_leverage_capped_to_min_of_request_asset_global` atualizado p/ o cap 10x.
+
+### Follow-up (NÃO neste commit)
+Investigar `coverage_days≈0` com milhares de fills (0x1f7b/0xf5b0/0xa957) — possível bug no
+cálculo de cobertura.

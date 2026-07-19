@@ -345,8 +345,15 @@ def position_metrics_from_ht(positions: list[dict[str, Any]], now_ms: float,
     open_pos = [p for p in positions if not _ht_is_closed(p)]
 
     def _pnl(p: dict[str, Any]) -> float:
+        # UPDATE-0078: as posições FECHADAS do HyperTracker (/positions) NÃO
+        # expõem PnL realizado — só `unrealizedPnl` (o último snapshot antes do
+        # fechamento, que É o resultado do trade). Sem o fallback, toda posição
+        # fechada virava 0.0 → win_rate=0.0 p/ todos e pf errático (só as abertas
+        # alimentavam o termo `unrealized`). Fechado × aberto são disjuntos, então
+        # não há double-count com o termo `unrealized` do pf (linhas ~395-396).
         return float(_ht_first(p, "realizedPnl", "realized_pnl", "closedPnl",
-                               "pnl", "netPnl") or 0.0)
+                               "pnl", "netPnl", "unrealizedPnl",
+                               "unrealized_pnl") or 0.0)
 
     def _notional(p: dict[str, Any]) -> float:
         n = _ht_first(p, "volume", "notional", "positionValue", "notionalUsd")

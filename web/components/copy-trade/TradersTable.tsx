@@ -158,12 +158,16 @@ function SortIcon({ dir }: { dir: SortDir | null }) {
 
 function Th({
   label,
+  display,
   className,
   sortKey,
   sortDir,
   onSort,
 }: {
   label: string;
+  // UPDATE-0078: texto exibido no cabeçalho quando difere da chave de sort/tip
+  // (ex.: "Win rate" vira "WR" na tela mas continua ordenando por `t.win_rate`).
+  display?: string;
   className?: string;
   sortKey: string;
   sortDir: SortDir;
@@ -171,6 +175,7 @@ function Th({
 }) {
   const sortable = label in ACCESSORS;
   const active = sortable && label === sortKey;
+  const text = display ?? label;
   if (!sortable) {
     return (
       <th
@@ -178,7 +183,7 @@ function Th({
         data-tip={COLUMN_TIPS[label] ?? label}
         title={COLUMN_TIPS[label] ?? label}
       >
-        {label}
+        {text}
       </th>
     );
   }
@@ -190,7 +195,7 @@ function Th({
       onClick={() => onSort(label)}
       aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
     >
-      {label}
+      {text}
       <SortIcon dir={active ? sortDir : null} />
     </th>
   );
@@ -329,13 +334,13 @@ export default function TradersTable({
                 <Th label="Trader" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Coorte" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <Th label="Win rate" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Win rate" display="WR" className="num-center" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="PF" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="PnL 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Max DD" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Trades 30d" className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Hold méd." className="num" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <Th label="Ativos" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <Th label="Ativos" className="ativos-cell" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Últ. atividade" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <Th label="Confiança" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -373,16 +378,14 @@ export default function TradersTable({
                       ) : t.sample_sim_net_usd !== null &&
                         t.sample_sim_net_usd !== undefined &&
                         t.sample_sim_window_days ? (
+                        // UPDATE-0078: só o VALOR na célula; o texto extra (span
+                        // coberto, cópia parcial, projeção) vira tooltip p/ não
+                        // estourar a largura da coluna.
                         <span
                           style={{ opacity: 0.7, fontStyle: "italic" }}
                           title={`Simulação AMOSTRAL sobre o span coberto (${fmtNum(t.sample_sim_window_days, 1)}d) — as sim_* longitudinais ficam nulas quando a confiança não é COMPLETA (amostra, não medição).${t.sample_sim_net_per_day != null ? ` Projeção ~$${fmtSigned(t.sample_sim_net_per_day * 30, 0)}/30d.` : ""}${t.sim_funded_share != null ? ` Cópia parcial: só ~${fmtNum(t.sim_funded_share * 100, 1)}% do book é espelhável com a banca (trader hiperativo, muitas posições concorrentes) — SIM NET longitudinal não-confiável.` : ""}`}
                         >
-                          ~${fmtSigned(t.sample_sim_net_usd, 2)} ({fmtNum(t.sample_sim_window_days, 1)}d)
-                          {t.sim_funded_share != null ? (
-                            <span style={{ opacity: 0.85, marginLeft: 4 }}>
-                              · cópia parcial ({fmtNum(t.sim_funded_share * 100, 1)}% do book)
-                            </span>
-                          ) : null}
+                          ~${fmtSigned(t.sample_sim_net_usd, 2)}
                         </span>
                       ) : (
                         "—"
@@ -416,7 +419,7 @@ export default function TradersTable({
                         "—"
                       )}
                     </td>
-                    <td className="num">
+                    <td className="num-center">
                       <Lon complete={complete} legacy={legacy}>
                         {t.win_rate === null || t.win_rate === undefined
                           ? "—"
@@ -441,6 +444,12 @@ export default function TradersTable({
                     {/* UPDATE-0059 (Parte A): Max DD vem do portfolio — medição. */}
                     <td
                       className="num"
+                      // UPDATE-0078: DD abaixo de -20% (magnitude > 20) em vermelho.
+                      style={
+                        typeof t.max_drawdown === "number" && t.max_drawdown > 20
+                          ? { color: "var(--neg)", fontWeight: 600 }
+                          : undefined
+                      }
                       title="Max DD vem do portfolio (série completa) — medição, não amostra."
                     >
                       {t.max_drawdown === null || t.max_drawdown === undefined
@@ -472,7 +481,12 @@ export default function TradersTable({
                         ? "—"
                         : `${fmtNum(t.avg_holding_hours, 1)}h`}
                     </td>
-                    <td className="addr">{topAssets.length ? topAssets.join(" ") : "—"}</td>
+                    <td
+                      className="addr ativos-cell"
+                      title={topAssets.length ? topAssets.join(" ") : undefined}
+                    >
+                      {topAssets.length ? topAssets.join(" ") : "—"}
+                    </td>
                     <td>
                       <StatusSelect
                         address={t.address}
@@ -531,7 +545,15 @@ export default function TradersTable({
                           : `$${fmtSigned(t.sim_expectancy_usd, 2)}`}
                       </Lon>
                     </td>
-                    <td className="num">
+                    <td
+                      className="num"
+                      // UPDATE-0078: SIM DD abaixo de -20% (magnitude > 20) em vermelho.
+                      style={
+                        typeof t.sim_max_dd_pct === "number" && t.sim_max_dd_pct > 20
+                          ? { color: "var(--neg)", fontWeight: 600 }
+                          : undefined
+                      }
+                    >
                       <Lon complete={complete} legacy={legacy}>
                         {t.sim_max_dd_pct === null || t.sim_max_dd_pct === undefined
                           ? "—"

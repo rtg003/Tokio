@@ -64,10 +64,11 @@ function parseThresholds(raw: Record<string, number> | string | undefined): Reco
 }
 
 // Alavancagem sugerida: acompanha a alavancagem que o trader realmente usa
-// (posição aberta agora → média histórica → 3), travada em [1, 10].
+// (posição aberta agora → média histórica → 5), travada em [1, 10].
+// UPDATE-0078: padrão de fallback 3→5; máximo permitido continua 10.
 function suggestLeverage(s?: TraderStats): number {
-  const lev = s?.max_current_leverage ?? s?.avg_leverage ?? 3;
-  return Math.min(10, Math.max(1, Math.round(lev || 3)));
+  const lev = s?.max_current_leverage ?? s?.avg_leverage ?? 5;
+  return Math.min(10, Math.max(1, Math.round(lev || 5)));
 }
 
 // Fração sugerida: reduz a proporção quando a cópia simulada foi muito volátil,

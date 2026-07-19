@@ -4299,3 +4299,47 @@ ordens são enviadas.
 
 **Validação (local)**: `pytest tests/ -q` → **497 passed** (492 + 5 testes novos). Nenhum
 write em produção antes do deploy.
+
+## UPDATE-0078 · 2026-07-19 · Status: PENDENTE
+
+**Origem**: seu lote de 12 itens (reclassificação zerando WR/PF; alavancagem saindo a 3x apesar
+do modal; não conseguir fechar VVV; UI/mobile). Entregue em **UM commit** (sua decisão). Você
+aprovou explicitamente: elevar o cap de alavancagem global 5→10 (item 4) e a estratégia do item 2.
+
+**Tipo**: metrics_discovery + config (cap de risco) + executor + risk_enforcer + web/UI + testes.
+**Caminho crítico de ordens NÃO tocado** (só o guard do enforcer, fora do envio de ordens).
+
+**Resumo (o porquê — não "corrija" de volta nas análises)**:
+- **WR/PF zerados p/ TODOS após reclassificar (item 2)**: as posições **FECHADAS** do HyperTracker
+  **não trazem PnL realizado** — só o `unrealizedPnl` (o último snapshot, que é o resultado final
+  do trade). O parser lia só `realizedPnl` → toda fechada virava 0 → win_rate=0% p/ todos e PF
+  errático. Agora ele usa o `unrealizedPnl` como resultado da fechada. Verificado numa wallet real:
+  win_rate voltou a ~70% e PF ~9,8 (realista). **Reclassifique de novo pela dashboard** e confira
+  que WR/PF deixam de ser 0.0/Inf.
+- **Colunas em branco no reclassify (item 3)**: **não é bug do reclassify**. As sim_* nulas
+  (0x1f7b/0xf5b0/0xa957) são o **gate honesto de cobertura de fills** (amostra cobre ~0d) — o full
+  scan produziria o mesmo. Forçar preencheria dado falso. WR/PF são corrigidos pelo item 2.
+- **Alavancagem 3x apesar do modal (item 4)**: havia um **teto global de 5x** que cortava tudo
+  acima — o modal em 10 nunca passava. Você aprovou elevar o teto p/ **10x** e o padrão p/ **5x**.
+  **Atenção**: cópias JÁ salvas com 3x continuam a 3x — para valer 5x/10x nelas, **reabra o modal
+  e salve** a nova alavancagem (ato humano; não mexemos no cap salvo).
+- **Não fechava VVV (`below_min_notional_10.0`) (item 12)**: o piso de notional agora só vale p/
+  ordens que **aumentam** posição. Fechamento reduz exposição e nunca é bloqueado pelo mínimo —
+  qualquer posição pequena fecha.
+- **UI/mobile (itens 5–11)**: MAX/SIM DD em vermelho quando < -20%; coluna Ativos mais estreita;
+  "Win rate"→"WR" centralizado; Margem em amarelo claro; SIM NET sem estouro (texto extra virou
+  tooltip); mobile com viewport correta (sem zoom/estouro) e scroll das tabelas contido.
+
+**Ações do Hermes (pós-deploy)**:
+1. Deploy normal (push = autodeploy pull-based; sem migração).
+2. **Reclassificar** os traders pela dashboard e confirmar WR/PF preenchidos (não 0.0/Inf).
+3. Após re-salvar um trader no modal, confirmar ordem saindo a **5x/10x** (não mais 3x).
+4. **Fechar a posição pequena (VVV)** e confirmar que não retorna `below_min_notional`.
+5. Validar no **mobile**: sem zoom/estouro; TRADES/TRADERS com scroll horizontal ok.
+6. Conferir cores (MAX/SIM DD < -20% em vermelho, Margem amarela) e WR centralizado.
+
+**Validação (local)**: `pytest tests/ -q` → **501 passed** (497 baseline + 4 novos). Nenhum write
+em produção antes do deploy.
+
+**Follow-up (à parte, NÃO neste commit)**: investigar `coverage_days≈0` com milhares de fills
+(0x1f7b/0xf5b0/0xa957) — possível bug no cálculo de cobertura.

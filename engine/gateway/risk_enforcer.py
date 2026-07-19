@@ -284,7 +284,11 @@ class RiskEnforcer:
                 return RiskVerdict(False, "circuit_breaker_open")
 
         r = self.settings.risk
-        if notional_usd < r.min_order_notional_usd:
+        # UPDATE-0078: o piso de notional só vale p/ ordens que ADICIONAM risco.
+        # Uma ordem reduce_only (fechamento) que reduz exposição NUNCA pode ser
+        # bloqueada por ficar abaixo do mínimo — senão posições pequenas (ex.: VVV
+        # abaixo de $10) ficam presas sem como fechar.
+        if not reduce_only and notional_usd < r.min_order_notional_usd:
             return RiskVerdict(False, f"below_min_notional_{r.min_order_notional_usd}")
         if leverage is not None and leverage > r.max_leverage_global:
             return RiskVerdict(False, f"exceeds_max_leverage_{r.max_leverage_global}")

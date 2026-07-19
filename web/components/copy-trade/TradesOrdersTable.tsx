@@ -151,7 +151,7 @@ export default function TradesOrdersTable({
                   </td>
                   <td className="num">{fmtNum(r.size, 4)}</td>
                   <td className="num">{r.price ? `$${fmtNum(r.price)}` : "MKT"}</td>
-                  <td className="num">
+                  <td className="num margin-cell">
                     {marginOf(r) === null ? "—" : `$${fmtNum(marginOf(r) as number, 2)}`}
                   </td>
                   <td className="num">{r.leverage ? `${fmtNum(r.leverage, 1)}×` : "—"}</td>

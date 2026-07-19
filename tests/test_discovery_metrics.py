@@ -106,6 +106,47 @@ def test_position_metrics_from_ht_computes_win_pf_hold_concentration() -> None:
     assert m["avg_leverage"] == pytest.approx(5.0)      # única posição aberta
 
 
+def test_position_metrics_from_ht_uses_unrealized_pnl_for_closed() -> None:
+    """UPDATE-0078: as posições FECHADAS do HyperTracker NÃO expõem PnL realizado
+    (só `unrealizedPnl`, o último snapshot). Sem o fallback, toda fechada virava
+    0.0 → win_rate=0.0 p/ todos e pf errático. Com o fallback, WR/PF refletem a
+    proporção real de ganhos/perdas."""
+    now_ms = time.time() * 1000
+
+    def _closed_unreal(coin: str, pnl: float, *, close_h: float) -> dict:
+        # fechada SEM realizedPnl — só unrealizedPnl (formato real do HT).
+        return {"coin": coin, "status": "closed", "unrealizedPnl": pnl,
+                "openedAt": now_ms - (close_h + 2) * HOUR_MS,
+                "closedAt": now_ms - close_h * HOUR_MS}
+
+    positions = [
+        _closed_unreal("BTC", 100.0, close_h=8),   # win
+        _closed_unreal("ETH", 300.0, close_h=24),  # win
+        _closed_unreal("SOL", -50.0, close_h=40),  # loss
+        _closed_unreal("ARB", -50.0, close_h=90),  # loss
+    ]
+    m = position_metrics_from_ht(positions, now_ms)
+
+    assert m["n_trades"] == 4
+    assert m["win_rate"] == pytest.approx(0.5)       # 2 wins de 4 (não 0.0!)
+    assert m["profit_factor"] == pytest.approx(4.0)  # 400 ganhos / 100 perdas
+
+
+def test_position_metrics_from_ht_realized_pnl_prevails_over_unrealized() -> None:
+    """Regressão UPDATE-0078: quando a fechada TEM realizedPnl explícito, ele
+    prevalece sobre o unrealizedPnl (a ordem de fallback em `_pnl` respeita isso)."""
+    now_ms = time.time() * 1000
+    positions = [
+        # realizedPnl positivo, mas unrealizedPnl negativo → deve contar como WIN.
+        {"coin": "BTC", "status": "closed", "realizedPnl": 100.0,
+         "unrealizedPnl": -999.0,
+         "openedAt": now_ms - 10 * HOUR_MS, "closedAt": now_ms - 8 * HOUR_MS},
+    ]
+    m = position_metrics_from_ht(positions, now_ms)
+    assert m["n_trades"] == 1
+    assert m["win_rate"] == pytest.approx(1.0)  # realizedPnl=+100 vence o -999
+
+
 def test_position_metrics_from_ht_liquid_share_and_coverage() -> None:
     """v15: liquid_volume_share respeita o set de líquidos; covered_days sai da
     posição mais antiga; janela de 7d exclui fechamentos mais velhos."""

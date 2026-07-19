@@ -17,6 +17,20 @@ def test_rejects_below_min_notional(settings: Settings) -> None:
     assert not v.allowed and "below_min_notional" in v.reason
 
 
+def test_reduce_only_bypasses_min_notional(settings: Settings) -> None:
+    # UPDATE-0078: fechamento (reduce_only) reduz exposição e NUNCA pode ser
+    # bloqueado por ficar abaixo do mínimo de notional — senão posições pequenas
+    # (ex.: VVV abaixo de $10) ficariam presas sem como fechar.
+    enf, _ = make_enforcer(settings)
+    v = enf.check_intent(strategy_id="s", symbol="VVV", notional_usd=5,
+                         leverage=None, prices={"VVV": 1.0}, reduce_only=True)
+    assert v.allowed and "below_min_notional" not in (v.reason or "")
+    # o caminho que ADICIONA risco continua reprovando abaixo do mínimo.
+    v2 = enf.check_intent(strategy_id="s", symbol="VVV", notional_usd=5,
+                          leverage=None, prices={"VVV": 1.0}, reduce_only=False)
+    assert not v2.allowed and "below_min_notional" in v2.reason
+
+
 def test_truncates_above_max_order_notional(settings: Settings) -> None:
     # Acima do teto por-ordem NÃO é mais rejeitado: entra truncado ao teto.
     enf, _ = make_enforcer(settings)

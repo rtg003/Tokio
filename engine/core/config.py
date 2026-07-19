@@ -26,7 +26,7 @@ class RiskSettings(BaseModel):
     max_total_exposure_usd: float = 2000.0
     max_strategy_exposure_usd: float = 500.0
     max_daily_loss_usd: float = 100.0
-    max_leverage_global: float = 5.0
+    max_leverage_global: float = 10.0  # UPDATE-0078: teto de risco 5→10 (aprovado pelo operador)
     min_order_notional_usd: float = 10.0
 
 

@@ -119,7 +119,8 @@ def test_leverage_capped_to_min_of_request_asset_global(
     settings, db, paper,
 ) -> None:
     """leverage passado ao enforcer = min(pedido, maxLev do ativo, cap global).
-    Pedido 100 × asset(paper)=50 × global=5.0 ⇒ 5.0."""
+    Pedido 100 × asset(paper)=50 × global=10.0 ⇒ 10.0.
+    UPDATE-0078: cap global subiu 5→10 (aprovado pelo operador)."""
     captured: dict[str, Any] = {}
     state = _state(settings, db, paper, "gw-lev")
     original = state.enforcer.check_intent
@@ -136,7 +137,7 @@ def test_leverage_capped_to_min_of_request_asset_global(
             "notional_usd": 100.0, "leverage": 100.0,
         }).json()
     assert r["ok"] is True
-    assert captured["leverage"] == 5.0
+    assert captured["leverage"] == 10.0
 
 
 # -- dry-run --------------------------------------------------------------------

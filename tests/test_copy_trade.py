@@ -475,6 +475,15 @@ def test_mirror_config_validation() -> None:
         TraderConfig(name="x", address="0xabc", mode="yolo")
 
 
+def test_trader_config_default_leverage_is_5() -> None:
+    # UPDATE-0078: alavancagem padrão 3→5 (máx permitido = 10 via clamp global).
+    cfg = TraderConfig(name="x", address="0xabc", mode="fixed_usdc")
+    assert cfg.max_leverage == 5.0
+    # from_row sem coluna max_leverage também assume o novo padrão.
+    row = {"name": "y", "address": "0xdef", "mode": "fixed_usdc"}
+    assert TraderConfig.from_row(row).max_leverage == 5.0
+
+
 # -- absolute fixed_usdc semantics (UPDATE-0020) -----------------------------
 
 def test_fixed_usdc_does_not_scale_when_trader_doubles(settings, db) -> None:

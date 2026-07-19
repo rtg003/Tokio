@@ -43,7 +43,7 @@ class TraderConfig(BaseModel):
     address: str
     mode: str = Field(default="fixed_usdc", pattern="^(fixed_usdc|percent)$")
     value: float = 50.0
-    max_leverage: float = 3.0
+    max_leverage: float = 5.0  # UPDATE-0078: padrão 3→5 (máx permitido = 10 no clamp)
     blocked_assets: list[str] = Field(default_factory=list)
     status: str = "SUGERIDO"      # da tabela traders
     dry_run: bool = True          # legado: status TESTNET/MAINNET decide execução
@@ -60,7 +60,7 @@ class TraderConfig(BaseModel):
             address=row["address"],
             mode=row.get("mode", "fixed_usdc"),
             value=float(row.get("value", 50.0)),
-            max_leverage=float(row.get("max_leverage", 3.0)),
+            max_leverage=float(row.get("max_leverage", 5.0)),  # UPDATE-0078: 3→5
             blocked_assets=json.loads(row.get("blocked_assets") or "[]"),
             status=row.get("status", "SUGERIDO"),
             dry_run=bool(row.get("dry_run", 1)),
