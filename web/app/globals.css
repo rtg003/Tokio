@@ -209,6 +209,11 @@ td .sub { display: block; font-size: 10.5px; color: var(--faint); margin-top: 2p
 }
 .pos-close-btn:hover:not(:disabled) { color: var(--neg); border-color: var(--neg); background: var(--surface-2); }
 .pos-close-btn:disabled { opacity: 0.35; cursor: default; }
+/* UPDATE-0080: dois ícones de ação por ordem (reexecutar + cancelar) lado a
+   lado. O de reexecutar (.reexec) usa hover âmbar — não é redutor de risco como
+   o cancelar (hover vermelho). */
+.order-actions { display: inline-flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.pos-close-btn.reexec:hover:not(:disabled) { color: var(--amber); border-color: var(--amber); background: var(--surface-2); }
 .num { text-align: right; }
 th.num { text-align: right; }
 /* UPDATE-0078: coluna WR centralizada (cabeçalho + valores). */

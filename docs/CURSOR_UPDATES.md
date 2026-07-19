@@ -3162,3 +3162,39 @@ zero_fills_n_trades_30d`, `test_apply_ht_positions_prefers_larger_count`,
 ### DEFERIDO — UPDATE-0080 (item 4)
 Reexecução manual de ordem **REJECTED** a **preço de mercado atual** (novo endpoint
 `/control/order/reexecute` espelhando `/control/position/close`, sem tocar no hot path).
+
+## UPDATE-0080 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: item 4 deferido do UPDATE-0079 (rtg003). Ordens recusadas pela venue
+(`rejected`/`error` — p.ex. margem insuficiente) ficavam listadas em "Trades e Ordens em Aberto"
+sem meio de reagir (só havia o ícone de cancelar). Pedido: ícone flat/minimalista de **reexecutar**
+ao lado do de cancelar, com **caixa de confirmação** que consulta o **preço de mercado atual** e o
+compara com o preço da ordem original. Decisão do operador: reexecutar sempre a **preço de mercado
+atual**. Entregue em **UM commit**.
+
+**Tipo**: server (novo endpoint de controle) + web (proxy allowlist, data helper, componente, tabela,
+CSS) + testes. **Hot path §8.4.1 NÃO tocado** — a reexecução reusa `state.handle_intent` in-process
+(mesmo padrão de `/control/position/close`); nenhum gate novo no caminho de ordem (o `enforcer` já
+roda dentro do `handle_intent`).
+
+### Backend — `/control/order/reexecute`
+Novo modelo `ReexecuteOrderRequest` (`strategy_id`, `symbol`, `cloid`, `env`, `preview`) e endpoint
+`/control/order/reexecute` (espelha `/control/order/cancel`). Lê a ordem original por `cloid`
+(fonte de verdade). Guardas: strategy conhecida; ordem existe (`ordem_nao_encontrada`); só reexecuta
+`status in ("rejected","error")` (`ordem_nao_reexecutavel`). Resolve o adapter de `env` e o
+`mid_price`. **preview=True** devolve `market_price`/`original_price`/`drift_pct` sem enviar nada.
+**preview=False** chama `handle_intent(price=None ⇒ mercado)` com `symbol/side/size/leverage` da
+original → **nova ordem** (novo `cloid`); a original permanece `rejected` (não é mutada).
+
+### Frontend
+- `web/app/api/control/[...path]/route.ts`: allowlist `^order/reexecute$`.
+- `web/lib/copy-trade/data.ts`: helper `reexecuteOrder({..., preview})`.
+- `web/components/copy-trade/ReexecuteOrderButton.tsx` (**novo**): preview → `window.confirm` com
+  preço original vs. mercado (+ %) → execute → `router.refresh()`. Ícone retry; hover âmbar.
+- `web/components/copy-trade/TradesOrdersTable.tsx`: renderiza o botão de reexecutar **apenas** para
+  `status === "rejected" | "error"`, ao lado do de cancelar (`.order-actions`).
+- `web/app/globals.css`: `.order-actions` (dois ícones lado a lado) + hover âmbar do `.reexec`.
+
+### Testes
+`pytest tests/gateway/test_order_reexecute.py` → 4 novos (preview sem enviar; execute a mercado com
+novo cloid e original intacta; guarda de `filled`; ordem inexistente). `tsc`/build limpos.

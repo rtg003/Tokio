@@ -536,6 +536,45 @@ export async function cancelOrder(args: {
   }
 }
 
+// Client-side: reexecuta UMA ordem recusada (rejected/error) a preço de mercado
+// atual. `preview: true` só consulta o mid atual + preço original (não envia
+// ordem) — a UI usa isso p/ montar a confirmação; `preview: false` envia a nova
+// ordem. Ato humano autenticado.
+export async function reexecuteOrder(args: {
+  strategy_id: string;
+  symbol: string;
+  cloid: string;
+  env: "testnet" | "mainnet";
+  preview: boolean;
+}): Promise<{
+  ok: boolean;
+  reason?: string | null;
+  preview?: boolean;
+  side?: string | null;
+  size?: number | null;
+  leverage?: number | null;
+  original_price?: number | null;
+  market_price?: number | null;
+  drift_pct?: number | null;
+  status?: string | null;
+  cloid?: string | null;
+}> {
+  try {
+    const res = await fetch(`/api/control/order/reexecute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, reason: data.reason ?? data.detail ?? "erro_reexecucao" };
+    }
+    return { ok: true, ...data };
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
+}
+
 // ---- Sugestões manuais (origin="usuário") ---------------------------------
 // Relatório de UMA wallet analisada pelo pipeline de discovery. `passes_filters`
 // é só um rótulo de UI — o operador pode salvar mesmo o que reprova (força-salvar).

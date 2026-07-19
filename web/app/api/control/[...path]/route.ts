@@ -29,6 +29,9 @@ const ALLOWED_POST_PATTERNS = [
   // cancelar UMA ordem em aberto via ícone da tabela — ato humano autenticado
   // (com confirmação na UI).
   /^order\/cancel$/,
+  // reexecutar UMA ordem recusada (rejected/error) a preço de mercado — ato
+  // humano autenticado (preview + confirmação na UI).
+  /^order\/reexecute$/,
   // HL agent wallets: prepare/activate provisioning + revoke (gateway gates
   // the control token; MAINNET still needs credentials configured server-side)
   /^hl\/agents\/(prepare|activate)$/,

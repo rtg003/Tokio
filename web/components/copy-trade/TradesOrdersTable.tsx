@@ -1,6 +1,7 @@
 import { fmtDateTime, fmtNotional, fmtNum, fmtSigned, pnlClass, statusChip } from "@/lib/format";
 import { Fill, Order, Trader } from "@/lib/copy-trade/data";
 import CancelOrderButton from "./CancelOrderButton";
+import ReexecuteOrderButton from "./ReexecuteOrderButton";
 
 type Row = {
   kind: "ORDEM" | "TRADE";
@@ -177,12 +178,22 @@ export default function TradesOrdersTable({
                   </td>
                   <td className="num pos-close-cell">
                     {r.kind === "ORDEM" ? (
-                      <CancelOrderButton
-                        strategyId={r.strategyId}
-                        symbol={r.symbol}
-                        cloid={r.cloid}
-                        env={r.network}
-                      />
+                      <span className="order-actions">
+                        {(r.status === "rejected" || r.status === "error") && (
+                          <ReexecuteOrderButton
+                            strategyId={r.strategyId}
+                            symbol={r.symbol}
+                            cloid={r.cloid}
+                            env={r.network}
+                          />
+                        )}
+                        <CancelOrderButton
+                          strategyId={r.strategyId}
+                          symbol={r.symbol}
+                          cloid={r.cloid}
+                          env={r.network}
+                        />
+                      </span>
                     ) : (
                       "—"
                     )}

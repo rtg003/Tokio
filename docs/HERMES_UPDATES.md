@@ -4378,3 +4378,30 @@ Nenhum write em produção antes do deploy.
 
 **A caminho (UPDATE-0080, à parte)**: reexecução manual de ordem REJECTED a preço de mercado atual,
 com caixa de confirmação comparando com o preço da ordem original.
+
+## UPDATE-0080 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: item 4 deferido do UPDATE-0079. Ordens recusadas pela venue (`rejected`/`error`, p.ex.
+margem insuficiente) ficavam listadas em "Trades e Ordens em Aberto" sem meio de reagir (só o ícone
+de cancelar). Agora há um ícone de **reexecutar** ao lado do de cancelar. Entregue em **UM commit**.
+
+**Tipo**: novo endpoint de controle + web (UI). **Caminho crítico de ordens NÃO tocado** — a
+reexecução reusa `handle_intent` in-process (mesmo padrão do botão de fechar posição); o `enforcer`
+(gate de risco) continua rodando normalmente.
+
+**Resumo (o porquê — não "corrija" de volta)**:
+- O ícone de reexecutar aparece **só** para ordens `rejected`/`error` (não em `filled`/`sent`).
+- Ao clicar, a UI **consulta o preço de mercado atual** e mostra na confirmação o **preço original
+  vs. o de mercado** (+ variação %). Por decisão do operador, a reexecução é sempre **a preço de
+  mercado atual**.
+- Confirmando, uma **NOVA ordem** é enviada (novo `cloid`) com o mesmo `symbol`/`side`/`size`/
+  `leverage` da original; a ordem antiga **permanece `rejected`** no histórico (não é alterada).
+
+**Ações do Hermes (pós-deploy)**:
+1. Deploy normal (push = autodeploy pull-based; sem migração de schema).
+2. Numa ordem `rejected` (testnet), clicar no ícone de reexecutar, conferir a confirmação (preço
+   original vs. mercado atual), confirmar e verificar que uma nova ordem é enviada a mercado.
+3. Conferir que ordens `filled`/`sent`/`created` **não** mostram o ícone de reexecutar.
+
+**Validação (local)**: `pytest tests/gateway/test_order_reexecute.py` → 4 novos verdes; `tsc`/build
+limpos. Nenhum write em produção antes do deploy.

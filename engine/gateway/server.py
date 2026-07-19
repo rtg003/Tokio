@@ -151,6 +151,18 @@ class CancelOrderRequest(BaseModel):
     env: str = Field(pattern="^(testnet|mainnet)$")
 
 
+class ReexecuteOrderRequest(BaseModel):
+    # Reexecuta UMA ordem recusada (rejected/error) a PREÇO DE MERCADO atual.
+    # `cloid` = ordem original (fonte dos campos symbol/side/size/leverage);
+    # `env` resolve o adapter. `preview=True` só consulta o mid atual (não
+    # envia ordem); `preview=False` envia a nova ordem. Ato humano autenticado.
+    strategy_id: str
+    symbol: str
+    cloid: str
+    env: str = Field(pattern="^(testnet|mainnet)$")
+    preview: bool = True
+
+
 class WalletLabelRequest(BaseModel):
     # Rótulo amigável exibido no combo de Wallets ("Hyperliquid 1 — 0x4124…").
     # Vazio remove o rótulo. Ato humano autenticado (dashboard).
@@ -2453,6 +2465,66 @@ def build_app(state: GatewayState) -> FastAPI:
             strategy_id=sid)
         return {"ok": ok, "cloid": req.cloid,
                 "reason": None if ok else "cancel_recusado"}
+
+    @app.post("/control/order/reexecute",
+              dependencies=[Depends(_control_auth)])
+    def reexecute_single_order(req: ReexecuteOrderRequest) -> dict[str, Any]:
+        """Reexecuta UMA ordem recusada (rejected/error) a PREÇO DE MERCADO
+        atual (ícone da tabela). Ato humano autenticado (dashboard, com
+        confirmação prévia que compara o preço original com o de mercado). Lê a
+        ordem original por `cloid` (fonte de verdade) e — se `preview=False` —
+        reusa `handle_intent` (in-process) com `price=None` ⇒ mid_price. NÃO
+        toca o hot path `/intent`/`handle_intent` (INVARIANTE §8.4.1); nenhum
+        gate novo no caminho de ordem (o enforcer já roda dentro do
+        `handle_intent`). A ordem original NÃO é mutada — cria-se ordem nova."""
+        sid = req.strategy_id
+        if not state.db.query("SELECT id FROM strategies WHERE id = ?", (sid,)):
+            return {"ok": False, "reason": "strategy_desconhecida"}
+        rows = state.db.query(
+            "SELECT symbol, side, size, leverage, price, status "
+            "FROM orders WHERE cloid = ? AND strategy_id = ?",
+            (req.cloid, sid))
+        if not rows:
+            return {"ok": False, "reason": "ordem_nao_encontrada"}
+        orig = dict(rows[0])
+        if orig.get("status") not in ("rejected", "error"):
+            return {"ok": False, "reason": "ordem_nao_reexecutavel"}
+        try:
+            adapter = state._adapter_for(req.env)
+            mid = float(adapter.mid_price(orig["symbol"]))
+        except Exception as exc:  # noqa: BLE001 — venue hiccup não pode 500
+            return {"ok": False, "reason": f"preco_indisponivel: {str(exc)[:120]}"}
+        if mid <= 0:
+            return {"ok": False, "reason": "sem_preco_de_mercado"}
+        orig_price = orig.get("price")
+        drift_pct = (
+            (mid - orig_price) / orig_price * 100.0
+            if orig_price else None)
+        if req.preview:
+            return {
+                "ok": True, "preview": True,
+                "symbol": orig["symbol"], "side": orig["side"],
+                "size": abs(float(orig["size"])), "leverage": orig.get("leverage"),
+                "original_price": orig_price, "market_price": mid,
+                "drift_pct": drift_pct,
+            }
+        try:
+            r = state.handle_intent(IntentRequest(
+                strategy_id=sid, symbol=orig["symbol"], side=orig["side"],
+                size=abs(float(orig["size"])), price=None,  # None ⇒ mid_price (mercado)
+                leverage=orig.get("leverage"), reduce_only=False,
+                environment=req.env, dry_run=False,
+            ))
+        except Exception as exc:  # noqa: BLE001 — best-effort; devolve o motivo
+            r = {"ok": False, "reason": str(exc)[:200]}
+        state.logger.info(
+            "order.reexecute",
+            {"cloid_original": req.cloid, "cloid_novo": r.get("cloid"),
+             "symbol": orig["symbol"], "side": orig["side"], "env": req.env,
+             "ok": bool(r.get("ok")), "by": "dashboard_humano"},
+            strategy_id=sid)
+        return {"ok": bool(r.get("ok")), "cloid": r.get("cloid"),
+                "status": r.get("status"), "reason": r.get("reason")}
 
     def _suggestions_client() -> tuple[Any, dict[str, Any]]:
         """Constrói o HLDataClient + cfg de discovery sob demanda (o GatewayState
