@@ -869,6 +869,49 @@ def _control_auth(x_control_token: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="invalid control token")
 
 
+# UPDATE-0082: rebaixar trader de TESTNET/MAINNET pausa a strategy, mas ordens já
+# enviadas à venue pelo reconcile continuam pendentes e podem preencher DEPOIS da
+# pausa. Este helper cancela, no ato do rebaixamento (síncrono, no endpoint de
+# status), todas as ordens abertas da strategy NAQUELE ambiente. Best-effort:
+# uma falha isolada nunca aborta as demais nem derruba o endpoint. Só toca ordens
+# abertas — filled/cancelled/rejected ficam intactas.
+def cancel_open_orders_for_demote(
+    state: "GatewayState", *, strategy_id: str, network: str,
+    reason: str = "trader_demoted",
+) -> dict[str, Any]:
+    # A rede de uma ordem vive no `exchange_id` → exchanges.network (não há coluna
+    # `network` em orders); mesmo JOIN autoritativo usado em `apply_fill`.
+    open_orders = state.db.query(
+        "SELECT o.cloid AS cloid, o.symbol AS symbol FROM orders o "
+        "JOIN exchanges e ON o.exchange_id = e.id "
+        "WHERE o.strategy_id = ? AND e.network = ? "
+        "AND o.status IN ('created','sent','acked','partially_filled')",
+        (strategy_id, network),
+    )
+    try:
+        adapter = state._adapter_for(network)
+    except Exception as exc:  # ambiente não configurado → nada a cancelar
+        state.logger.warning("order.cancel_bulk", {
+            "strategy_id": strategy_id, "count": 0, "reason": reason,
+            "error": f"no_adapter:{str(exc)[:120]}"})
+        return {"count": 0}
+    count = 0
+    for o in open_orders:
+        try:
+            if adapter.cancel(o["symbol"], cloid=o["cloid"]):
+                state.db.update_order_status(
+                    o["cloid"], "cancelled", closed_at=utcnow())
+                count += 1
+        except Exception as exc:
+            state.logger.warning("order.cancel_failed", {
+                "strategy_id": strategy_id, "cloid": o["cloid"],
+                "symbol": o["symbol"], "reason": reason,
+                "error": str(exc)[:200]})
+    state.logger.info("order.cancel_bulk", {
+        "strategy_id": strategy_id, "count": count, "reason": reason})
+    return {"count": count}
+
+
 # UPDATE-0081: o mapeamento de `extras` migrou p/ `funnel.suggestion_extras`
 # (reusado pelo endpoint humano E pelo job de reclassificação de 2h do
 # discovery_scheduler, que não pode importar o módulo do gateway). Alias fino
@@ -1578,12 +1621,32 @@ def build_app(state: GatewayState) -> FastAPI:
 
     @app.post("/control/trader/{address}/status", dependencies=[Depends(_control_auth)])
     def trader_status(address: str, new_status: str) -> dict[str, Any]:
-        from engine.strategies.copy_trade.traders_store import set_status
+        from engine.strategies.copy_trade.traders_store import (
+            OPERATING_STATUSES, environment_for_status, set_status,
+        )
 
         if new_status == "MAINNET" and "mainnet" not in state.adapters:
             return {"ok": False, "reason": "mainnet_nao_configurado"}
-        return set_status(state.db, address, new_status, by="dashboard_humano",
-                          logger=state.logger, human_gate=True)
+        res = set_status(state.db, address, new_status, by="dashboard_humano",
+                         logger=state.logger, human_gate=True)
+        # UPDATE-0082: rebaixamento TESTNET/MAINNET → status não-operante ⇒ cancela
+        # síncronamente as ordens pendentes da strategy no ambiente ANTIGO (é lá
+        # que elas vivem). Best-effort: nunca derruba o endpoint.
+        frm = res.get("from")
+        if (res.get("ok") and not res.get("noop")
+                and frm in OPERATING_STATUSES
+                and new_status not in OPERATING_STATUSES):
+            env = environment_for_status(frm)
+            sid = res.get("strategy_id")
+            if env and sid and env in state.adapters:
+                try:
+                    res["cancelled_orders"] = cancel_open_orders_for_demote(
+                        state, strategy_id=sid, network=env)["count"]
+                except Exception as exc:
+                    state.logger.error("order.cancel_bulk_failed",
+                                       {"strategy_id": sid, "error": str(exc)[:200]})
+                    res["cancelled_orders"] = 0
+        return res
 
     @app.post("/control/trader/{address}/config", dependencies=[Depends(_control_auth)])
     def trader_config(address: str, fields: dict[str, Any]) -> dict[str, Any]:

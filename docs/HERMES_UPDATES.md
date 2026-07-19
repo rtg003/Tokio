@@ -4443,3 +4443,31 @@ ordens NÃO tocado.**
 **Validação (local)**: `pytest tests/test_reclassify_wallets.py` → 6 novos verdes; suíte de
 reclassify/suggestions verde após o refactor; `tsc`/build limpos. Nenhum write em produção antes do
 deploy.
+
+## UPDATE-0082 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: rtg003. Entregue em **UM commit**.
+
+**Tipo**: engine (gateway). **Caminho crítico de ordens NÃO tocado.**
+
+**Resumo (o porquê — não "corrija" de volta)**: quando você **rebaixa** um trader de
+**TESTNET/MAINNET** para SALVO/SUGERIDO/REJEITADO pela dashboard, o sistema agora **cancela na hora**
+todas as ordens **pendentes** daquele trader **naquele ambiente**. Antes, o rebaixamento só *pausava*
+a estratégia — mas as ordens que já tinham sido mandadas para a corretora continuavam no book e
+podiam **executar depois** da pausa (foi o que aconteceu em 19/07 com o `0x1a5d` às 21:14→21:15, e
+você teve de cancelar 4 ordens na mão). Detalhes do comportamento:
+- Só cancela ordens **abertas** (as já executadas/canceladas/rejeitadas ficam como estão).
+- Só toca ordens **do próprio trader** e **do ambiente de onde ele saiu** — nunca de outros.
+- É **best-effort**: se o cancelamento de uma ordem falhar, ele registra `order.cancel_failed` e
+  segue cancelando as demais; nunca derruba o gateway.
+- **Não mexe no gate humano** de status — só reage ao rebaixamento que você fez.
+
+**Ações do Hermes (pós-deploy)**:
+1. Deploy normal (push = autodeploy pull-based; **sem migração de schema**).
+2. Ao rebaixar um trader TESTNET/MAINNET com ordens no book, confira no log o evento
+   `order.cancel_bulk {strategy_id, count, reason:"trader_demoted"}` e que as ordens somem do book
+   (viram `cancelled`) — sem fills tardios após a pausa. A resposta do endpoint agora traz o campo
+   `cancelled_orders`.
+
+**Validação (local)**: `pytest tests/test_demote_cancels_orders.py` → 6 novos verdes; suíte cheia
+**521 verdes**. Nenhum write em produção antes do deploy.

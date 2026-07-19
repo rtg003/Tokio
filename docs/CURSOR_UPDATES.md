@@ -3246,3 +3246,36 @@ testes. **Hot path §8.4.1 NÃO tocado**.
 downgrade; uma falha não quebra o lote; `run_reclassify` só alvos não-rejeitados; nunca derruba o
 daemon; alvo vazio é no-op OK). Suíte existente de `reclassify`/suggestions verde após o refactor.
 `tsc`/build limpos.
+
+## UPDATE-0082 · 2026-07-19 · Status: APLICADO em 2026-07-19
+
+**Origem**: rtg003. Entregue em **UM commit**.
+
+**Resumo**: ao **rebaixar** um trader de **TESTNET/MAINNET** para qualquer status não-operante
+(SALVO/SUGERIDO/REJEITADO), o endpoint de status passa a **cancelar imediatamente** (síncrono, antes
+de retornar) todas as **ordens abertas** da strategy associada **naquele ambiente**. Antes, a strategy
+era pausada mas as ordens já enviadas à venue pelo reconcile ficavam pendentes e podiam **executar
+depois da pausa** (aconteceu em 19/07 com `0x1a5d`, 21:14→21:15, exigindo 4 cancelamentos manuais).
+
+**Tipo**: engine (endpoint gateway + retorno de `set_status`) + testes. **Hot path §8.4.1 NÃO
+tocado** (`/intent`, `/cancel`, `handle_intent`, brackets intactos).
+
+### Backend
+- `engine/strategies/copy_trade/traders_store.py`: `set_status` agora devolve também
+  `"strategy_id"` no dict de sucesso (mudança aditiva; gate humano e auditoria `strategy.paused`
+  inalterados).
+- `engine/gateway/server.py`: novo helper de módulo **`cancel_open_orders_for_demote(state, *,
+  strategy_id, network, reason)`** — seleciona as ordens abertas
+  (`status IN ('created','sent','acked','partially_filled')`) da strategy naquele ambiente (rede via
+  `orders JOIN exchanges`, pois orders não tem coluna `network`), chama `adapter.cancel(symbol,
+  cloid=...)`, marca `cancelled` no BD e é **best-effort** (falha isolada → log `order.cancel_failed`,
+  segue nas demais). Emite `order.cancel_bulk {strategy_id, count, reason:"trader_demoted"}`.
+- O endpoint `/control/trader/{address}/status` chama o helper **apenas** quando o `set_status`
+  retornou ok/não-noop e o status ANTIGO ∈ {TESTNET,MAINNET} e o NOVO ∉ — ambiente resolvido do
+  status **antigo** via `environment_for_status`. Envolvido em try/except → nunca derruba o endpoint;
+  devolve `cancelled_orders` na resposta.
+
+### Testes
+`pytest tests/test_demote_cancels_orders.py` → 6 novos (TESTNET→SALVO cancela 3; MAINNET→SALVO;
+promoção não cancela; sem ordens abertas = 0; 1 falha/2 ok = 2 + `order.cancel_failed`; escopo só da
+própria strategy+ambiente). Suíte cheia: **521 verdes**.

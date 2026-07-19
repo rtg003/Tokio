@@ -210,7 +210,7 @@ def set_status(db: Database, address: str, new_status: str, *, by: str,
             db.insert_event(ts=utcnow(), strategy_id=sid,
                             event_type="strategy.paused", level="warning",
                             payload={**demote_payload, "by": "trader_demoted"})
-    return {"ok": True, "from": current, "status": new_status}
+    return {"ok": True, "from": current, "status": new_status, "strategy_id": sid}
 
 
 def unpin_trader(db: Database, address: str, *, by: str,
