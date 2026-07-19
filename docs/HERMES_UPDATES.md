@@ -4227,7 +4227,7 @@ write em produção antes do deploy.
 
 ---
 
-## UPDATE-0076 · 2026-07-19 · Status: PENDENTE
+## UPDATE-0076 · 2026-07-19 · Status: APLICADO em 2026-07-19
 
 **Origem**: report do rtg003bot confirmando que os dois campos do UPDATE-0074 —
 `sim_funded_share` (fração do book espelhável com a banca) e `sim_f15_net_usd` (net do F15,

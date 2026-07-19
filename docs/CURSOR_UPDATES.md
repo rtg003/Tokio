@@ -2939,3 +2939,38 @@ tolerado (coluna NULL, sem erro). `pytest tests/ -q` -> **492 passed** (486 + 6)
 ### Ações do Hermes (pós-deploy)
 Ver UPDATE-0076 no `HERMES_UPDATES.md`: re-analisar/salvar uma wallet de referencia e confirmar
 via `SELECT sim_funded_share, sim_f15_net_usd FROM traders` que deixam de ser NULL.
+
+
+## UPDATE-0076 - validacao em producao (Hermes) - APLICADO com ressalva
+
+**Origem**: validacao do UPDATE-0076 (persistencia de sim_funded_share e sim_f15_net_usd).
+
+**Tipo**: gateway (só serialização de curadoria) + testes + docs.
+
+**Resumo**: UPDATE-0076 APLICADO. Os campos sim_funded_share e sim_f15_net_usd agora
+sao persistidos e expostos na curadoria individual (analyze/save/reclassify).
+
+### Resultados em producao (2026-07-19 02:40 UTC)
+
+| Endereco | Conf | funded_share | sim_f15 | sim_net | Esperado |
+|---|---|---|---|---|---|
+| 0xd487e26c (equity $394) | complete | 0.0016 (0.16%) | -$1.000 | NULL | funded baixo, sim_f15 negativo (liquidacao) - OK |
+| 0x1a5db900 (equity $14k) | complete | 0.4642 (46.4%) | $871 | $1.609 | funded alto, sim_net preservado - OK |
+
+### Ressalva: gate de confiança (funded_share < min) NAO disparou
+
+O 0xd487e26c tem funded_share=0.0016 (< min_funded_share=0.10) mas
+metrics_confidence continua "complete" em vez de "sampled". O gate de confiança
+(funnel.py:636-644) nao disparou no caminho do analyze_single_wallet. Possivel causa:
+o gate esta em _run_stage4, que pode nao ser chamado no caminho individual, ou o
+gate so roda no scan em massa.
+
+A UI agora tem os dados para mostrar o badge "copia parcial", mas o
+metrics_confidence nao muda para "sampled" automaticamente no analyze individual.
+
+### Status
+
+UPDATE-0076 marcado como APLICADO - os campos sao persistidos e expostos. A
+ressalva do gate de confianca fica como follow-up para o CONSTRUTOR avaliar se o
+gate deve disparar tambem no analyze individual (funnel.py:636-644 no caminho do
+analyze_single_wallet).
