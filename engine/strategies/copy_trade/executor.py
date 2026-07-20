@@ -48,6 +48,11 @@ class TraderConfig(BaseModel):
     status: str = "SUGERIDO"      # da tabela traders
     dry_run: bool = True          # legado: status TESTNET/MAINNET decide execução
     thresholds: dict[str, float] = Field(default_factory=dict)
+    # UPDATE-0084: marcado (default) = ao ativar, hidrata e espelha as posições
+    # JÁ ABERTAS do trader; desmarcado = começa do baseline atual (não copia o
+    # legado) e só espelha fills NOVOS. Em ambos os casos o âncora `_target_pos`
+    # é semeado da clearinghouse no boot (nunca inverte a direção).
+    copy_existing_positions: bool = True
 
     @property
     def strategy_id(self) -> str:
@@ -65,6 +70,9 @@ class TraderConfig(BaseModel):
             status=row.get("status", "SUGERIDO"),
             dry_run=bool(row.get("dry_run", 1)),
             thresholds=json.loads(row.get("thresholds") or "{}"),
+            copy_existing_positions=bool(
+                row.get("copy_existing_positions", 1)
+                if row.get("copy_existing_positions") is not None else 1),
         )
 
 
@@ -275,6 +283,14 @@ class CopyTradeExecutor:
                 self._register_strategy(cfg)
                 if cfg.address not in self._subscribed:
                     self._subscribed.add(cfg.address)
+                    # UPDATE-0084: semeia o âncora `_target_pos` da posição REAL do
+                    # trader (clearinghouse, sinal preservado) ANTES de assinar os
+                    # fills. Sem isto, `_target_pos` nascia vazio e um fill de
+                    # fechamento de short (buy) sem `startPosition` virava LONG
+                    # fantasma (incidente 19/07). Só no boot/1ª assinatura — não
+                    # é chamada por ciclo (respeita §8.4.1 e "não clearinghouse
+                    # todo ciclo").
+                    self._hydrate_target_positions(cfg)
                     self.watcher.subscribe(
                         cfg.address,
                         lambda fill, sid=cfg.strategy_id: self.on_target_fill(sid, fill),
@@ -329,6 +345,46 @@ class CopyTradeExecutor:
                 "thresholds": json.dumps(cfg.thresholds, ensure_ascii=False),
             }, ("id",))
 
+    def _hydrate_target_positions(self, cfg: TraderConfig) -> None:
+        """Semeia `_target_pos` da posição REAL assinada do trader (clearinghouse)
+        no boot/1ª assinatura — o âncora que impede o WS de inverter a direção
+        (UPDATE-0084). `szi` negativo = short; positivo = long; preservado.
+
+        Se `copy_existing_positions` estiver DESMARCADO, semeia também `_my_pos`
+        com o espelho desejado das posições já abertas, para que o reconcile as
+        trate como "já espelhadas" (delta≈0) e NÃO abra o legado — só fills novos
+        movem a cópia a partir daí. Best-effort: qualquer erro só loga e segue
+        (nunca aborta o boot)."""
+        sid = cfg.strategy_id
+        try:
+            target_pos = self.target_positions_fn(cfg.address)
+        except Exception as exc:  # noqa: BLE001 — um trader não pode matar o boot
+            self.logger.warning("reconcile.target_positions_failed",
+                                {"address": cfg.address, "error": str(exc)[:200],
+                                 "phase": "hydrate"},
+                                strategy_id=sid)
+            return
+        environment = environment_for_status(self._trader_status(cfg.address))
+        for symbol, szi in target_pos.items():
+            szi = float(szi)
+            if szi == 0.0:
+                continue
+            key = (sid, symbol)
+            self._target_pos[key] = szi
+            if not cfg.copy_existing_positions:
+                # baseline: fingimos já espelhar a posição legada ⇒ reconcile
+                # vê delta≈0 e não abre. Precisa de preço p/ dimensionar; sem
+                # preço, o reconcile já pula o símbolo (no_price/ilíquido).
+                px = self._mid_price(symbol, environment)
+                if px > 0:
+                    self._my_pos[key] = self._desired_mirror(
+                        cfg, symbol, szi, px, environment)
+        self.logger.info(
+            "reconcile.hydrated",
+            {"address": cfg.address, "symbols": sorted(target_pos),
+             "copy_existing_positions": cfg.copy_existing_positions},
+            strategy_id=sid)
+
     def _strategy_status(self, strategy_id: str) -> str:
         rows = self.db.query("SELECT status FROM strategies WHERE id = ?", (strategy_id,))
         return rows[0]["status"] if rows else "draft"
@@ -343,6 +399,28 @@ class CopyTradeExecutor:
         # a ordem é real no respectivo ambiente se a strategy ct_* estiver ativa.
         return (self._trader_status(cfg.address) not in ("TESTNET", "MAINNET")
                 or self._strategy_status(cfg.strategy_id) != "active")
+
+    # side (taker A/B) esperado por `dir` da venue. Só as direções conclusivas;
+    # flips ("Long > Short"), liquidação, ADL, settlement e spot ficam de fora
+    # (inconclusivos ⇒ sem alarme).
+    _DIR_EXPECTED_SIDE = {
+        "Open Long": "buy", "Close Short": "buy",
+        "Open Short": "sell", "Close Long": "sell",
+    }
+
+    def _check_side_dir(self, strategy_id: str, symbol: str, side: str,
+                        dir_field: Any, sz: Any) -> None:
+        """Só observabilidade (UPDATE-0084): loga `fill.side_mismatch` quando o
+        `dir` declarado da venue contradiz o `side` taker (A/B). NUNCA inverte
+        nem bloqueia — o `side` real da venue continua sendo a verdade."""
+        if not dir_field:
+            return
+        expected = self._DIR_EXPECTED_SIDE.get(str(dir_field))
+        if expected is not None and expected != side:
+            self.logger.warning(
+                "fill.side_mismatch",
+                {"symbol": symbol, "side": side, "dir": str(dir_field), "sz": sz},
+                strategy_id=strategy_id)
 
     # -- mirroring core ----------------------------------------------------------
     def on_target_fill(self, strategy_id: str, fill: dict[str, Any]) -> dict[str, Any] | None:
@@ -370,6 +448,12 @@ class CopyTradeExecutor:
             return None
 
         side = {"B": "buy", "A": "sell"}.get(str(fill.get("side")), str(fill.get("side")))
+        # UPDATE-0084: sanidade side (A/B) × dir ("Open Short"/"Close Long"/…).
+        # `dir` da venue é a intenção declarada; se divergir do side taker,
+        # apenas LOGA (confia no `side` real — a verdade da execução — e NUNCA
+        # inverte nem bloqueia). Só quando `dir` está presente e é conclusivo.
+        self._check_side_dir(strategy_id, symbol, side, fill.get("dir"),
+                             fill.get("sz"))
         signed_fill = float(fill["sz"]) * (1 if side == "buy" else -1)
         px = float(fill["px"])
         key = (strategy_id, symbol)
@@ -683,6 +767,21 @@ class CopyTradeExecutor:
                         abs(desired - optimistic) < abs(desired - ledger_actual):
                     actual = optimistic
                 delta = desired - actual
+                # UPDATE-0084 — guarda de direção READ-ONLY: se o alvo está SHORT
+                # (target_now<0) e estamos FLAT (actual==0), a ordem correta é
+                # VENDER (delta<0); um delta>0 (compraria, abrindo LONG contra o
+                # trader) é sintoma de estado invertido — LOGA e NÃO envia. Só
+                # detecção: nunca redimensiona nem inverte. Simétrico p/ long.
+                if actual == 0.0 and (
+                        (target_now < 0 and delta > 0)
+                        or (target_now > 0 and delta < 0)):
+                    self.logger.error(
+                        "reconcile.direction_inversion",
+                        {"symbol": symbol, "target_now": target_now,
+                         "desired": desired, "actual": actual, "delta": delta},
+                        strategy_id=sid)
+                    self._clear_reconcile(key)
+                    continue
                 # Guard anti-fechamento-fantasma (ver on_target_fill): quando o
                 # alvo REDUZ/fecha, confirmar na venue real antes de enviar.
                 # Ledger E otimista podem estar stale (fechamento manual pelo
@@ -755,7 +854,14 @@ class CopyTradeExecutor:
                             self.RECONCILE_STUCK_BACKOFF_CYCLES
                     continue
                 info = {"symbol": symbol, "target_now": target_now,
-                        "desired": desired, "actual": actual, "delta": delta}
+                        "desired": desired, "actual": actual, "delta": delta,
+                        # UPDATE-0084: auditoria de direção — a direção do trader
+                        # (target) vs. a da ordem que vamos enviar; devem ser
+                        # coerentes (short→sell p/ abrir; long→buy).
+                        "target_direction": (
+                            "short" if target_now < 0
+                            else "long" if target_now > 0 else "flat"),
+                        "order_direction": "buy" if delta > 0 else "sell"}
                 self.logger.warning("drift.correcting", info, strategy_id=sid)
                 self._ensure_margin_for_open(sid, cfg, delta, px, reduce_only,
                                              environment)

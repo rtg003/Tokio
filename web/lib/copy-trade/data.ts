@@ -459,6 +459,9 @@ export type TraderExecConfig = {
   max_leverage: number;
   blocked_assets: string[];
   thresholds?: Record<string, number>;
+  // UPDATE-0084: marcado (default) = ao ativar, espelha as posições já abertas
+  // do trader; desmarcado = começa do baseline atual e só copia fills novos.
+  copy_existing_positions?: boolean;
 };
 
 // Client-side: salva o sizing (endpoint /config já existente) e, se ok, ativa a
@@ -479,6 +482,9 @@ export async function saveTraderConfigAndActivate(
         max_leverage: config.max_leverage,
         blocked_assets: config.blocked_assets,
         ...(config.thresholds ? { thresholds: config.thresholds } : {}),
+        ...(config.copy_existing_positions !== undefined
+          ? { copy_existing_positions: config.copy_existing_positions }
+          : {}),
       }),
     });
     const cfgData = await cfgRes.json().catch(() => ({}));

@@ -46,6 +46,7 @@ export default function StatusSelect({
     max_leverage?: number;
     blocked_assets?: string[] | string;
     thresholds?: Record<string, number> | string;
+    copy_existing_positions?: boolean | number;
   };
   stats?: TraderStats;
   equity?: number | null;

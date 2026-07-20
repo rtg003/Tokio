@@ -4513,3 +4513,46 @@ esperada.
 **Validação (local)**: `pytest tests/test_executor_wallet_guardrail.py tests/test_executor_switch.py`
 → **13 novos verdes**; suíte cheia **534 verdes**; web `npm run build` verde. Nenhum write em
 produção antes do deploy.
+
+## UPDATE-0084 · 2026-07-20 · Status: PENDENTE
+
+**Origem**: rtg003 (incidente 19/07 `ct_1a5db900`/TESTNET). Entregue em **UM commit**.
+
+**Tipo**: engine (runner `copy_trade`: boot/WS/reconcile) + dashboard (modal de ativação) + migração.
+**Hot path §8.4.1 do gateway NÃO tocado**; **fórmula de sizing/mirroring inalterada** — só estado
+inicial, guarda READ-ONLY e logs.
+
+**Resumo (o porquê — não "corrija" de volta)**: a cópia abriu posição na **DIREÇÃO ERRADA**. O trader
+`0x1a5db900…` estava **SHORT −400 HYPE** (mainnet, sem fills de HYPE no dia) e mesmo assim nossa cópia
+fez **35 fills `buy` (+59 HYPE)**, ficando **LONG** — oposto do trader — e realizou **−$339,56** em
+HYPE. Causa raiz: no boot/reativação o âncora interno da posição do trader (`_target_pos`) nascia
+**vazio**; quando chega um fill de **fechamento de short** (um `buy`) **sem** o campo `startPosition`,
+o cálculo virava `0 + (+sz)` = **LONG fantasma**. Correção: **hidratar o âncora da posição REAL
+assinada do trader** (clearinghouse, sinal preservado: negativo = short) **no boot/1ª assinatura** —
+assim um `buy` de fechamento continua sendo `−400 + sz` (segue short), nunca inverte. Somam-se
+defesas em profundidade e um **checkbox** para você decidir se copia (ou não) as posições **já
+abertas** do trader na ativação.
+
+**O que muda na sua operação**:
+- No **modal de ativação** (TESTNET/MAINNET) há um novo checkbox **"Copiar posições já abertas do
+  trader"** (vem **marcado** por padrão = comportamento atual: espelha o que o trader já tem).
+  **Desmarcado** = começa do zero e só espelha **fills NOVOS** (não abre o legado). Em **ambos** os
+  casos o âncora é semeado da clearinghouse (a direção nunca inverte).
+- Nada mais muda no fluxo; gates humanos e caps **intactos**. Histórico/fills **não** são reatribuídos.
+
+**Ações do Hermes (pós-deploy)**:
+1. Deploy normal (push = autodeploy). **Há migração** (`0032_copy_existing_positions`, coluna aditiva
+   `INTEGER DEFAULT 1`) — aplicada no boot; nenhuma ação manual.
+2. Ao (re)ativar um trader **short**, confira nos logs: intents são **`sell`** (abrir short), aparece
+   **`reconcile.hydrated {symbols, copy_existing_positions}`** e **NÃO** aparece
+   **`reconcile.direction_inversion`**. Um fechamento parcial do short pelo trader gera **`buy`/reduce**
+   (nunca abre LONG).
+3. Ativando com o checkbox **desmarcado** → a posição já aberta do trader **não** é copiada (só fills
+   novos). **Marcado** → a posição legada é espelhada normalmente.
+4. Se surgir **`fill.side_mismatch`** (side A/B vs `dir` da venue divergentes) ou
+   **`reconcile.direction_inversion`** (a guarda barrou uma ordem invertida), capture o payload e me
+   avise — são sinais de diagnóstico (a cópia segue o `side` real da venue; a guarda só **evita** a
+   ordem errada, nunca redimensiona).
+
+**Validação (local)**: `pytest tests/test_copy_trade_direction.py` → **9 novos verdes**; suíte cheia
+**543 verdes**; web `npm run build` verde. Nenhum write em produção antes do deploy.

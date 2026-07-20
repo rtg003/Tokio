@@ -3340,3 +3340,60 @@ integração via `on_own_fill`); hot path não bloqueia; invariante por strategy
 seed do histórico de `fills`; regressão sem referência; `set_active` reversível + audit; noop;
 inelegível/desconhecida → `HlAgentError`; `POST /select` troca + auto-cura `_expected_wallet` +
 `executor.wallet_switched`; auth do endpoint. Suíte cheia: **534 verdes**. Web `npm run build` verde.
+
+## UPDATE-0084 · 2026-07-20 · Status: APLICADO em 2026-07-20
+
+**Origem**: rtg003 (incidente 19/07 `ct_1a5db900`/TESTNET). Entregue em **UM commit**.
+
+**Resumo**: a cópia abriu na **direção ERRADA** (LONG contra um trader SHORT −400 HYPE: 35 buys,
++59 HYPE, −$339,56). A matemática de sinal do `reconcile` já estava certa (ancorava na posição
+assinada da clearinghouse e o `_desired_mirror` preserva o sinal). A lacuna era o **caminho rápido
+(WS) + boot**: `_target_pos` nascia **vazio** e um fill de fechamento de short (`buy`) **sem**
+`startPosition` virava `0 + (+sz)` = **LONG fantasma**. Fix raiz: **hidratar `_target_pos` da posição
+REAL do trader no boot/1ª assinatura** (sinal preservado). Somam-se defesas em profundidade +
+observabilidade + um checkbox de controle do operador.
+
+**Tipo**: engine (runner `copy_trade`: `TraderConfig`/`reload_traders`/`on_target_fill`/`reconcile`) +
+web (modal de ativação) + migração aditiva. **Hot path §8.4.1 do gateway NÃO tocado**; **fórmula de
+sizing/mirroring (`_desired_mirror`) inalterada** — só estado inicial dos dicionários, guarda
+READ-ONLY e campos de log.
+
+### Backend
+- `engine/strategies/copy_trade/executor.py`:
+  - **`TraderConfig.copy_existing_positions: bool = True`** (+ `from_row` lendo
+    `copy_existing_positions`, default 1). Marcado = hidrata e o reconcile abre o legado
+    (comportamento atual); desmarcado = semeia baseline e só espelha fills novos.
+  - **`_hydrate_target_positions(cfg)`** (NOVO): lê `target_positions_fn(cfg.address)` (clearinghouse,
+    sinal preservado) e seeda `_target_pos[(sid,symbol)] = szi`. Chamado no `reload_traders` **dentro
+    do guard `cfg.address not in self._subscribed`** (boot/1ª assinatura — **não** por ciclo, respeita
+    "não chamar clearinghouse todo ciclo"). Best-effort (try/except → `reconcile.target_positions_failed`,
+    nunca aborta o boot). Se `copy_existing_positions=False`, também seeda `_my_pos = _desired_mirror(...)`
+    dos símbolos legados (precisa de mid > 0) → reconcile vê `delta≈0` e **não** abre o legado. Loga
+    `reconcile.hydrated {symbols, copy_existing_positions}`.
+  - **`_DIR_EXPECTED_SIDE` + `_check_side_dir(...)`** (NOVO): em `on_target_fill`, após mapear
+    `side` (A/B), se o `dir` conclusivo da venue ("Open Long"/"Close Short"/…) divergir do `side` taker,
+    loga **`fill.side_mismatch`** — só observabilidade (segue o `side` real; nunca inverte/bloqueia).
+  - **Guarda `reconcile.direction_inversion`** (READ-ONLY): após `delta = desired - actual`, se
+    `actual == 0` e (`target_now<0 and delta>0`) ou (`target_now>0 and delta<0`) → `logger.error` +
+    `_clear_reconcile(key)` + `continue` (**não envia** a ordem invertida). Nunca redimensiona.
+  - **`drift.correcting`** ganha `target_direction` (short/long/flat) e `order_direction` (buy/sell).
+- `engine/strategies/copy_trade/traders_store.py`: `update_exec_config` — `copy_existing_positions` na
+  whitelist `allowed` e normalizado 0/1 (persiste na linha `traders` → reflete em `config_snapshot`).
+- `db/migrations/0032_copy_existing_positions.sql` (NOVO): `ALTER TABLE traders ADD COLUMN
+  copy_existing_positions INTEGER NOT NULL DEFAULT 1` (aditiva; default = comportamento atual).
+- `engine/gateway/server.py`: endpoint `trader_config` já repassa `**fields` a `update_exec_config` —
+  `copy_existing_positions` passa direto (sem endpoint novo).
+
+### Web
+- `web/lib/copy-trade/data.ts`: `TraderExecConfig` ganha `copy_existing_positions?: boolean`;
+  `saveTraderConfigAndActivate` inclui o campo no body quando definido.
+- `web/components/copy-trade/CopyConfigModal.tsx`: checkbox **"Copiar posições já abertas do trader"**
+  (padrão `.confirm-check`, default marcado, hint dinâmico); envia `copy_existing_positions` no
+  `onConfirm`. `StatusSelect.tsx`/`TradersTable.tsx`: propagam o campo no `config`.
+
+### Testes
+`tests/test_copy_trade_direction.py` (NOVO) → **9 verdes**: boot hidrata âncora short; fechamento de
+short não vira LONG (regressão do incidente); `fill.side_mismatch` logado (segue side real); guarda
+`reconcile.direction_inversion` (dispara + zero intents); `drift.correcting` com direção;
+`copy_existing=False` não abre legado mas espelha fill novo; `copy_existing=True` abre legado em short;
+regressão de sinal (short→sell, long→buy). Suíte cheia: **543 verdes**. Web `npm run build` verde.

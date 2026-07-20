@@ -31,6 +31,7 @@ type Props = {
     max_leverage?: number;
     blocked_assets?: string[] | string;
     thresholds?: Record<string, number> | string;
+    copy_existing_positions?: boolean | number;
   };
   stats?: TraderStats;
   equity?: number | null;
@@ -157,6 +158,13 @@ export default function CopyConfigModal({
   );
   const [minNotional, setMinNotional] = useState<number>(initialMinNotional(currentConfig));
   const [blocked, setBlocked] = useState<string>(initialBlocked(currentConfig?.blocked_assets));
+  // UPDATE-0084: copiar (ou não) as posições JÁ ABERTAS do trader na ativação.
+  // Default marcado (comportamento atual); só false quando salvo explicitamente.
+  const [copyExisting, setCopyExisting] = useState<boolean>(
+    currentConfig?.copy_existing_positions === undefined
+      ? true
+      : Boolean(currentConfig.copy_existing_positions),
+  );
   const [confirmedReal, setConfirmedReal] = useState(false);
 
   const riskMax = useMemo(() => {
@@ -185,6 +193,7 @@ export default function CopyConfigModal({
           ...parseThresholds(currentConfig?.thresholds),
           min_notional_usd: minNotional,
         },
+        copy_existing_positions: copyExisting,
       },
       hasPositions,
     );
@@ -369,6 +378,23 @@ export default function CopyConfigModal({
                   disabled={busy}
                 />
                 <span className="field-hint">ex.: CASHCAT, SHITCOIN</span>
+              </label>
+
+              <label className="confirm-check">
+                <input
+                  type="checkbox"
+                  checked={copyExisting}
+                  onChange={(e) => setCopyExisting(e.target.checked)}
+                  disabled={busy}
+                />
+                <span>
+                  Copiar posições já abertas do trader
+                  <span className="field-hint">
+                    {copyExisting
+                      ? "espelha o que o trader já tem aberto ao ativar"
+                      : "começa do zero — copia só as próximas operações"}
+                  </span>
+                </span>
               </label>
             </div>
           </div>

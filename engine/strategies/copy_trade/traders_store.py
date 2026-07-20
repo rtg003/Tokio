@@ -245,7 +245,8 @@ def update_exec_config(db: Database, address: str, *, by: str,
                        logger: Any | None = None, **fields: Any) -> dict[str, Any]:
     """Altera config de execução (mode/value/max_leverage/blocked_assets/
     dry_run/thresholds) — sempre logado; só via gateway/CLI."""
-    allowed = {"mode", "value", "max_leverage", "blocked_assets", "dry_run", "thresholds"}
+    allowed = {"mode", "value", "max_leverage", "blocked_assets", "dry_run",
+               "thresholds", "copy_existing_positions"}
     bad = set(fields) - allowed
     if bad:
         return {"ok": False, "reason": f"campos_invalidos_{sorted(bad)}"}
@@ -254,7 +255,10 @@ def update_exec_config(db: Database, address: str, *, by: str,
         return {"ok": False, "reason": "trader_desconhecido"}
     norm: dict[str, Any] = {}
     for k, v in fields.items():
-        if k in ("blocked_assets", "thresholds"):
+        if k == "copy_existing_positions":
+            # Flag booleana: persistir como 0/1 (a coluna é INTEGER).
+            norm[k] = 1 if v in (True, 1, "1", "true", "True") else 0
+        elif k in ("blocked_assets", "thresholds"):
             # Colunas JSON: garantir que o valor gravado seja SEMPRE JSON válido.
             # Uma string já-serializada é aceita só se parsear; uma string crua
             # não-JSON (ex.: "ZEC") é rejeitada — persistir isso quebra json.loads

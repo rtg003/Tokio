@@ -502,6 +502,7 @@ export default function TradersTable({
                           max_leverage: t.max_leverage,
                           blocked_assets: t.blocked_assets,
                           thresholds: t.thresholds,
+                          copy_existing_positions: t.copy_existing_positions,
                         }}
                         stats={{
                           equity: t.equity,
