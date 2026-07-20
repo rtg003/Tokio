@@ -3603,7 +3603,7 @@ no YAML). Sem novas chaves obrigatórias.
 
 ---
 
-## UPDATE-0062 · 2026-07-17 · Status: PENDENTE
+## UPDATE-0062 · 2026-07-17 · Status: APLICADO em 2026-07-20
 
 **Origem**: PR do discovery v15 (merged)
 
@@ -3841,7 +3841,7 @@ mínimo), para o gate refletir o tamanho que DE FATO copiaremos.
 
 ---
 
-## UPDATE-0068 · 2026-07-18 · Status: PENDENTE
+## UPDATE-0068 · 2026-07-18 · Status: APLICADO em 2026-07-20
 
 **Origem**: fix do bug que VOCÊ reportou no UPDATE-0066 (parser de `/positions`)
 
@@ -4140,7 +4140,7 @@ Após o reboot, os 3 traders devem voltar a aparecer no `ws.subscribed_target` e
 
 ---
 
-## UPDATE-0074 · 2026-07-18 · Status: PENDENTE
+## UPDATE-0074 · 2026-07-18 · Status: APLICADO em 2026-07-20
 
 **Origem**: pedido do rtg003 — o SIM NET de traders **hiperativos** (0xd487, 0x8d7d,
 0x2179) precisava ficar **REAL**, sem descartar perfis lucrativos e sem prejudicar os
@@ -4184,7 +4184,7 @@ parcial (~X% do book)"; traders saudáveis exibem SIM NET (60d c/ latência) com
 dados completos; a ordenação por SIM NET joga os `sampled` (SIM NET nulo) p/ o fim.
 
 
-## UPDATE-0075 · 2026-07-19 · Status: PENDENTE
+## UPDATE-0075 · 2026-07-19 · Status: APLICADO em 2026-07-20
 
 **Origem**: report do rtg003 sobre o incidente em produção de 2026-07-19 01:50 UTC no executor
 de copy trade (trader 0x8d7d, TESTNET). Três sintomas reais: (1) uma posição nova (CRV) que o
@@ -4259,7 +4259,7 @@ write em produção antes do deploy.
 
 ---
 
-## UPDATE-0077 · 2026-07-19 · Status: PENDENTE
+## UPDATE-0077 · 2026-07-19 · Status: APLICADO em 2026-07-20
 
 **Origem**: sua validação em produção do UPDATE-0075 (trader 0x8d7d, TESTNET). Reportou: (1) o
 backoff funcionou (o ruído parou); (2) o `reason` do `reconcile.stuck` vinha **"unknown"** —
