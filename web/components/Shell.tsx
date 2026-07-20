@@ -8,6 +8,7 @@ import {
   WalletOption,
   setWalletLabel,
   resetCircuitBreaker,
+  selectExecutor,
 } from "@/lib/copy-trade/data";
 
 type BreakerScope = {
@@ -83,6 +84,31 @@ export default function Shell({
   function setPref(name: string, value: string) {
     document.cookie = `${name}=${value};path=/;max-age=31536000;samesite=lax`;
     router.refresh();
+  }
+
+  // UPDATE-0083: a master wallet do topo é RESPEITADA — selecionar uma wallet
+  // com agente provisionado (eligible) que não é o executor atual TROCA o
+  // executor daquele ambiente (ativa o agente + reload), com confirmação. Wallet
+  // sem agente ou "Todas Wallets" = só filtro de visualização (como antes).
+  async function onWalletChange(value: string) {
+    const opt = wallets.find((w) => w.value === value);
+    if (opt?.eligible && opt.env && !opt.active) {
+      const ok = window.confirm(
+        `Trocar o executor de ${opt.env.toUpperCase()} para ${opt.label}?\n\n` +
+          "Todas as estratégias deste ambiente passam a executar nesta wallet.",
+      );
+      if (!ok) {
+        router.refresh(); // desfaz a seleção visual do <select> controlado
+        return;
+      }
+      const res = await selectExecutor(opt.env, value);
+      if (!res.ok) {
+        window.alert(`Falha ao trocar o executor: ${res.reason ?? "erro"}`);
+        router.refresh();
+        return;
+      }
+    }
+    setPref(WALLET_COOKIE, value);
   }
 
   useEffect(() => {
@@ -192,7 +218,7 @@ export default function Shell({
             className="statusbar-sel wallet-sel"
             aria-label="Wallet (master de trading)"
             value={wallet}
-            onChange={(e) => setPref(WALLET_COOKIE, e.target.value)}
+            onChange={(e) => onWalletChange(e.target.value)}
           >
             {wallets.map((w) => (
               <option key={w.value} value={w.value}>

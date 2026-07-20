@@ -36,6 +36,9 @@ const ALLOWED_POST_PATTERNS = [
   // the control token; MAINNET still needs credentials configured server-side)
   /^hl\/agents\/(prepare|activate)$/,
   /^hl\/agents\/(testnet|mainnet)\/revoke$/,
+  // UPDATE-0083: trocar o executor do ambiente p/ a master wallet do topo do
+  // dashboard (ato humano; gateway só troca entre agentes provisionados).
+  /^hl\/agents\/select$/,
   // TV-Executor: criar estratégia (nasce draft) e ativar (draft→active).
   // Ato humano autenticado; gateway ainda impõe mainnet só com credenciais.
   /^tv\/strategies$/,

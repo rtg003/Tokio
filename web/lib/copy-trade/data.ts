@@ -8,6 +8,12 @@ export type TraderOption = {
 export type WalletOption = {
   value: string;
   label: string;
+  // UPDATE-0083: metadados p/ a dropdown do topo TROCAR o executor. `env` e
+  // `eligible` (tem agente provisionado) vêm de /hl/agents.masters; `active`
+  // marca a wallet que já é o executor daquele ambiente (não re-troca).
+  env?: string;
+  eligible?: boolean;
+  active?: boolean;
 };
 
 export type Strategy = {
@@ -190,20 +196,81 @@ export async function getWalletLabels(): Promise<Record<string, string>> {
 // Quando há rótulo (migration 0023) o label vira "Hyperliquid 1 — 0x4124…".
 export async function getWallets(): Promise<WalletOption[]> {
   const [snap, labels] = await Promise.all([
-    gatewayGet<{ agents?: { master_address?: string }[] }>("/hl/agents"),
+    gatewayGet<{
+      agents?: { master_address?: string }[];
+      masters?: {
+        env?: string;
+        master_address?: string;
+        status?: string;
+        eligible?: boolean;
+      }[];
+    }>("/hl/agents"),
     getWalletLabels(),
   ]);
+  // UPDATE-0083: `masters` (por env) diz se a wallet pode virar executor
+  // (eligible) e se já é o ativo (status='active'). Fallback p/ `agents` (só
+  // filtro) quando o backend antigo não expõe `masters`.
+  const meta = new Map<
+    string,
+    { env?: string; eligible?: boolean; active?: boolean }
+  >();
+  for (const m of snap?.masters ?? []) {
+    const addr = m.master_address;
+    if (!addr) continue;
+    const key = addr.toLowerCase();
+    const prev = meta.get(key);
+    // Preferir o registro ativo/elegível ao consolidar por endereço.
+    meta.set(key, {
+      env: prev?.env ?? m.env,
+      eligible: prev?.eligible || !!m.eligible,
+      active: prev?.active || m.status === "active",
+    });
+  }
+  const source =
+    (snap?.masters ?? []).length > 0
+      ? (snap?.masters ?? []).map((m) => ({ master_address: m.master_address }))
+      : (snap?.agents ?? []);
   const seen = new Set<string>();
   const options: WalletOption[] = [];
-  for (const a of snap?.agents ?? []) {
+  for (const a of source) {
     const addr = a.master_address;
     if (!addr || seen.has(addr)) continue;
     seen.add(addr);
     const short = `${addr.slice(0, 6)}…${addr.slice(-4)}`;
     const name = labels[addr.toLowerCase()];
-    options.push({ value: addr, label: name ? `${name} — ${short}` : short });
+    const m = meta.get(addr.toLowerCase());
+    options.push({
+      value: addr,
+      label: name ? `${name} — ${short}` : short,
+      env: m?.env,
+      eligible: m?.eligible,
+      active: m?.active,
+    });
   }
   return [{ value: "all", label: "Todas Wallets" }, ...options];
+}
+
+// UPDATE-0083: troca o EXECUTOR do ambiente para a master wallet selecionada no
+// topo (ato humano autenticado). O gateway só troca entre agentes provisionados
+// (set_active) e recarrega o adapter; mainnet ainda exige agente válido.
+export async function selectExecutor(
+  env: string,
+  masterAddress: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    const res = await fetch(`/api/control/hl/agents/select`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ env, master_address: masterAddress }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      return { ok: false, reason: data.reason ?? data.detail ?? "erro_troca" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "gateway_indisponivel" };
+  }
 }
 
 // Client-side: define (ou remove, se vazio) o rótulo de uma wallet. Ato humano

@@ -4471,3 +4471,45 @@ você teve de cancelar 4 ordens na mão). Detalhes do comportamento:
 
 **Validação (local)**: `pytest tests/test_demote_cancels_orders.py` → 6 novos verdes; suíte cheia
 **521 verdes**. Nenhum write em produção antes do deploy.
+
+## UPDATE-0083 · 2026-07-20 · Status: APLICADO em 2026-07-20
+
+**Origem**: rtg003. Entregue em **UM commit**.
+
+**Tipo**: engine (gateway) + dashboard. **Caminho crítico de ordens NÃO tocado** (o guardrail só
+observa e registra; nunca bloqueia ordem).
+
+**Resumo (o porquê — não "corrija" de volta)**: o **seletor de "master wallet" no topo do
+dashboard** deixou de ser só um filtro de visualização e agora **troca a wallet que executa** naquele
+ambiente. Contexto: em 19–20/07 a estratégia `ct_1a5db900` (testnet) gravou **199 fills numa wallet
+(`0x4124…`) e 5 noutra (`0x83c8…`)** — o ledger "rachou" no meio da vida da estratégia. Investigação
+(com o dono) concluiu: **`0x4124`, `0x83c8` e `0x2d7` são wallets INDIVIDUAIS** (cada uma com faucet
+próprio; sem relação entre si) e **os 199 fills são fiéis** — a engine realmente operou lá. O defeito
+foi a **wallet executora ter flipado** no meio do caminho. Por isso **NÃO reatribuímos** o histórico
+(seria falsear o que aconteceu) e, em vez disso, passamos a: (1) deixar você **escolher/trocar** a
+wallet executora pelo topo do dashboard; (2) **alarmar** quando a wallet que executa divergir da
+esperada.
+
+**O que muda na sua operação**:
+- No combo de wallet do topo, selecionar uma wallet **que tem agente provisionado** de um ambiente
+  agora pede **confirmação** ("Trocar o executor de TESTNET/MAINNET para …?") e, se você confirmar,
+  **todas as estratégias daquele ambiente passam a executar nessa wallet**. Selecionar **"Todas
+  Wallets"** ou uma wallet **sem agente** continua sendo **só filtro de visualização** (como antes).
+- A troca é **reversível sem nova assinatura**: a wallet anterior vira `standby` (a aprovação
+  on-chain do agente continua válida), então dá p/ voltar a ela pelo mesmo combo.
+- **Gate humano intacto**: trocar executor é um ato humano na dashboard autenticada; mainnet segue
+  exigindo agente válido configurado no servidor. Nenhum gate/cap é contornado.
+
+**Ações do Hermes (pós-deploy)**:
+1. Deploy normal (push = autodeploy pull-based). **Há migração de schema** (`0031_hl_agents_standby`)
+   — aplicada automaticamente no boot; nenhuma ação manual.
+2. Ao trocar o executor pelo topo, confira nos logs `executor.wallet_switched {env, from, to}` seguido
+   de `adapter.reloaded {env, account}`; as novas ordens/fills passam a gravar essa wallet e **sem**
+   `executor.wallet_mismatch`.
+3. Se aparecer **`executor.wallet_mismatch {env, expected, actual}`**, significa que a wallet que
+   executou diverge da esperada (stale/race) — o fill/ordem é gravado com a **verdade da venue**
+   (`actual`), e você corrige escolhendo a wallet certa no combo (o alarme some após o reload).
+
+**Validação (local)**: `pytest tests/test_executor_wallet_guardrail.py tests/test_executor_switch.py`
+→ **13 novos verdes**; suíte cheia **534 verdes**; web `npm run build` verde. Nenhum write em
+produção antes do deploy.

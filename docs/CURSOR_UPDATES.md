@@ -3279,3 +3279,64 @@ tocado** (`/intent`, `/cancel`, `handle_intent`, brackets intactos).
 `pytest tests/test_demote_cancels_orders.py` → 6 novos (TESTNET→SALVO cancela 3; MAINNET→SALVO;
 promoção não cancela; sem ordens abertas = 0; 1 falha/2 ok = 2 + `order.cancel_failed`; escopo só da
 própria strategy+ambiente). Suíte cheia: **521 verdes**.
+
+## UPDATE-0083 · 2026-07-20 · Status: APLICADO em 2026-07-20
+
+**Origem**: rtg003. Entregue em **UM commit**.
+
+**Resumo**: a **master wallet do combo no topo do dashboard** passa a ser **RESPEITADA** e sua
+seleção **TROCA o executor** do ambiente (um executor por testnet, um por mainnet; afeta TODAS as
+strategies daquele ambiente). Antes era só filtro de visualização (cookie `tokio_wallet`). Motivação:
+em 19–20/07 a `ct_1a5db900`/testnet gravou 199 fills em `0x4124…` + 5 em `0x83c8…` (split de ledger).
+As três wallets (`0x4124`/`0x83c8`/`0x2d7`) são **INDIVIDUAIS** (faucet próprio, sem relação
+agent↔master) — os fills são **FIÉIS** (a engine executou mesmo lá); o defeito foi a wallet executora
+ter **flipado** a meio da vida da strategy. Por isso **não se reatribui histórico**; entra um
+**guardrail** que detecta a divergência.
+
+**Tipo**: engine (gateway `hl_agents`/`server`) + web (dashboard) + logger + migração. **Hot path
+§8.4.1 NÃO tocado** além de lookups O(1) + 1 query lazy/strategy (padrão `_trader_addr`); o guardrail
+é **só detecção + log**, nunca bloqueia/recusa ordem.
+
+### Backend
+- `db/migrations/0031_hl_agents_standby.sql` (NOVO): rebuild de `hl_agents` p/ adicionar o status
+  **`standby`** ao CHECK (SQLite não faz ALTER de CHECK). `standby` fica **fora** do índice único
+  `(env) WHERE status IN ('active','expiring')` — não ocupa o slot de executor e é ignorado por
+  `resolve_active_key`/boot. Sem FKs apontando p/ a tabela (rebuild seguro).
+- `engine/gateway/hl_agents.py`: **`set_active(db, env, master_address)`** — troca NÃO-DESTRUTIVA:
+  valida agente provisionado/elegível p/ `(env, master)` (privkey_enc, `revoked_at IS NULL`, status
+  activatable); rebaixa o `active/expiring` anterior a **`standby`** (a aprovação on-chain persiste →
+  volta sem nova assinatura) e promove o alvo a `active`; audita `executor_switch {from,to}`. Não faz
+  reload (server orquestra). **`eligible_masters(db)`** expõe por `(env, master)` `{env, status,
+  eligible}` p/ a UI decidir se a seleção troca executor (sem vazar segredo).
+- `engine/gateway/server.py`:
+  - Endpoint **`POST /control/hl/agents/select`** (`Depends(_control_auth)`, body `{env,
+    master_address}`): `set_active` → `reload_adapter(env)` (aplica o novo executor) → loga
+    `executor.wallet_switched {env, from, to, reloaded, by:"dashboard_humano"}` + audita
+    `adapter_reload`.
+  - **Guardrail** (chokepoint único, log-only): `_expected_wallet[env]` (wallet canônica = agente
+    `active`, refeita no `__init__` e ao fim de `reload_adapter` — **auto-cura** após a troca) e
+    `_strategy_wallet[(sid,net)]` (1ª wallet vista por strategy+env, seed lazy de `fills`).
+    **`_master_addr(adapter, network, *, strategy_id, cloid)`** devolve `adapter.account_address`
+    (verdade da venue) e, se divergir da referência (precedência: `_expected_wallet` → 1ª wallet da
+    strategy), emite `logger.warning("executor.wallet_mismatch", {env, expected, actual, cloid})`.
+    Trocados os 4 sites de gravação de `master_address` (fill, ordem entry, brackets, resync
+    sintético) para `_master_addr(...)`.
+- `engine/core/logger.py`: prefixo `"executor."` adicionado a `_DB_EVENT_PREFIXES` (os eventos
+  `executor.wallet_switched`/`wallet_mismatch` passam a persistir na tabela `events`).
+
+### Web
+- `web/lib/copy-trade/data.ts`: `WalletOption` ganha `env`/`eligible`/`active`; `getWallets()` lê
+  `snap.masters` (de `/hl/agents`) e anota cada opção. `selectExecutor(env, master)` → `POST
+  /api/control/hl/agents/select`.
+- `web/components/Shell.tsx`: `onWalletChange` — se a wallet é `eligible`, tem `env` e não é a `active`
+  do seu ambiente, pede `window.confirm(...)` e chama `selectExecutor`; senão (não-elegível ou
+  "Todas Wallets") só aplica o filtro de visualização (cookie), como antes.
+- `web/app/api/control/[...path]/route.ts`: `/^hl\/agents\/select$/` no allowlist de POST.
+
+### Testes
+`tests/test_executor_wallet_guardrail.py` (7) + `tests/test_executor_switch.py` (6) → **13 novos**.
+Cobrem: consistente sem mismatch; adapter stale loga mismatch + grava verdade da venue (unit +
+integração via `on_own_fill`); hot path não bloqueia; invariante por strategy (estabelece/flip);
+seed do histórico de `fills`; regressão sem referência; `set_active` reversível + audit; noop;
+inelegível/desconhecida → `HlAgentError`; `POST /select` troca + auto-cura `_expected_wallet` +
+`executor.wallet_switched`; auth do endpoint. Suíte cheia: **534 verdes**. Web `npm run build` verde.

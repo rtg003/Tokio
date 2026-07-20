@@ -22,6 +22,7 @@ _DB_EVENT_PREFIXES = (
     "order.", "fill.", "signal.", "decision.", "strategy.", "risk.",
     "killswitch", "circuit_breaker", "config.", "health.", "replication.",
     "ws.", "drift.", "trader.", "discovery.", "logic_", "tv.", "reconcile.",
+    "executor.",
 )
 
 

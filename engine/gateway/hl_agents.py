@@ -272,6 +272,89 @@ def revoke(db: Database, env: str, *, actor: str = "control_api") -> dict[str, A
     return {"ok": True, "agent_address": row["agent_address"]}
 
 
+# -- troca de executor (UPDATE-0083) ----------------------------------------
+# Statuses que representam um agente APROVADO e reutilizável como executor.
+# `standby` = parqueado (aprovação on-chain intacta) — dá p/ voltar sem assinar.
+_ACTIVATABLE_STATUSES = ("active", "standby", "expiring")
+
+
+def _is_eligible(row: dict[str, Any]) -> bool:
+    """O agente pode virar executor: tem chave provisionada, não foi revogado e
+    já passou por aprovação (não é 'pending'/'revoked'/'expired')."""
+    return (
+        bool(row.get("privkey_enc"))
+        and row.get("revoked_at") is None
+        and row.get("status") in _ACTIVATABLE_STATUSES
+    )
+
+
+def eligible_masters(db: Database) -> list[dict[str, Any]]:
+    """Por (env, master_address): {env, master_address, status, eligible}. A UI
+    usa p/ decidir se selecionar a wallet no topo TROCA o executor (só quando
+    `eligible`). Nunca expõe material secreto (privkey_enc fica no SELECT só p/
+    calcular `eligible`, não sai no retorno)."""
+    rows = db.query(
+        "SELECT env, master_address, status, privkey_enc, revoked_at "
+        "FROM hl_agents ORDER BY created_at DESC"
+    )
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        key = (r["env"], (r["master_address"] or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "env": r["env"],
+            "master_address": r["master_address"],
+            "status": r["status"],
+            "eligible": _is_eligible(r),
+        })
+    return out
+
+
+def set_active(
+    db: Database, env: str, master_address: str, *, actor: str = "dashboard_humano",
+) -> dict[str, Any]:
+    """Troca NÃO-DESTRUTIVA do executor do ambiente: promove o agente provisionado
+    de `master_address` a `active` e rebaixa o `active/expiring` anterior a
+    `standby` (a aprovação on-chain persiste — dá p/ voltar sem nova assinatura).
+    NÃO cria/assina agente novo; NÃO faz reload (o server orquestra o
+    `reload_adapter(env)`). Erros ⇒ HlAgentError."""
+    if env not in ("testnet", "mainnet"):
+        raise HlAgentError(f"env inválido: {env}")
+    rows = db.query(
+        "SELECT * FROM hl_agents WHERE env = ? AND lower(master_address) = ? "
+        "ORDER BY created_at DESC",
+        (env, master_address.lower()),
+    )
+    target = next((r for r in rows if _is_eligible(r)), None)
+    if target is None:
+        raise HlAgentError(
+            "sem agente provisionado/elegível p/ esta wallet neste ambiente")
+    current = db.query(
+        "SELECT master_address FROM hl_agents WHERE env = ? AND status = 'active' "
+        "LIMIT 1",
+        (env,),
+    )
+    from_addr = current[0]["master_address"] if current else None
+    if target["status"] == "active":
+        return {"ok": True, "env": env, "from": from_addr,
+                "master_address": target["master_address"], "noop": True}
+    # Ordem importa p/ o índice único (env WHERE active|expiring): libera o slot
+    # (anterior → standby) ANTES de promover o alvo a active.
+    db.execute(
+        "UPDATE hl_agents SET status = 'standby' "
+        "WHERE env = ? AND status IN ('active','expiring')",
+        (env,),
+    )
+    db.execute("UPDATE hl_agents SET status = 'active' WHERE id = ?", (target["id"],))
+    audit(db, actor=actor, action="executor_switch", env=env,
+          detail={"from": from_addr, "to": target["master_address"]})
+    return {"ok": True, "env": env, "from": from_addr,
+            "master_address": target["master_address"]}
+
+
 def resolve_active_key(db: Database, env: str) -> tuple[str, str] | None:
     """(master_address, agent_privkey) do agente `active` do ambiente, ou None.
     Decifra a chave — só chamado dentro do gateway. Nunca loga o retorno."""

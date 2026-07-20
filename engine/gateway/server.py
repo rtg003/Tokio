@@ -201,6 +201,13 @@ class AgentActivateRequest(BaseModel):
     nonce: int
 
 
+class AgentSelectRequest(BaseModel):
+    # UPDATE-0083: troca do executor do ambiente pela master wallet do topo do
+    # dashboard. Só entre agentes já provisionados (não assina agente novo).
+    env: str = Field(pattern="^(testnet|mainnet)$")
+    master_address: str
+
+
 def _build_env_adapter(
     settings: Settings, db: Database, env: str,
 ) -> ExchangeAdapter | None:
@@ -277,11 +284,72 @@ class GatewayState:
         # Cache em memória p/ atribuição EXPLÍCITA em fills/orders sem query nova
         # no hot path §8.4.1 (custo amortizado: 1 query na 1ª ocorrência/strategy).
         self._trader_addr_cache: dict[str, str | None] = {}
+        # UPDATE-0083: guardrail de wallet executora. `_expected_wallet` = wallet
+        # CANÔNICA (agente active do keyring) por ambiente — a "master respeitada"
+        # que a dropdown do topo troca. `_strategy_wallet` = 1ª wallet vista por
+        # (strategy_id, network) — invariante "uma wallet por strategy+ambiente"
+        # (fallback quando não há agente canônico). Ambos alimentam `_master_addr`,
+        # que só LOGA divergência (`executor.wallet_mismatch`) — nunca bloqueia.
+        self._expected_wallet: dict[str, str] = {}
+        self._strategy_wallet: dict[tuple[str, str], str] = {}
         for network, configured_adapter in self.adapters.items():
             configured_adapter.subscribe_own_fills(
                 lambda fill, env=network: self.on_own_fill({**fill, "_network": env})
             )
+        self._refresh_expected_wallet()
         self._seed_exchanges()
+
+    def _refresh_expected_wallet(self, env: str | None = None) -> None:
+        """Recarrega a wallet canônica (agente `active` do keyring) por ambiente.
+        Query SEM decrypt (só master_address). Chamada no boot e ao fim de
+        `reload_adapter` — assim, após trocar o executor, o esperado acompanha o
+        novo master (auto-cura). Tolera ausência da tabela (suites antigas)."""
+        envs = [env] if env else list(self.adapters)
+        for e in envs:
+            try:
+                rows = self.db.query(
+                    "SELECT lower(master_address) AS m FROM hl_agents "
+                    "WHERE env = ? AND status = 'active' LIMIT 1", (e,))
+            except Exception:  # noqa: BLE001 — tabela ausente em testes antigos
+                rows = []
+            if rows and rows[0]["m"]:
+                self._expected_wallet[e] = rows[0]["m"]
+
+    def _master_addr(self, adapter: Any, network: str | None, *,
+                     strategy_id: str | None = None,
+                     cloid: str | None = None) -> str | None:
+        """Wallet a gravar em fills/orders = `adapter.account_address` (VERDADE da
+        venue: a conta que realmente assinou/executou). Se ela divergir da wallet
+        respeitada do ambiente, emite `executor.wallet_mismatch` (só log — nunca
+        bloqueia o caminho de ordem §8.4.1). Referência (precedência): wallet
+        canônica do keyring (`_expected_wallet`) → senão a 1ª wallet já vista da
+        strategy naquele network (seed lazy 1x, padrão `_trader_addr`)."""
+        actual = getattr(adapter, "account_address", None)
+        if not actual:
+            return None
+        low = actual.lower()
+        expected = self._expected_wallet.get(network) if network else None
+        if expected is None and strategy_id and network:
+            key = (strategy_id, network)
+            known = self._strategy_wallet.get(key)
+            if known is None:
+                try:
+                    rows = self.db.query(
+                        "SELECT lower(master_address) AS m FROM fills "
+                        "WHERE strategy_id = ? AND network = ? "
+                        "AND master_address IS NOT NULL ORDER BY ts LIMIT 1",
+                        (strategy_id, network))
+                except Exception:  # noqa: BLE001
+                    rows = []
+                known = rows[0]["m"] if rows and rows[0]["m"] else low
+                self._strategy_wallet[key] = known
+            expected = known
+        if expected and expected != low:
+            self.logger.warning("executor.wallet_mismatch", {
+                "env": network, "expected": expected, "actual": low,
+                "cloid": cloid,
+            }, strategy_id=strategy_id)
+        return actual
 
     # -- hot-reload de adapter por ambiente (keyring > .env; D3/D5) ----------
     def reload_adapter(self, env: str) -> bool:
@@ -322,6 +390,9 @@ class GatewayState:
                 pass
         self._seed_exchanges()
         self._invalidate_env_caches(env)
+        # UPDATE-0083: após (re)carregar/trocar o executor, a wallet canônica
+        # esperada acompanha o novo master (auto-cura do guardrail).
+        self._refresh_expected_wallet(env)
         self.logger.info("adapter.reloaded",
                          {"env": env, "account": adapter.account_address})
         return True
@@ -498,7 +569,8 @@ class GatewayState:
             "fee_asset": fill.get("feeToken", "USDC"),
             "realized_pnl": realized,
             "network": network,
-            "master_address": getattr(fill_adapter, "account_address", None),
+            "master_address": self._master_addr(
+                fill_adapter, network, strategy_id=strategy_id, cloid=cloid),
             # UPDATE-0064: trader-mestre copiado (≠ master_address = wallet nossa).
             "trader_address": self._trader_addr(strategy_id),
             "tid": tid,
@@ -735,7 +807,8 @@ class GatewayState:
             # Atribuição real de wallet (migration 0015): a conta de trading do
             # ambiente que executou a ordem. Só metadado p/ o filtro por Wallet
             # da UI — não altera o caminho de ordem (INVARIANTE Hermes).
-            "master_address": getattr(adapter, "account_address", None),
+            "master_address": self._master_addr(
+                adapter, adapter.network, strategy_id=intent.strategy_id, cloid=cloid),
             # UPDATE-0064: trader-mestre copiado (≠ master_address). Cache quente
             # ⇒ sem query nova no hot path §8.4.1.
             "trader_address": self._trader_addr(intent.strategy_id),
@@ -819,7 +892,9 @@ class GatewayState:
                 "size": size, "price": trigger_px,
                 "status": res.status if res.ok else (res.status or "error"),
                 "created_at": utcnow(), "exchange_id": exchange_id,
-                "master_address": getattr(adapter, "account_address", None),
+                "master_address": self._master_addr(
+                    adapter, adapter.network, strategy_id=intent.strategy_id,
+                    cloid=leg_cloid),
                 "trader_address": self._trader_addr(intent.strategy_id),
             })
             legs[tpsl] = {"cloid": leg_cloid, "ok": res.ok, "status": res.status,
@@ -1138,7 +1213,9 @@ def build_app(state: GatewayState) -> FastAPI:
         reason = body.get("reason", "drift.venue_resync")
         environment = body.get("environment")
         adapter = state.adapters.get(environment) if environment else None
-        master_address = getattr(adapter, "account_address", None) if adapter else None
+        master_address = (
+            state._master_addr(adapter, environment, strategy_id=strategy_id)
+            if adapter else None)
         row = state.ledger.resync_position(
             strategy_id=strategy_id, symbol=symbol, venue_size=venue_size,
             reason=reason, network=environment, master_address=master_address,
@@ -1673,6 +1750,9 @@ def build_app(state: GatewayState) -> FastAPI:
 
         return {
             "agents": hl_agents.list_agents(state.db),
+            # UPDATE-0083: por (env, master) {status, eligible} p/ a UI saber se
+            # selecionar a wallet no topo TROCA o executor (só quando eligible).
+            "masters": hl_agents.eligible_masters(state.db),
             "adapters": sorted(state.adapters),
             "keyring_configured": keyring.keyring_configured(),
         }
@@ -1704,6 +1784,30 @@ def build_app(state: GatewayState) -> FastAPI:
             result["adapter_reloaded"] = reloaded
             hl_agents.audit(state.db, actor="control_api", action="adapter_reload",
                             env=req.env, detail={"reloaded": reloaded})
+        return result
+
+    @app.post("/control/hl/agents/select", dependencies=[Depends(_control_auth)])
+    def hl_agent_select(req: AgentSelectRequest) -> dict[str, Any]:
+        """UPDATE-0083: troca o executor do ambiente para a master wallet
+        selecionada no topo do dashboard (ato humano — dashboard autenticada +
+        GATEWAY_CONTROL_TOKEN). Só entre agentes provisionados (set_active não
+        assina agente novo); aplica o novo executor via reload_adapter, o que
+        também refaz `_expected_wallet[env]` (auto-cura do guardrail)."""
+        from engine.gateway import hl_agents
+
+        try:
+            result = hl_agents.set_active(state.db, req.env, req.master_address)
+        except hl_agents.HlAgentError as exc:
+            raise HTTPException(400, str(exc))
+        reloaded = state.reload_adapter(req.env)
+        result["adapter_reloaded"] = reloaded
+        state.logger.info("executor.wallet_switched", {
+            "env": req.env, "from": result.get("from"),
+            "to": result.get("master_address"), "reloaded": reloaded,
+            "by": "dashboard_humano",
+        })
+        hl_agents.audit(state.db, actor="control_api", action="adapter_reload",
+                        env=req.env, detail={"reloaded": reloaded})
         return result
 
     @app.post("/control/hl/agents/{env}/revoke", dependencies=[Depends(_control_auth)])
