@@ -3397,3 +3397,40 @@ short não vira LONG (regressão do incidente); `fill.side_mismatch` logado (seg
 `reconcile.direction_inversion` (dispara + zero intents); `drift.correcting` com direção;
 `copy_existing=False` não abre legado mas espelha fill novo; `copy_existing=True` abre legado em short;
 regressão de sinal (short→sell, long→buy). Suíte cheia: **543 verdes**. Web `npm run build` verde.
+
+
+## UPDATE-0084 - validacao em producao (Hermes) - APLICADO
+
+**Origem**: validacao do UPDATE-0084 (fix direcao errada + checkbox copiar posicoes).
+
+**Tipo**: executor + migration 0032.
+
+**Deploy**: commit f3d8d3a, pytest 543 passed, engine restart OK, migration 0032
+aplicada (traders.copy_existing_positions INTEGER DEFAULT 1).
+
+### Resultados em producao (2026-07-20 11:48 UTC)
+
+Trader 0x1a5db900 (TESTNET, SHORT -400 HYPE):
+
+| Check | Antes (19/07 bug) | Agora (20/07 fix) |
+|---|---|---|
+| reconcile.hydrated | (nao existia) | {symbols: [ADA,BTC,ETH,HYPE], copy_existing: true} |
+| target_direction | (nao calculado) | "short" (correto) |
+| order_direction | buy (LONG errado) | sell (SHORT correto) |
+| fill HYPE | 35 buys LONG, -$339.56 | 1 sell SHORT 9.51 HYPE, filled |
+| direction_inversion | (nao existia) | nenhum evento |
+| side_mismatch | (nao existia) | nenhum evento |
+
+**Confirmado**: o fix hidratou o target_positions com sinal correto (-400 para
+SHORT), o reconcile calculou delta negativo (sell) e abriu SHORT na direcao
+correta. O bug LONG-contra-short esta resolvido.
+
+### Checkbox copiar posicoes
+
+Coluna copy_existing_positions=1 (default) para todos os traders SALVO. Checkbox
+no modal de ativacao ainda nao foi testado visualmente (ato humano), mas a coluna
+esta persistida e o reconcile.hydrated respeita o flag.
+
+### Status
+
+UPDATE-0084 marcado APLICADO em docs/HERMES_UPDATES.md.

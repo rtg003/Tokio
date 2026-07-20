@@ -4514,7 +4514,7 @@ esperada.
 → **13 novos verdes**; suíte cheia **534 verdes**; web `npm run build` verde. Nenhum write em
 produção antes do deploy.
 
-## UPDATE-0084 · 2026-07-20 · Status: PENDENTE
+## UPDATE-0084 · 2026-07-20 · Status: APLICADO em 2026-07-20
 
 **Origem**: rtg003 (incidente 19/07 `ct_1a5db900`/TESTNET). Entregue em **UM commit**.
 
