@@ -10,6 +10,7 @@ from engine.gateway import hl_agents
 
 SECRET = "unit-test-keyring-secret"
 MASTER = "0x1111111111111111111111111111111111111111"
+MASTER_B = "0x2222222222222222222222222222222222222222"
 
 
 @pytest.fixture()
@@ -134,6 +135,59 @@ def test_rotation_revokes_previous_active(kdb: Database) -> None:
     assert len(active) == 1 and active[0]["agent_address"] == p2["agent_address"]
     revoked = kdb.query("SELECT agent_address FROM hl_agents WHERE status='revoked'")
     assert p1["agent_address"] in {r["agent_address"] for r in revoked}
+
+
+# -- UPDATE-0085: activate cross-master parqueia (standby), não revoga ------
+def test_activate_cross_master_parks_previous_standby(kdb: Database) -> None:
+    """Provisionar OUTRA wallet (cross-master) NÃO revoga a anterior — a
+    aprovação on-chain do master antigo persiste, então ela vira `standby`
+    (reversível), enquanto o novo master fica `active` único. `eligible_masters`
+    deve marcar o antigo `eligible=True` (dá p/ voltar via combo)."""
+    pa = hl_agents.prepare(kdb, "testnet", MASTER)
+    ra = hl_agents.activate(kdb, "testnet", pa["agent_address"], "0x" + "ab" * 65,
+                            pa["nonce"], submit=_ok_submit)
+    assert ra["ok"]
+    pb = hl_agents.prepare(kdb, "testnet", MASTER_B)
+    rb = hl_agents.activate(kdb, "testnet", pb["agent_address"], "0x" + "cd" * 65,
+                            pb["nonce"], submit=_ok_submit)
+    assert rb["ok"]
+    assert rb["from"] == MASTER and rb["to"] == MASTER_B
+    assert rb["prev_disposition"] == "standby"
+
+    # O anterior (MASTER) ficou standby, sem revoked_at; MASTER_B é o único active.
+    prev = kdb.query("SELECT status, revoked_at FROM hl_agents WHERE agent_address = ?",
+                     (pa["agent_address"],))[0]
+    assert prev["status"] == "standby" and prev["revoked_at"] is None
+    active = kdb.query("SELECT master_address FROM hl_agents "
+                       "WHERE env='testnet' AND status='active'")
+    assert len(active) == 1 and active[0]["master_address"] == MASTER_B
+
+    masters = {m["master_address"].lower(): m for m in hl_agents.eligible_masters(kdb)}
+    assert masters[MASTER.lower()]["eligible"] is True
+
+
+def test_activate_cross_master_is_reversible(kdb: Database) -> None:
+    """Após o cross-master parquear a anterior em standby, dá p/ VOLTAR o
+    executor à wallet original via `set_active` — sem novo prepare/activate
+    (prova a reversibilidade do standby, coerente com o UPDATE-0083)."""
+    pa = hl_agents.prepare(kdb, "testnet", MASTER)
+    hl_agents.activate(kdb, "testnet", pa["agent_address"], "0x" + "ab" * 65,
+                       pa["nonce"], submit=_ok_submit)
+    pb = hl_agents.prepare(kdb, "testnet", MASTER_B)
+    hl_agents.activate(kdb, "testnet", pb["agent_address"], "0x" + "cd" * 65,
+                       pb["nonce"], submit=_ok_submit)
+
+    # Volta p/ MASTER sem re-assinar: set_active promove o standby de volta.
+    res = hl_agents.set_active(kdb, "testnet", MASTER)
+    assert res["ok"] and res["from"] == MASTER_B
+    assert res["master_address"] == MASTER
+
+    resolved = hl_agents.resolve_active_key(kdb, "testnet")
+    assert resolved is not None and resolved[0] == MASTER
+    # MASTER_B agora está parqueado (standby), reversível também.
+    prevb = kdb.query("SELECT status FROM hl_agents WHERE agent_address = ?",
+                      (pb["agent_address"],))[0]
+    assert prevb["status"] == "standby"
 
 
 def test_unique_active_index_enforced(kdb: Database) -> None:

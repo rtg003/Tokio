@@ -1782,6 +1782,21 @@ def build_app(state: GatewayState) -> FastAPI:
         if result.get("ok"):
             reloaded = state.reload_adapter(req.env)
             result["adapter_reloaded"] = reloaded
+            # UPDATE-0085: paridade de observabilidade com /select. Se o
+            # provisionamento trocou o master ativo (cross-wallet), emite o mesmo
+            # evento que a validação do Hermes já espera. Só log (hot path §8.4.1
+            # intocado); a decisão standby/revoke é do hl_agents.activate.
+            from_addr = result.get("from")
+            to_addr = result.get("to")
+            if from_addr and to_addr and str(from_addr).lower() != str(to_addr).lower():
+                state.logger.warning("executor.wallet_switched", {
+                    "env": req.env, "from": from_addr, "to": to_addr,
+                    "reloaded": reloaded, "via": "provision",
+                    "prev_disposition": result.get("prev_disposition"),
+                })
+                hl_agents.audit(state.db, actor="control_api", action="executor_switch",
+                                env=req.env, detail={"from": from_addr, "to": to_addr,
+                                                     "via": "provision"})
             hl_agents.audit(state.db, actor="control_api", action="adapter_reload",
                             env=req.env, detail={"reloaded": reloaded})
         return result

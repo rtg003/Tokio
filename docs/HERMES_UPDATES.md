@@ -4556,3 +4556,43 @@ abertas** do trader na ativação.
 
 **Validação (local)**: `pytest tests/test_copy_trade_direction.py` → **9 novos verdes**; suíte cheia
 **543 verdes**; web `npm run build` verde. Nenhum write em produção antes do deploy.
+
+
+## UPDATE-0085 · 2026-07-20 · Status: PENDENTE
+
+**Resumo (o porquê)**: no combo de **master wallet** do topo do dashboard, escolher uma wallet **sem
+agente ativo** (revoked/expired) não fazia **nada** além de filtrar a visão — nenhum prompt, nenhuma
+troca, nenhum provisionamento (na sua validação do 0083, selecionar `0xd2c7`/`0x4124` só gerou
+`GET …&wallet=…`). Agora, escolher uma wallet sem agente **oferece provisionar** um agente novo para
+ela e te leva ao fluxo de assinatura.
+
+**O que muda na sua operação**:
+- No combo do topo, ao escolher:
+  - **"Todas Wallets"** ou uma wallet **já ativa** → só filtro de visualização (como antes).
+  - Uma wallet com **agente provisionado/parqueado** (standby) → **troca o executor** do ambiente
+    (com confirmação), como no 0083.
+  - Uma wallet **sem agente ativo** (revoked/expired) → aparece um **confirm** ("A wallet … não tem
+    agente ativo em {ENV}. Provisionar um novo agente? Você será levado à tela de provisionamento —
+    conecte esta wallet e assine."). **OK** te leva a **`/hyperliquid`** (ProvisionFlow): **conecte a
+    wallet-alvo na MetaMask e assine** (EIP-712; mainnet mantém o double-confirm). **Cancelar** desfaz a
+    seleção visual.
+- **Troca de executor entre wallets diferentes** (cross-wallet) agora deixa a wallet **anterior** em
+  **`standby` (reversível)** — não `revoked`. A aprovação on-chain dela persiste, então você pode
+  **voltar** a ela pelo próprio combo **sem re-assinar**. `revoke` só acontece na **rotação da MESMA
+  wallet** (a HL substitui o agente ao reaprovar o mesmo nome).
+- Gates humanos, mainnet (credenciais + double-confirm) e caps **intactos**. **Sem migração**. Hot path
+  §8.4.1 **intocado**.
+
+**Ações do Hermes (pós-deploy)**:
+1. Deploy normal (push = autodeploy). Sem migração; nenhuma ação manual.
+2. No combo, escolher `0xd2c7` (testnet, revoked) → deve aparecer o **prompt de provisionamento**; OK
+   leva a `/hyperliquid` no painel **testnet** → conectar a wallet → assinar → `activate` → o adapter
+   recarrega e a wallet vira **`active`**. Confirme no log **`executor.wallet_switched {env, from, to,
+   via:"provision"}`** e `/hl/agents` mostrando a nova wallet `active`.
+3. Confira que a wallet **anterior** aparece **`standby`** (não `revoked`) e que dá p/ **voltar** a ela
+   pelo combo (troca via `select`, sem re-assinar).
+4. Escolher **"Todas Wallets"** ou uma wallet **já ativa** → só filtro (sem prompt).
+
+**Validação (local)**: `pytest tests/test_hl_agents.py` → **14 verdes** (2 novos: cross-master standby +
+reversibilidade; rotação da mesma wallet segue `revoked`); suíte cheia **545 verdes**; web
+`npm run build` verde. Nenhum write em produção antes do deploy.

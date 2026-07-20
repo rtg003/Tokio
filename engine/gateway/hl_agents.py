@@ -233,14 +233,35 @@ def activate(
                       "hl_response": str(resp)[:300]})
         return {"ok": False, "agent_address": agent_address, "error": resp}
 
-    # Sucesso: este vira o único active/expiring do ambiente. Um anterior (ex.:
-    # rotação) é marcado revoked — a HL já o substituiu ao aprovar o mesmo nome.
+    # Sucesso: este vira o único active/expiring do ambiente. O destino do
+    # anterior depende de QUEM é o master (UPDATE-0085):
+    #   • MESMO master (rotação): `revoked` — a HL substituiu o agente on-chain
+    #     ao reaprovar o mesmo nome; o antigo não vale mais.
+    #   • master DIFERENTE (cross-wallet): `standby` — a aprovação on-chain do
+    #     anterior PERSISTE; parqueamos p/ dar reversibilidade (voltar via combo
+    #     sem re-assinar), coerente com o `set_active` do UPDATE-0083.
     now = utcnow()
-    db.execute(
-        "UPDATE hl_agents SET status = 'revoked', revoked_at = ? "
+    new_master = (row["master_address"] or "").lower()
+    prev_rows = db.query(
+        "SELECT id, master_address FROM hl_agents "
         "WHERE env = ? AND status IN ('active','expiring')",
-        (now, env),
+        (env,),
     )
+    from_addr = prev_rows[0]["master_address"] if prev_rows else None
+    prev_disposition: str | None = None
+    for prev in prev_rows:
+        if (prev["master_address"] or "").lower() == new_master:
+            db.execute(
+                "UPDATE hl_agents SET status = 'revoked', revoked_at = ? WHERE id = ?",
+                (now, prev["id"]),
+            )
+            prev_disposition = "revoked"
+        else:
+            db.execute(
+                "UPDATE hl_agents SET status = 'standby' WHERE id = ?",
+                (prev["id"],),
+            )
+            prev_disposition = "standby"
     valid_until = _fetch_valid_until(env, row["master_address"], agent_address)
     db.execute(
         "UPDATE hl_agents SET status = 'active', approved_at = ?, valid_until = ?, "
@@ -248,9 +269,12 @@ def activate(
         (now, valid_until, row["id"]),
     )
     audit(db, actor=actor, action="agent_activate", env=env,
-          detail={"agent_address": agent_address, "ok": True, "valid_until": valid_until})
+          detail={"agent_address": agent_address, "ok": True, "valid_until": valid_until,
+                  "from": from_addr, "to": row["master_address"],
+                  "prev_disposition": prev_disposition})
     return {"ok": True, "agent_address": agent_address, "status": "active",
-            "valid_until": valid_until}
+            "valid_until": valid_until, "from": from_addr, "to": row["master_address"],
+            "prev_disposition": prev_disposition}
 
 
 def revoke(db: Database, env: str, *, actor: str = "control_api") -> dict[str, Any]:

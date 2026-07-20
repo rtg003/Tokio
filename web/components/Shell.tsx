@@ -86,13 +86,25 @@ export default function Shell({
     router.refresh();
   }
 
-  // UPDATE-0083: a master wallet do topo é RESPEITADA — selecionar uma wallet
-  // com agente provisionado (eligible) que não é o executor atual TROCA o
-  // executor daquele ambiente (ativa o agente + reload), com confirmação. Wallet
-  // sem agente ou "Todas Wallets" = só filtro de visualização (como antes).
+  // UPDATE-0083/0085: a master wallet do topo é RESPEITADA. Casos explícitos:
+  //  • "Todas Wallets" / wallet sem `env` → só filtro de visualização.
+  //  • wallet já `active` (executor atual) → só filtro (sem prompt).
+  //  • `eligible && !active` (agente provisionado parqueado) → TROCA o executor
+  //    daquele ambiente (ativa + reload), com confirmação.
+  //  • `env && !eligible && !active` (agente revoked/expired) → a wallet apareceu
+  //    mas NÃO tem agente ativo: leva ao fluxo de PROVISIONAMENTO (assinatura é
+  //    ato humano na MetaMask; o combo só encaminha à tela /hyperliquid).
   async function onWalletChange(value: string) {
     const opt = wallets.find((w) => w.value === value);
-    if (opt?.eligible && opt.env && !opt.active) {
+
+    // Sem ambiente ou já é o executor ativo → apenas filtro de visualização.
+    if (!opt?.env || opt.active) {
+      setPref(WALLET_COOKIE, value);
+      return;
+    }
+
+    // Agente provisionado (parqueado/standby) → troca não-destrutiva do executor.
+    if (opt.eligible) {
       const ok = window.confirm(
         `Trocar o executor de ${opt.env.toUpperCase()} para ${opt.label}?\n\n` +
           "Todas as estratégias deste ambiente passam a executar nesta wallet.",
@@ -107,8 +119,23 @@ export default function Shell({
         router.refresh();
         return;
       }
+      setPref(WALLET_COOKIE, value);
+      return;
     }
-    setPref(WALLET_COOKIE, value);
+
+    // Wallet sem agente ativo (revoked/expired): encaminha ao provisionamento.
+    // A assinatura EIP-712 exige a wallet-alvo conectada no browser — o combo
+    // NÃO provisiona sozinho; leva ao ProvisionFlow em /hyperliquid.
+    const provision = window.confirm(
+      `A wallet ${opt.label} não tem agente ativo em ${opt.env.toUpperCase()}.\n\n` +
+        "Provisionar um novo agente? Você será levado à tela de provisionamento — " +
+        "conecte esta wallet e assine.",
+    );
+    if (!provision) {
+      router.refresh(); // reverte a seleção visual; não muda o cookie de filtro
+      return;
+    }
+    router.push(`/hyperliquid?provision=${opt.env}`);
   }
 
   useEffect(() => {

@@ -3434,3 +3434,46 @@ esta persistida e o reconcile.hydrated respeita o flag.
 ### Status
 
 UPDATE-0084 marcado APLICADO em docs/HERMES_UPDATES.md.
+
+
+## UPDATE-0085 - combo do topo PROVISIONA agente ao escolher wallet sem agente - APLICADO
+
+**Origem**: incidente de UX (20/07) — no combo de master wallet do topo, escolher `0xd2c7`/`0x4124`
+(testnet, ambas `revoked`) não fazia NADA (só filtro visual: `GET ...&wallet=...`, nenhum `POST`,
+nenhum `executor.wallet_switched`). O operador espera que escolher uma wallet sem agente **ofereça
+provisionar** um novo agente.
+
+**Tipo**: gateway (`hl_agents.activate` + handler) + frontend (Shell/combo + deep-link). SEM migração
+(status `standby` já existe desde 0031).
+
+### Decisões
+1. **Wallet executora anterior → `standby` (reversível), não `revoked`** no cross-wallet. `revoke`
+   permanece SÓ na rotação da MESMA wallet (a HL substitui o agente on-chain ao reaprovar o mesmo
+   nome). Coerente com o `set_active` do UPDATE-0083 (aprovação on-chain persiste → volta sem
+   re-assinar). Antes, `activate()` revogava por env **sem olhar o master** — errado p/ cross-wallet.
+2. **UX = deep-link para `/hyperliquid`** (ProvisionFlow já pronto). A assinatura EIP-712 exige a
+   wallet-alvo conectada no browser — o combo NÃO provisiona sozinho; **encaminha** ao fluxo de
+   assinatura. Gate humano intacto.
+
+### Mudanças
+- `engine/gateway/hl_agents.py` — `activate()`: no sucesso, para cada `active/expiring` anterior do env,
+  compara `master_address` (lower) com o novo: **mesmo master → `revoked`** (rotação); **master
+  diferente → `standby`** (cross-wallet). Retorna também `from`/`to`/`prev_disposition`. Nunca toca a
+  rede.
+- `engine/gateway/server.py` — handler `activate`: após `ok`+`reload_adapter`, se o master mudou
+  (`from != to`), emite `logger.warning("executor.wallet_switched", {env, from, to, via:"provision",
+  prev_disposition})` + audit `executor_switch` (paridade com `/select`). Só log (hot path §8.4.1
+  intocado).
+- `web/components/Shell.tsx` — `onWalletChange` reestruturado em casos: "Todas Wallets"/sem `env` ou já
+  `active` → só filtro; `eligible && !active` → troca de executor (como antes); **NOVO** `env &&
+  !eligible && !active` → confirm "A wallet {label} não tem agente ativo em {ENV}. Provisionar…?" → OK
+  navega `router.push('/hyperliquid?provision='+env)`; Cancelar reverte a seleção visual.
+- `web/app/(app)/hyperliquid/page.tsx` — lê `?provision=<env>` p/ mostrar o painel do ambiente pedido
+  (pode diferir do env global do cookie).
+
+### Testes
+`tests/test_hl_agents.py` (2 NOVOS): (1) `activate` cross-master parqueia o anterior em `standby`
+(não `revoked`, `revoked_at IS NULL`), novo master `active` único, `eligible_masters` marca o antigo
+`eligible=True`; (2) reversibilidade — `set_active(env, MASTER_A)` volta o executor sem novo
+prepare/activate. `test_rotation_revokes_previous_active` (mesmo master) permanece verde. Suíte cheia:
+**545 verdes**. Web `npm run build` verde. Frontend (Shell/deep-link) validado por build + manual.
