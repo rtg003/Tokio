@@ -4558,7 +4558,7 @@ abertas** do trader na ativação.
 **543 verdes**; web `npm run build` verde. Nenhum write em produção antes do deploy.
 
 
-## UPDATE-0085 · 2026-07-20 · Status: PENDENTE
+## UPDATE-0085 · 2026-07-20 · Status: APLICADO em 2026-07-21
 
 **Resumo (o porquê)**: no combo de **master wallet** do topo do dashboard, escolher uma wallet **sem
 agente ativo** (revoked/expired) não fazia **nada** além de filtrar a visão — nenhum prompt, nenhuma
